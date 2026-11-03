@@ -21,9 +21,20 @@ the rest conversationally.
 
 ## Status (update the checkboxes as you complete each item)
 
-- [ ] Fill backend guidelines
-- [ ] Fill frontend guidelines
-- [ ] Add code examples
+- [x] Fill backend guidelines
+- [x] Fill frontend guidelines
+- [x] Add code examples
+
+### Filled scope (2026-11-03, tincopper)
+
+- Backend: Rust best practices applied to the workspace architecture described in
+  `.trellis/tasks/11-03-unified-gateway-analysis/design.md` (Cargo workspace boundaries, typed
+  errors, tracing/metrics, toolchain-enforced quality gates).
+- Frontend: React 19 + TypeScript best practices (feature-first layout, composition and a11y,
+  hook/effect discipline, state classification, schema-first types).
+- Both sides are written as **binding target conventions**, because no Rust or React product code
+  exists yet. Illustrative paths are marked as such; revisit each file when the first real code
+  lands and replace examples with real references.
 
 ---
 

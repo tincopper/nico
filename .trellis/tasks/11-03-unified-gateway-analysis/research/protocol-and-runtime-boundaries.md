@@ -3,7 +3,7 @@
 日期：2026-11-03  
 范围：Rust + Pingora 统一 API 网关与 AI 网关；仅做技术分析，不涉及产品代码修改。
 
-> 后续变更：用户已确认 WebRTC 暂缓，不纳入当前架构；配置来源 local/etcd/Nacos 的 trait 设计见 `design.md` 第 8 节及 `config-source-options.md`。
+> 后续变更：用户已确认 WebRTC 暂缓，不纳入当前架构；配置来源 local/etcd/Nacos 的 trait 设计见 `design.md` 第 7 节及 `config-source-options.md`。
 
 ## 0. 核心结论
 

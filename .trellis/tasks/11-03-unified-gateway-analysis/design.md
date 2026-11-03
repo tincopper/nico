@@ -6,36 +6,21 @@
 >
 > 配置源的一手资料核查见 `research/config-source-options.md`（etcd release-3.5 源码、Watch RPC 字段、etcd-client 0.21.x）。
 
-## 1. 对上一版结构的修正
+## 1. Rust 设计原则
 
-上一版以 `SPI + PluginRegistry + Manifest + LifecycleCoordinator + CompositionRoot` 为中心，容易演变成 Java 式插件容器。本版改为 Rust 常见的 **Cargo 静态组合、模块优先、领域 trait、少量 trait object、显式构造**。
+这里的“微内核”不是运行时插件容器，而是少量不依赖具体业务的公共模块、清晰的依赖方向和预编译配置快照。
 
-| 上一版概念 | Rust 原生替代 |
-|---|---|
-| 独立 `gateway-spi` | trait 放在领域拥有者 crate，例如 `gateway-http::HttpFilter`、`gateway-ai::Provider` |
-| Plugin Package | 一个 Cargo crate，或更常见的是 crate 内的一个 module |
-| Plugin Registry | `gateway-server` 启动时显式构造；配置加载阶段可有简单 builder map |
-| Plugin Manifest | `Cargo.toml` 管理代码依赖/feature，`serde` Config 管理运行配置 |
-| Plugin Instance | 普通 Rust struct；需要共享时才放入 `Arc` |
-| Lifecycle Coordinator | 一个清晰的 reload 函数 + `ArcSwap`，长连接按协议自行 drain |
-| Execution Graph 框架 | 每路由一个 `CompiledRoute`，包含已构建的 filter/provider/upstream 引用 |
-| 通用 Exporter SPI | 优先直接使用 `tracing`、`metrics`、OTLP；有第二个真实后端时再抽象 |
-| Composition Root 框架 | `gateway-server/src/main.rs` 中的普通显式组装代码 |
+1. **Rust-native composition**：Cargo 静态组合、模块优先、领域 trait、少量 trait object、显式构造；不构建通用插件容器。
+2. **Module before crate**：先在一个 crate 内按模块划分，只有独立依赖、feature、复用或发布需求出现后才拆 crate。
+3. **Static before dynamic**：第一版所有实现编译期确定，启动时显式构造；不开发动态插件加载器。
+4. **Trait 放在领域拥有者中**：不建立包罗万象的 SPI crate。
+5. **Enum/generics 与 dyn 各取所需**：闭合集合可用 enum，开放扩展点可用少量 `Arc<dyn Trait>`；以 profile 而非意识形态决定。
+6. **配置类型化**：每个插件定义自己的 `serde::Deserialize` Config，不在热路径传递 `serde_json::Value`。
+7. **网络热路径不做通用序列化**：原生模块之间传递 `Bytes`、HTTP 类型或具体领域结构。
+8. **异步语义优先**：取消、timeout、背压、half-close 和 EndOfStream 是接口的一部分，而不是后续补丁。
+9. **避免框架命名泛滥**：只有确实管理多种生命周期或算法时才使用 Manager/Factory/Service 等名称。
 
-“微内核”在这里不是运行时容器，而是**少量不依赖具体业务的公共模块 + 清晰的依赖方向 + 预编译配置快照**。
-
-## 2. Rust 设计原则
-
-1. **Module before crate**：先在一个 crate 内按模块划分，只有独立依赖、feature、复用或发布需求出现后才拆 crate。
-2. **Static before dynamic**：第一版所有实现编译期确定，启动时显式构造；不开发动态插件加载器。
-3. **Trait 放在领域拥有者中**：不建立包罗万象的 SPI crate。
-4. **Enum/generics 与 dyn 各取所需**：闭合集合可用 enum，开放扩展点可用少量 `Arc<dyn Trait>`；以 profile 而非意识形态决定。
-5. **配置类型化**：每个插件定义自己的 `serde::Deserialize` Config，不在热路径传递 `serde_json::Value`。
-6. **网络热路径不做通用序列化**：原生模块之间传递 `Bytes`、HTTP 类型或具体领域结构。
-7. **异步语义优先**：取消、timeout、背压、half-close 和 EndOfStream 是接口的一部分，而不是后续补丁。
-8. **避免框架命名泛滥**：只有确实管理多种生命周期或算法时才使用 Manager/Factory/Service 等名称。
-
-## 3. 推荐 Cargo Workspace
+## 2. 推荐 Cargo Workspace
 
 以下是**建议结构，不是已创建文件**：
 
@@ -117,7 +102,7 @@ nico/
 - 需要独立发布或由独立团队维护。
 - 编译隔离带来的收益已超过 crate 数量成本。
 
-## 4. Crate 职责与依赖方向
+## 3. Crate 职责与依赖方向
 
 ```text
 gateway-server
@@ -182,9 +167,9 @@ gateway-server
 - 执行配置加载、去抖、校验、编译、ArcSwap 发布和滚动退出。
 - 不包含 Provider 算法、Filter 业务或配置中心协议细节。
 
-## 5. Rust 插件就是“领域 trait + 静态实现”
+## 4. Rust 插件就是“领域 trait + 静态实现”
 
-### 5.1 Trait 归属
+### 4.1 Trait 归属
 
 | Trait/抽象 | 所在 crate | 用途 |
 |---|---|---|
@@ -192,18 +177,18 @@ gateway-server
 | `Upstream` | `gateway-http` | 上游选择与调用约束 |
 | `Provider` | `gateway-ai` | AI 请求/响应语义适配 |
 | `ProviderStream` | `gateway-ai` | 每个响应流独立的转换状态 |
-| `ConfigSource` | `gateway-config` | local / etcd / Nacos 三种真实来源的加载与订阅 |
+| `ConfigSource` | `gateway-config` | local / etcd 的加载与订阅；Nacos 保留后续实现位 |
 
 不要在 `gateway-core` 中提前定义 `ProtocolPlugin`、`PolicyPlugin`、`ConnectorPlugin`、`ExporterPlugin` 等一组没有多个真实消费者的 trait。
 
-### 5.2 启动时显式注册
+### 4.2 启动时显式注册
 
 - `gateway-server` 知道所有具体实现，并在启动时构造它们。
 - 配置加载阶段可以用 `match plugin_type` 或 `HashMap<&str, Builder>` 将 YAML 类型名映射到构建函数。
 - 字符串映射只允许出现在**配置编译阶段**；请求阶段使用已构建的 `Arc<dyn HttpFilter>`、`Arc<dyn Provider>` 或 enum。
 - 新增 Provider 时修改 `gateway-ai` 和 server 注册点即可，Kernel/HTTP 路由算法不变。静态组合不要求“新增实现完全零注册代码”。
 
-### 5.3 Trait object 用在哪里
+### 4.3 Trait object 用在哪里
 
 适合使用 `Arc<dyn HttpFilter>`：
 
@@ -219,9 +204,9 @@ gateway-server
 
 `async fn` 需要 trait object 时，可按锁定 Rust 版本选择 `async_trait` 或 boxed future；不要假设原生 async trait 自动满足 dyn 要求。
 
-## 6. 路由编译与请求上下文
+## 5. 路由编译与请求上下文
 
-### 6.1 CompiledRoute 而不是通用执行图框架
+### 5.1 CompiledRoute 而不是通用执行图框架
 
 每条路由在 reload 时构建一个不可变 `CompiledRoute`，逻辑上包含：
 
@@ -233,7 +218,7 @@ gateway-server
 
 HTTP 热路径只做：`RouteTable::match → &CompiledRoute → 依次调用 Filter`。不构建图对象、不查询 Registry、不读取控制面。
 
-### 6.2 上下文按领域划分
+### 5.2 上下文按领域划分
 
 - `gateway-core::RequestMeta`：trace、peer、tenant、deadline、cancellation。
 - `gateway-http::HttpContext`：HTTP Session 所需状态、上游状态和 response commit。
@@ -242,9 +227,9 @@ HTTP 热路径只做：`RouteTable::match → &CompiledRoute → 依次调用 Fi
 
 AI 状态由 AI Filter 与请求本地状态关联，不放进 `gateway-core`。如使用 `http::Extensions` 等类型化扩展存储，应限定在明确的请求边界，不能演变成字符串键值或无约束对象袋；普通请求不应创建 AI 状态。
 
-## 7. 配置与热重载保持简单
+## 6. 配置与热重载保持简单
 
-### 7.1 配置编译
+### 6.1 配置编译
 
 1. 从 `ConfigSource` 取得一份带 revision/digest 的完整文档。
 2. 使用 `serde` 读取版本化 YAML。
@@ -255,7 +240,7 @@ AI 状态由 AI Filter 与请求本地状态关联，不放进 `gateway-core`。
 
 不需要为每个插件实现一套通用 `prepare/commit/abort` trait。构建函数失败就丢弃候选快照；只有真正需要两阶段资源的组件自己处理回滚。
 
-### 7.2 ArcSwap 发布
+### 6.2 ArcSwap 发布
 
 - `RuntimeSnapshot` 由 `ArcSwap` 持有。
 - 请求开始时加载 `Arc<RuntimeSnapshot>`，整个请求/流固定使用该 generation。
@@ -265,12 +250,12 @@ AI 状态由 AI Filter 与请求本地状态关联，不放进 `gateway-core`。
 
 长寿命资源可由 `gateway-server` 创建的 `SharedServices` 持有，快照中只保留 `Arc` 引用和对应配置版本。是否需要保留旧状态由具体资源决定，不使用通用 Lifecycle Manager 猜测。
 
-### 7.3 两种升级
+### 6.3 两种升级
 
 - **配置变化**：构建新快照，ArcSwap 热发布。
 - **代码/feature/依赖变化**：重新编译 artifact，滚动重启并 drain。
 
-### 7.4 与配置源管线的衔接
+### 6.4 与配置源管线的衔接
 
 ```text
 ConfigSource::load / watch
@@ -299,9 +284,9 @@ ArcSwap 原子发布 + 指标/审计
 - 启动阶段没有可用快照时默认不 ready；只有显式启用 bootstrap cache 模式才允许用本地缓存启动并标记 stale。
 - 集群内各实例只会最终一致地看到同一 revision，不承诺跨实例原子切换；路由变更必须向后兼容，先加后删。
 
-## 8. 配置来源：local / etcd / Nacos
+## 7. 配置来源：local / etcd / Nacos
 
-### 8.1 为什么这里值得有 trait
+### 7.1 为什么这里值得有 trait
 
 第一期落地 local + etcd 两个真实实现，Nacos 保留同类扩展位；local 只需文件系统，etcd/Nacos 需要 gRPC、TLS、认证和长连接。这是一个真实的扩展点，不是一个假想的插件框架。
 
@@ -313,7 +298,7 @@ ArcSwap 原子发布 + 指标/审计
 - 配置源只负责加载/订阅完整文档，不解析业务路由、不直接修改运行快照。
 - etcd/Nacos 实现拆 crate 并用 feature 开关，未启用时不进入 binary。
 
-### 8.2 最小 trait 契约
+### 7.2 最小 trait 契约
 
 以下为接口示意，不是实施代码：
 
@@ -361,7 +346,7 @@ pub type ConfigWatch =
 - etcd 的 `start_revision` 是包含式；若 `load` 得到 revision R，watch 从 `R + 1` 开始，避免重复应用同一版本。
 - trait 必须 object-safe：不使用泛型方法；async 方法按锁定 Rust 版本使用 `async_trait` 或 boxed future。
 
-### 8.3 三种来源的边界
+### 7.3 三种来源的边界
 
 | 来源 | 阶段 | 实现要点 | 必须验证 |
 |---|---|---|---|
@@ -371,7 +356,7 @@ pub type ConfigWatch =
 
 第一期候选客户端为 `etcd-client` 0.21.x（etcdv3/etcd-client）：基于 tonic/prost，支持 etcd v3、Watch 和 Auth；其 Watch 是低层双向流，调用方必须自行处理 `created/canceled/compact_revision/events/fragment`。具体 API、fragment 聚合和 endpoint failover 行为按锁定版本验证；同时必须用 `cargo tree -d` 检查其 tonic/hyper/TLS 依赖是否与 Pingora 冲突。etcd 实现先达到生产可用，Nacos 不阻塞第一期交付。
 
-### 8.4 多 key 配置的一致性
+### 7.4 多 key 配置的一致性
 
 强烈推荐 **一个网关集群一份完整文档**，例如 `/gateway/prod/resources.yaml`。这样 etcd/Nacos 的每次变更天然对应一个可编译快照。
 
@@ -388,7 +373,7 @@ etcd 单个 value 受服务端 `max-request-bytes` 限制。所核对 etcd relea
 
 可选 key 与必选 key 必须显式声明，不能靠“缺失就当默认值”掩盖配置中心故障。
 
-### 8.5 Bootstrap 配置不能来自配置中心
+### 7.5 Bootstrap 配置不能来自配置中心
 
 启动时必须先知道“去哪里取配置”，因此 bootstrap 只来自本地文件、环境变量或命令行参数：
 
@@ -408,7 +393,7 @@ config_source:
 
 这份 bootstrap 只包含连接、来源选择、缓存和资源上限，不包含路由。它应由部署系统管理，不能让远端配置中心自行改写“去哪里读配置”或本地文件路径。
 
-### 8.6 启动、故障与降级
+### 7.6 启动、故障与降级
 
 - **启动无可用快照**：默认不 ready，不允许带着空路由接流量。只有显式 `allow_bootstrap_cache: true` 时才用本地 last-known-good 启动，并标记 `stale`。
 - **运行期配置中心不可用**：继续使用 last-known-good 服务，标记 `config_degraded`，按阈值告警；watch 退避重连，不阻塞请求。
@@ -420,7 +405,7 @@ config_source:
 - **revision 乱序/回退**：同一来源内比较 revision，旧事件丢弃；来源无法保证顺序时走全量 `load`。
 - **回滚**：保留上一份已编译快照的元数据；通过配置中心回退到旧 revision，或由本地受控管理接口触发显式 reload。不把远端配置里的任意路径当作回滚命令。
 
-### 8.7 安全与资源限制
+### 7.7 安全与资源限制
 
 配置中心是高权限输入，必须按不可信边界处理：
 
@@ -431,7 +416,7 @@ config_source:
 - 日志与指标只记录 source、revision、digest、耗时和错误类别，不记录完整配置或 secret。
 - 可选对文档做签名/摘要校验，特别是跨公网或多人可写的配置中心。
 
-### 8.8 可观测性与测试
+### 7.8 可观测性与测试
 
 指标至少包括：`config_load_total{source,result}`、`config_reload_total{result}`、`config_compile_seconds`、`config_watch_reconnects_total`、`config_snapshot_age_seconds`、`config_degraded`，以及当前 revision/digest。
 
@@ -446,7 +431,7 @@ config_source:
 
 第一期使用固定版本 etcd 容器做集成测试，验证认证、TLS、watch 重连、compaction 和 endpoint failover；不能用 fake 测试替代真实客户端验证。Nacos 集成测试在其后续实现时补充。
 
-## 9. 流式与异步的 Rust 实现取向
+## 8. 流式与异步的 Rust 实现取向
 
 - Pingora 拥有其运行时和 HTTP I/O，不另建第二个 Tokio runtime。
 - body/stream 使用 `Bytes`/`BytesMut` 和具体 Stream 类型，避免 `String` 复制。
@@ -458,7 +443,7 @@ config_source:
 - `thiserror` 用于库错误分类，`anyhow` 只考虑用于 binary 启动边界；错误最终由 HTTP/AI 层映射为协议响应。
 - 使用 `tracing` span 关联 request、provider call 和 retry；不自建通用观测插件框架。
 
-## 10. Cargo Feature 与部署角色
+## 9. Cargo Feature 与部署角色
 
 Feature 用于**编译期依赖裁剪**，配置用于**运行时行为**：
 
@@ -479,7 +464,7 @@ Cargo feature 只决定哪些配置源实现被编入；`bootstrap.config_source
 
 Feature 是 additive 的，不能依赖“启用 A 后悄悄改变 B 的非 feature 行为”来做复杂互斥；角色与路由合法性仍需启动时校验。
 
-## 11. 四个扩展示例
+## 10. 四个扩展示例
 
 ### 新增 AI Provider
 
@@ -508,7 +493,7 @@ Feature 是 additive 的，不能依赖“启用 A 后悄悄改变 B 的非 feat
 3. 在 `gateway-server::bootstrap` 的 `match source_type` 中注册。
 4. 不修改 reload 管线、路由编译和 HTTP/AI 代码。
 
-## 12. 动态插件不是第一期内核的一部分
+## 11. 动态插件不是第一期内核的一部分
 
 如果未来确实需要第三方无需重编译即可安装插件：
 
@@ -517,7 +502,7 @@ Feature 是 additive 的，不能依赖“启用 A 后悄悄改变 B 的非 feat
 - 动态 artifact 的版本、签名、权限和资源限制由该扩展层负责，不反向污染核心。
 - 不把 Rust dylib 作为默认方案，也不提前为假想需求设计 ABI。
 
-## 13. 阶段计划与验收
+## 12. 阶段计划与验收
 
 ### 阶段 0：Workspace、配置源与 Pingora PoC
 
@@ -562,9 +547,9 @@ Feature 是 additive 的，不能依赖“启用 A 后悄悄改变 B 的非 feat
 - `cargo check/test/clippy` 在不同 feature 组合下通过。
 - 全 Workspace 不存在为了“看起来像插件系统”而增加的空 trait、空 Manager 或单实现微 crate。
 
-## 14. 当前结论
+## 13. 当前结论
 
-当前架构不再围绕 Java 式插件容器展开，而是：
+当前架构的核心是：
 
 > **Cargo Workspace + 6 个初始 crate（+2 个可选配置源 crate）+ crate 内模块 + 领域 trait + 启动时显式组装 + CompiledRoute + ArcSwap。**
 
