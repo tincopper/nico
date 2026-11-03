@@ -117,7 +117,8 @@ Use `?` and keep the context chain intact. When the error also needs to be logge
 
 ```rust
 fn compile(&self, doc: &ConfigVersion) -> Result<RuntimeSnapshot, CompileError> {
-    let resources: ResourcesDoc = serde_yaml::from_slice(&doc.bytes)
+    // `yaml::` is a placeholder for the pinned YAML crate; see quality-guidelines.md.
+    let resources: ResourcesDoc = yaml::from_slice(&doc.bytes)
         .inspect_err(|err| tracing::warn!(error = %err, "config document parse failed"))
         .map_err(|err| CompileError::Parse { source: err })?;
     let routes = RouteTable::try_new(&resources.routes)?;
@@ -304,7 +305,7 @@ Errors are part of the contract, so they get their own tests:
 | Mistake | Why it hurts | Do instead |
 |---|---|---|
 | `anyhow` in a library `pub fn` | Callers lose the ability to match on failure | `thiserror` enum per layer |
-| `unwrap()` on `serde_yaml::from_slice` in config compile | One bad config panics a worker instead of keeping last-known-good | `?` into `CompileError`, keep LKG |
+| `unwrap()` on a config-document parse in config compile | One bad config panics a worker instead of keeping last-known-good | `?` into `CompileError`, keep LKG |
 | Mapping every error to `500` | Clients cannot distinguish their bug from ours; retries get misdirected | Map via `ErrorCategory` at the edge |
 | Retrying after `commit` | Duplicate bytes to the client / double billing | `HttpError::ResponseCommitted` gate |
 | `Mutex` guard held across `.await` | Deadlock or `!Send` future | Snapshot + `ArcSwap`, or `tokio::sync` |
