@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 0
-- **Last Active**: -
+- **Total Sessions**: 1
+- **Last Active**: 2026-11-03
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~0 | Active |
+| `journal-1.md` | ~54 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 1 | 2026-11-03 | Bootstrap project spec for Rust backend and React frontend | `b0a41c9`, `5c7bfc8`, `53400f1`, `e09d0df`, `3e5ac35`, `bef010d`, `e9bdb8c`, `dbc0a7f` | `main` |
 <!-- @@@/auto:session-history -->
 
 ---
