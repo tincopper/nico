@@ -1,18 +1,29 @@
 # Cross-Layer Thinking Guide
 
-> **Purpose**: Think through data flow across layers before implementing.
+> **Purpose**: Think through data flow across crate boundaries before implementing.
 
 ---
 
 ## The Problem
 
-**Most bugs happen at layer boundaries**, not within layers.
+**Most bugs happen at crate boundaries**, not inside a single crate.
 
-Common cross-layer bugs:
+Why: within a crate the compiler enforces your invariants. At a boundary the value is a `Bytes`,
+a `serde_json::Value`, or a struct whose invariants the receiving crate cannot see. Nothing forces
+the sender's assumptions onto the receiver.
 
-- API returns format A, frontend expects format B
-- Database stores X, service transforms to Y, but loses data
-- Multiple layers implement the same logic differently
+Common cross-layer bugs in this project:
+
+- A config field is parsed by one crate and silently dropped by the next.
+- A `CompiledRoute` carries a limit that the proxy path never reads.
+- A provider response is decoded three different ways in three call sites.
+- A request reads two different `RuntimeSnapshot` generations and mixes them.
+- A stream parser reports usage that does not match the bytes actually delivered.
+
+> "Layer" here means **crate boundary or process boundary** — `gateway-core` / `gateway-http` /
+> `gateway-ai` / `gateway-config` / `gateway-plugins` / `gateway-server`, plus the edges to the
+> client, the upstream, and the config store. It is not the generic "API / service / database"
+> stack.
 
 ---
 
@@ -20,34 +31,50 @@ Common cross-layer bugs:
 
 ### Step 1: Map the Data Flow
 
-Draw out how data moves:
+Draw out how data moves. Write the actual type at every arrow — not a description of the type.
 
-```
-Source → Transform → Store → Retrieve → Transform → Display
+```text
+ConfigSource (Bytes + Revision)
+  → gateway-server (deserialize, validate, compile)
+  → RuntimeSnapshot (ArcSwap)
+  → gateway-http (CompiledRoute + HttpContext)
+  → gateway-plugins (HttpFilter chain)
+  → gateway-ai (Provider + ProviderStream)
+  → client (response bytes / SSE events)
 ```
 
 For each arrow, ask:
 
-- What format is the data in?
-- What could go wrong?
-- Who is responsible for validation?
+- What is the exact type crossing here?
+- Who owns decoding, and who owns validation?
+- What happens when this arrow fails or is cancelled?
+- Does the receiving side need the source identifier (`generation`, `revision`, `digest`, `seq`) to
+  stay coherent?
 
 ### Step 2: Identify Boundaries
 
-| Boundary              | Common Issues                     |
-| --------------------- | --------------------------------- |
-| API ↔ Service         | Type mismatches, missing fields   |
-| Service ↔ Database    | Format conversions, null handling |
-| Backend ↔ Frontend    | Serialization, date formats       |
-| Component ↔ Component | Props shape changes               |
+| Boundary                              | Common Issues                                                                       |
+| ------------------------------------- | ----------------------------------------------------------------------------------- |
+| `ConfigSource` ↔ `gateway-server`     | Revision vs digest semantics, out-of-order events, raw bytes vs parsed document      |
+| `gateway-server` ↔ `RuntimeSnapshot`  | Partially validated config, lost generation, two snapshots in one request            |
+| `RuntimeSnapshot` ↔ `gateway-http`    | `CompiledRoute` missing resource limits, unstable filter ordering                    |
+| `gateway-http` ↔ `gateway-plugins`    | Filter wants typed HTTP state but receives untyped metadata                          |
+| `gateway-http` ↔ `gateway-ai`         | AI state leaking into `gateway-core`, or created for non-AI requests                 |
+| `gateway-ai` ↔ `Provider`             | Request semantics (model mapping) vs response semantics (stream, usage) conflated    |
+| `ProviderStream` ↔ client             | Lost incremental events, writes after cancel, usage not matching delivered bytes     |
+| request ↔ request (state)             | Shared mutable state between two in-flight streams                                   |
 
 ### Step 3: Define Contracts
 
-For each boundary:
+For each boundary, write down:
 
-- What is the exact input format?
-- What is the exact output format?
-- What errors can occur?
+- The exact input type and where it is decoded.
+- The exact output type and who may read its fields.
+- Which errors are possible, and which `ErrorCategory` they map to.
+- What happens on cancel, timeout, and reload.
+
+If you cannot name the owner of a boundary, that is a design question — stop and resolve it before
+coding.
 
 ---
 
@@ -55,50 +82,167 @@ For each boundary:
 
 ### Mistake 1: Implicit Format Assumptions
 
-**Bad**: Assuming date format without checking
+**Bad**: Assuming a config field is always present because the local YAML has it.
 
-**Good**: Explicit format conversion at boundaries
+**Good**: Every config struct uses `deny_unknown_fields` plus explicit `Option`/default handling,
+and validation happens once in `gateway-server`.
 
 ### Mistake 2: Scattered Validation
 
-**Bad**: Validating the same thing in multiple layers
+**Bad**: `gateway-http` re-checks limits that `gateway-server` already validated during compilation.
+Two owners for one rule means the second one goes stale after a tuning change.
 
-**Good**: Validate once at the entry point
+**Good**: Validate once at the entry point, then encode the guarantee in the type so the second
+layer *cannot* re-check it:
+
+```rust
+// A validated limit carries the proof in the type, not in a comment.
+pub struct BodyLimit(NonZeroUsize);
+
+impl BodyLimit {
+    /// The only constructor; rejects zero and anything above the configured ceiling.
+    pub fn try_new(bytes: usize, ceiling: usize) -> Result<Self, ConfigError> { /* ... */ }
+    pub fn bytes(&self) -> usize { self.0.get() }
+}
+```
+
+`NonZeroUsize` alone only proves "non-zero" — it cannot express "≤ ceiling". A newtype is what
+lets the receiver drop the check without losing the invariant.
 
 ### Mistake 3: Leaky Abstractions
 
-**Bad**: Component knows about database schema
+**Bad**: `gateway-core` gains an HTTP route concept "because both planes might need it".
 
-**Good**: Each layer only knows its neighbors
+**Good**: `gateway-core` stays protocol-agnostic. If only one data plane uses a concept, it belongs
+to that data plane's crate.
 
 ### Mistake 4: Every Consumer Parses The Same Payload
 
-**Bad**: A command reads JSONL events and casts fields inline:
+**Bad**: Several call sites index into raw provider JSON:
 
-```typescript
-const thread = (ev as { thread?: string }).thread;
-const labels = (ev as { labels?: string[] }).labels;
+```rust
+let model = body["model"].as_str().unwrap_or_default();
+let total = body["usage"]["total_tokens"].as_u64().unwrap_or(0);
 ```
 
-This looks local, but it means every consumer owns a private version of the
-event contract. The next field change will update one command and miss another.
+This looks local, but each consumer owns a private version of the provider contract. The next
+response shape change updates one call site and misses another.
 
-**Good**: Decode once at the event boundary, then export typed projections:
+**Good**: Decode once at the owning boundary, then expose typed access:
 
-```typescript
-if (!isThreadEvent(ev)) return false;
-return ev.thread === filter.thread;
+```rust
+let parsed: OpenAiResponse = serde_json::from_slice(&body)?;
+let model = parsed.model;
 ```
 
-**Rule**: For append-only logs, JSON streams, RPC payloads, or config files,
-create one owner for:
+**Rule**: For config documents, provider payloads, SSE frames, and any `serde_json::Value`,
+exactly one owner defines:
 
-- event / payload type definitions
-- type guards and normalization from `unknown`
-- metadata projections used by UI commands
-- reducers that replay state from the source of truth
+- the type definitions,
+- the decoding from bytes/`Value`,
+- the projections other code reads,
+- the reducers that turn stream events into state.
 
-Rendering code may format fields, but it must not redefine the payload contract.
+Formatting code may format fields; it must not redefine the payload contract.
+
+> The duplication-detection angle of this pattern lives in
+> [code-reuse-thinking-guide.md](./code-reuse-thinking-guide.md#pattern-4-repeated-payload-decoding).
+
+### Mistake 5: One Request, Two Snapshots
+
+**Bad**: A handler loads the snapshot again mid-request to read another field.
+
+**Good**: Load `Arc<RuntimeSnapshot>` once at request start and thread it through. The whole
+request, including the response stream, uses one generation.
+
+### Mistake 6: Borrowing a Value Across a Reload
+
+**Bad**: A long-lived stream keeps a `&CompiledRoute` (or a guard into the snapshot) alive across an
+`await`, so a reload either leaks the old generation or the code is forced into an unsafe swap.
+
+**Good**: Clone the `Arc<RuntimeSnapshot>` (or the specific `Arc` handle) and keep that. The old
+snapshot is released when the last in-flight request finishes — which is exactly the desired drain
+semantics.
+
+---
+
+## Config Compilation Boundary
+
+Configuration is the highest-risk boundary in this project: bytes become compiled structures that
+the hot path trusts without re-checking.
+
+### Checklist: After Adding Or Changing A Config Field
+
+- [ ] Add the field to the typed `serde` struct with explicit default/optional semantics — never a
+      bare `serde_json::Value`.
+- [ ] Add validation in `gateway-server`'s compile step, not in the data plane.
+- [ ] Confirm the field is carried into `RuntimeSnapshot` and reachable from the `CompiledRoute` or
+      shared handle that needs it.
+- [ ] Search for every reader of the old shape: `rg "<field_name>" crates/`
+- [ ] Decide reload behavior: does this field require rebuilding shared services, or does a new
+      snapshot suffice?
+- [ ] Check backwards compatibility across revisions — cluster instances converge to the same
+      revision eventually, not atomically. Add before remove.
+
+**Real-world risk**: A field added to the config struct but not threaded into `CompiledRoute`
+produces a config that validates, publishes, and then silently does nothing. This is invisible
+without an explicit "field → consumer" search.
+
+---
+
+## Config Event → Snapshot → Observability Boundary
+
+The reload path has its own cross-layer contract: an event from the config store must end up as
+exactly one published generation, one metric sample, and one audit record.
+
+```text
+ConfigSource event (Snapshot | ResyncRequired)
+  → gateway-server (debounce, single-flight, validate, compile)
+  → RuntimeSnapshot publish (ArcSwap)
+  → metrics + tracing (generation, revision, digest, result)
+  → audit log
+```
+
+### Checklist: After Changing The Reload Path
+
+- [ ] **One event → at most one publish.** Digest dedup and revision ordering happen before
+      compile, not after.
+- [ ] **Failures are observable.** A rejected candidate increments the reload-failure metric and
+      records the error category — it must not be silent just because LKG keeps serving.
+- [ ] **`config_degraded` reflects reality.** Entered on an outage or a rejected reload, cleared
+      only on a successful publish — not on "we tried again".
+- [ ] **Metric labels stay bounded.** `source`, `result`, `error_category` — never a revision,
+      digest, or key name.
+- [ ] **Generation is the join key.** Logs, metrics, and audit for one reload all carry the same
+      `config.generation`; a request's logs carry the generation it actually used.
+- [ ] **No double counting.** A reconnect that re-publishes an identical digest must not look like
+      a successful new reload.
+- [ ] **In-flight requests are untouched.** A failed reload does not disturb the generation they
+      already hold.
+
+**Real-world risk**: The publish path succeeds but the metric path is skipped, so a config that
+failed to apply looks healthy until someone reads the routes. Observability here is part of the
+contract, not a nice-to-have.
+
+---
+
+## Streaming / Incremental Parse Boundary
+
+`ProviderStream` is a per-response-stream state machine and a cross-crate contract between the
+upstream provider and the client.
+
+### Checklist: After Changing Stream Parsing
+
+- [ ] State is per stream. No shared mutable parser, buffer, or counter across two concurrent
+      responses.
+- [ ] Cancellation is honored: after the client disconnects, no further writes and no leaked task.
+- [ ] Partial frames are buffered correctly — a chunk boundary may split any SSE event, line, UTF-8
+      sequence, or JSON value.
+- [ ] Usage/metrics are derived from what was actually delivered, not from what the upstream
+      announced.
+- [ ] Errors that occur mid-stream are mapped to the same `ErrorCategory` the non-streaming path
+      uses.
+- [ ] At least one regression feeds a deliberately split, multi-chunk stream.
 
 ---
 
@@ -106,222 +250,34 @@ Rendering code may format fields, but it must not redefine the payload contract.
 
 Before implementation:
 
-- [ ] Mapped the complete data flow
-- [ ] Identified all layer boundaries
-- [ ] Defined format at each boundary
-- [ ] Decided where validation happens
+- [ ] Mapped the complete data flow with concrete types
+- [ ] Identified every boundary crossing
+- [ ] Named the owner of decoding and validation at each boundary
+- [ ] Decided where each error category is produced
+- [ ] Decided cancel/timeout/reload behavior at each boundary
 
 After implementation:
 
-- [ ] Tested with edge cases (null, empty, invalid)
-- [ ] Verified error handling at each boundary
-- [ ] Checked data survives round-trip
-- [ ] Checked that consumers import shared decoders / projections instead of
-      casting payload fields locally
-- [ ] Checked that derived state points back to the source event identifier
-      (`seq`, `id`, `version`) instead of inventing a second cursor
-
----
-
-## Cross-Platform Template Consistency
-
-In Trellis, command templates (e.g., `record-session.md`) exist in **multiple platforms** with identical or near-identical content. This is a cross-layer boundary.
-
-### Checklist: After Modifying Any Command Template
-
-- [ ] Find all platforms with the same command: `find src/templates/*/commands/trellis/ -name "<command>.*"`
-- [ ] Update all platform copies (Markdown `.md` and TOML `.toml`)
-- [ ] For Gemini TOML: adapt line continuations (`\\` vs `\`) and triple-quoted strings
-- [ ] Run `/trellis:check-cross-layer` to verify nothing was missed
-
-**Real-world example**: Updated `record-session.md` in Claude to use `--mode record`, but forgot iFlow, Kilo, OpenCode, and Gemini — caught by cross-layer check.
-
----
-
-## Generated Runtime Template Upgrade Consistency
-
-Some generated files are both documentation and runtime input. In Trellis,
-`.trellis/workflow.md` is parsed by `get_context.py`, `workflow_phase.py`,
-SessionStart filters, and per-turn hooks. Template changes must be validated
-against both fresh init and upgrade paths.
-
-### Checklist: After Modifying A Runtime-Parsed Template
-
-- [ ] Identify every runtime parser that reads the template, not just the file
-      writer that installs it
-- [ ] Check whether relevant syntax lives outside obvious managed regions
-      such as tag blocks
-- [ ] Verify fresh `init` output and a versioned `update` scenario that writes
-      the older `.trellis/.version`
-- [ ] Add an upgrade regression using an older pristine template fixture, then
-      assert the installed file reaches the current packaged shape
-- [ ] Update the backend spec that owns the runtime contract
-
----
-
-## Versioned Documentation Boundary
-
-Versioned documentation is a cross-layer boundary: source paths, `docs.json`
-version routing, and the rendered version selector must all describe the same
-release line.
-
-### Checklist: Before Editing Versioned Docs
-
-- [ ] Identify the target release line: stable, beta, or RC
-- [ ] Verify the edited MDX path matches that line:
-  - stable: `docs-site/{start,advanced,...}` and `docs-site/zh/{start,advanced,...}`
-  - beta: `docs-site/beta/**` and `docs-site/zh/beta/**`
-  - RC: `docs-site/rc/**` and `docs-site/zh/rc/**`
-- [ ] Verify `docs.json` navigation points the version label to the same paths
-- [ ] Grep the opposite tree for release-line-specific terms before committing
-- [ ] Treat beta content appearing under root release paths as a source-path bug,
-      not a rendering bug
-
-**Real-world example**: A beta-only task workflow change documented
-`prd.md` + `design.md` + `implement.md`, task-creation consent, and Codex
-mode banners under root `start/` and `advanced/` paths. The docs site then
-served 0.6 beta behavior under the Release selector. The fix was to restore root
-release docs, move the 0.6 content to `beta/` and `zh/beta/`, and add a grep
-audit for beta markers against the root release tree.
-
-**Real-world example**: Codex inline mode changed workflow platform markers from
-`[Codex]` / `[Kilo, Antigravity, Windsurf]` to `[codex-sub-agent]` /
-`[codex-inline, Kilo, Antigravity, Windsurf]`. Fresh init was correct, but
-`trellis update` only merged `[workflow-state:*]` blocks and preserved stale
-markers outside those blocks. Result: upgraded projects got new hook scripts
-but old workflow routing, so `get_context.py --mode phase --platform codex`
-could return empty Phase 2.1 detail.
-
----
-
-## Mode-Detection Probe Checklist
-
-When a CLI auto-detects a mode by probing a remote resource (e.g., checking if `index.json` exists to decide marketplace vs direct download):
-
-### Before implementing:
-
-- [ ] Probe runs in **ALL** code paths that use the result (interactive, `-y`, `--flag` combos)
-- [ ] 404 vs transient error are distinguished — don't treat both as "not found"
-- [ ] Transient errors **abort or retry**, never silently switch modes
-- [ ] Shared state (caches, prefetched data) is **reset** when context changes (e.g., user switches source)
-- [ ] **Shortcut paths** (e.g., `--template` skipping picker) must have the same error-handling quality as the probed path — check that downstream functions don't call catch-all wrappers
-
-### After implementing:
-
-- [ ] Trace every path from probe result to the mode-decision branch — no fallthrough
-- [ ] External format contracts (giget URI, raw URLs) are tested or at least documented as comments
-- [ ] Metadata reads consume a complete response or use a streaming parser — never parse a fixed-size prefix as full JSON
-- [ ] When reconstructing a composite identifier from parsed parts, verify **all** fields are included and in the **correct position** (e.g., `provider:repo/path#ref` not `provider:repo#ref/path`)
-- [ ] Verify that **action functions** called after a shortcut don't internally use the old catch-all fetch — they must use the probe-quality variant when error distinction matters
-
-**Real-world example**: Custom registry flow had 8 bugs across 3 review rounds: (1) probe only ran in interactive mode, (2) transient errors fell through to wrong mode, (3) giget URI had `#ref` in wrong position, (4) prefetched templates leaked across source switches, (5) `--template` shortcut bypassed probe but `downloadTemplateById` internally used catch-all `fetchTemplateIndex`, turning timeouts into "Template not found".
-
-**Real-world example**: Agent-session update hints fetched npm `latest` metadata with `response.read(4096)` and then parsed it as complete JSON. The `@mindfoldhq/trellis` package metadata exceeded 4 KB, so the JSON was truncated, parse failed silently, and the first session injection showed no update hint. Fix: read the complete response before parsing, and add a regression where `version` is followed by an 8 KB metadata tail.
-
----
-
-## Cross-Platform Template Consistency
-
-In Trellis, command templates (e.g., `record-session.md`) exist in **multiple platforms** with identical or near-identical content. This is a cross-layer boundary.
-
-### Checklist: After Modifying Any Command Template
-
-- [ ] Find all platforms with the same command: `find src/templates/*/commands/trellis/ -name "<command>.*"`
-- [ ] Update all platform copies (Markdown `.md` and TOML `.toml`)
-- [ ] For Gemini TOML: adapt line continuations (`\\` vs `\`) and triple-quoted strings
-- [ ] Run `/trellis:check-cross-layer` to verify nothing was missed
-
-**Real-world example**: Updated `record-session.md` in Claude to use `--mode record`, but forgot iFlow, Kilo, OpenCode, and Gemini — caught by cross-layer check.
-
----
-
-## Generated Runtime Template Upgrade Consistency
-
-Some generated files are both documentation and runtime input. In Trellis,
-`.trellis/workflow.md` is parsed by `get_context.py`, `workflow_phase.py`,
-SessionStart filters, and per-turn hooks. Template changes must be validated
-against both fresh init and upgrade paths.
-
-### Checklist: After Modifying A Runtime-Parsed Template
-
-- [ ] Identify every runtime parser that reads the template, not just the file
-  writer that installs it
-- [ ] Check whether relevant syntax lives outside obvious managed regions
-  such as tag blocks
-- [ ] Verify fresh `init` output and a versioned `update` scenario that writes
-  the older `.trellis/.version`
-- [ ] Add an upgrade regression using an older pristine template fixture, then
-  assert the installed file reaches the current packaged shape
-- [ ] Update the backend spec that owns the runtime contract
-
-**Real-world example**: Codex inline mode changed workflow platform markers from
-`[Codex]` / `[Kilo, Antigravity, Windsurf]` to `[codex-sub-agent]` /
-`[codex-inline, Kilo, Antigravity, Windsurf]`. Fresh init was correct, but
-`trellis update` only merged `[workflow-state:*]` blocks and preserved stale
-markers outside those blocks. Result: upgraded projects got new hook scripts
-but old workflow routing, so `get_context.py --mode phase --platform codex`
-could return empty Phase 2.1 detail.
-
----
-
-## Mode-Detection Probe Checklist
-
-When a CLI auto-detects a mode by probing a remote resource (e.g., checking if `index.json` exists to decide marketplace vs direct download):
-
-### Before implementing:
-- [ ] Probe runs in **ALL** code paths that use the result (interactive, `-y`, `--flag` combos)
-- [ ] 404 vs transient error are distinguished — don't treat both as "not found"
-- [ ] Transient errors **abort or retry**, never silently switch modes
-- [ ] Shared state (caches, prefetched data) is **reset** when context changes (e.g., user switches source)
-- [ ] **Shortcut paths** (e.g., `--template` skipping picker) must have the same error-handling quality as the probed path — check that downstream functions don't call catch-all wrappers
-
-### After implementing:
-- [ ] Trace every path from probe result to the mode-decision branch — no fallthrough
-- [ ] External format contracts (giget URI, raw URLs) are tested or at least documented as comments
-- [ ] Metadata reads consume a complete response or use a streaming parser — never parse a fixed-size prefix as full JSON
-- [ ] When reconstructing a composite identifier from parsed parts, verify **all** fields are included and in the **correct position** (e.g., `provider:repo/path#ref` not `provider:repo#ref/path`)
-- [ ] Verify that **action functions** called after a shortcut don't internally use the old catch-all fetch — they must use the probe-quality variant when error distinction matters
-
-**Real-world example**: Custom registry flow had 8 bugs across 3 review rounds: (1) probe only ran in interactive mode, (2) transient errors fell through to wrong mode, (3) giget URI had `#ref` in wrong position, (4) prefetched templates leaked across source switches, (5) `--template` shortcut bypassed probe but `downloadTemplateById` internally used catch-all `fetchTemplateIndex`, turning timeouts into "Template not found".
-
-**Real-world example**: Agent-session update hints fetched npm `latest` metadata with `response.read(4096)` and then parsed it as complete JSON. The `@mindfoldhq/trellis` package metadata exceeded 4 KB, so the JSON was truncated, parse failed silently, and the first session injection showed no update hint. Fix: read the complete response before parsing, and add a regression where `version` is followed by an 8 KB metadata tail.
+- [ ] Tested with edge cases (empty, missing, oversized, malformed)
+- [ ] Verified error handling at each boundary, not just the happy path
+- [ ] Checked the data survives the round trip unchanged
+- [ ] Checked consumers import shared decoders instead of decoding locally
+- [ ] Checked derived state points back to the source identifier (`generation`, `revision`, `seq`)
+      instead of inventing a second cursor
+- [ ] Checked no crate gained a dependency that violates the direction rules in
+      `../backend/directory-structure.md`
 
 ---
 
 ## When to Create Flow Documentation
 
-Create detailed flow docs when:
+Create a dedicated flow document (in the task's `research/` or `design.md`) when:
 
-- Feature spans 3+ layers
-- Multiple teams are involved
-- Data format is complex
-- Feature has caused bugs before
+- The feature spans 3+ crates
+- The data format changes between boundaries
+- The feature has caused a bug before
+- Multiple consumers need the same data
 
 ---
 
-## Event Log / Projection Boundary
-
-Append-only logs are cross-layer contracts. A single event travels through:
-
-```
-CLI input → event writer → events.jsonl → reader → filter → reducer → display
-```
-
-### Checklist: After Adding A New Event Kind Or Field
-
-- [ ] Add the event kind to the central event taxonomy
-- [ ] Add a typed event variant or type guard at the event layer
-- [ ] Add normalization helpers for array/object fields that come from
-      user input or JSON
-- [ ] Keep `seq` / `id` assignment in the event writer only
-- [ ] Make filters and reducers consume the typed event guard, not local casts
-- [ ] Make display code consume reducer output or typed events, not raw JSON
-- [ ] Add at least one regression that proves history replay and live filtering
-      use the same filter model
-
-**Real-world example**: Thread channels added `kind: "thread"`, `description`,
-`context`, labels, and `lastSeq`. The first implementation replayed thread
-state correctly, but several commands still re-parsed event payload fields with
-local casts. The fix was to make the core event layer own `ThreadChannelEvent`
-and `isThreadEvent`, make `reduceChannelMetadata` the only channel metadata
-projection, and make `reduceThreads` the only thread replay reducer.
+**Core Principle**: 30 minutes of thinking saves 3 hours of debugging.

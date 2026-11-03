@@ -1,6 +1,7 @@
 # Code Reuse Thinking Guide
 
-> **Purpose**: Stop and think before creating new code - does it already exist?
+> **Purpose**: Stop and think before creating new code — does it already exist, and which crate
+> owns the concept?
 
 ---
 
@@ -9,9 +10,13 @@
 **Duplicated code is the #1 source of inconsistency bugs.**
 
 When you copy-paste or rewrite existing logic:
+
 - Bug fixes don't propagate
 - Behavior diverges over time
 - Codebase becomes harder to understand
+
+In a Rust workspace this bites harder than usual: two copies of the same rule in different crates
+cannot share a type, so they drift silently and the compiler never notices.
 
 ---
 
@@ -20,21 +25,46 @@ When you copy-paste or rewrite existing logic:
 ### Step 1: Search First
 
 ```bash
-# Search for similar function names
-grep -r "functionName" .
+# Search for similar function/type names
+rg "fn <name>" crates/
 
-# Search for similar logic
-grep -r "keyword" .
+# Search for similar logic by concept
+rg "<keyword>" crates/
+
+# Search for the constant you are about to introduce
+rg "<VALUE>" crates/
 ```
 
 ### Step 2: Ask These Questions
 
-| Question | If Yes... |
-|----------|-----------|
-| Does a similar function exist? | Use or extend it |
-| Is this pattern used elsewhere? | Follow the existing pattern |
-| Could this be a shared utility? | Create it in the right place |
-| Am I copying code from another file? | **STOP** - extract to shared |
+| Question                                   | If Yes...                                 |
+| ------------------------------------------ | ----------------------------------------- |
+| Does a similar function/type exist?        | Use or extend it                          |
+| Is this pattern used elsewhere?            | Follow the existing pattern               |
+| Could this be a shared utility?            | Put it in the crate that owns the concept |
+| Am I copying code from another file?       | **STOP** — extract to the owner           |
+| Would sharing this force a bad dependency? | Keep the duplication, and comment why     |
+
+### Step 3: Pick The Right Home
+
+Reuse does not mean "put it in `gateway-core`". It means "put it in the crate that owns the
+concept":
+
+| Kind of logic                                              | Home             |
+| ---------------------------------------------------------- | ---------------- |
+| Protocol-agnostic (deadline, cancellation, error category)  | `gateway-core`   |
+| HTTP-specific (route match, header handling, upstream)      | `gateway-http`   |
+| AI-specific (model mapping, usage, SSE)                     | `gateway-ai`     |
+| Config loading/subscription                                 | `gateway-config` |
+| Built-in policy implementations                             | `gateway-plugins`|
+
+**The threshold is two real consumers, not three.** Promoting something into `gateway-core`
+requires two consumers in **different data planes**. One consumer plus "it feels generic" is not
+enough — and "we might need it later" is not a consumer.
+
+If sharing something would require a dependency edge that `../backend/directory-structure.md`
+forbids, that is a design signal: the concept is in the wrong crate, or it genuinely belongs in
+two places with different semantics.
 
 ---
 
@@ -42,58 +72,94 @@ grep -r "keyword" .
 
 ### Pattern 1: Copy-Paste Functions
 
-**Bad**: Copying a validation function to another file
+**Bad**: Copying a validation function into another crate.
 
-**Good**: Extract to shared utilities, import where needed
+**Good**: Extract it to the owning crate and import it. If importing it would create a forbidden
+dependency edge, the function is probably in the wrong crate.
 
-### Pattern 2: Similar Components
+### Pattern 2: Similar Providers / Filters
 
-**Bad**: Creating a new component that's 80% similar to existing
+**Bad**: Creating a new `Provider` implementation that is 80% identical to an existing one.
 
-**Good**: Extend existing component with props/variants
+**Good**: Extend the existing implementation with a config knob, or extract the shared
+request/response shaping into a private helper inside `gateway-ai`.
 
 ### Pattern 3: Repeated Constants
 
-**Bad**: Defining the same constant in multiple files
+**Bad**: The same default timeout, body limit, or header name defined in multiple crates.
 
-**Good**: Single source of truth, import everywhere
+**Good**: One `pub const` (or one config default) in the owning crate, imported everywhere.
 
-### Pattern 4: Repeated Payload Field Extraction
+Config defaults deserve special care: a limit that lives both as a `const` in `gateway-http` and
+as a `serde` default in `gateway-server` is two owners for one rule. Pick the config document and
+let the constant be derived from it, or vice versa — never both independently.
 
-**Bad**: Multiple consumers cast the same JSON/event fields locally:
+### Pattern 4: Repeated Payload Decoding
 
-```typescript
-const description = (ev as { description?: string }).description;
-const context = (ev as { context?: ContextEntry[] }).context;
+**Bad**: Two modules each index into the same raw JSON shape:
+
+```rust
+// BAD - each call site owns its own version of the provider contract
+let model = body["model"].as_str().unwrap_or_default();
+let prompt_tokens = body["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
 ```
 
-This is duplicated contract logic even when the code is only two lines. Each
-consumer now has its own definition of what a valid payload means.
+> How to fix it — who defines the type, who decodes, who reduces stream events — is a **contract
+> ownership** question and lives in
+> [cross-layer-thinking-guide.md](./cross-layer-thinking-guide.md#mistake-4-every-consumer-parses-the-same-payload).
+> This entry is only the duplication signal: **if the same untyped field is read in two places,
+> create the shared decoder before adding a third reader.**
 
-**Good**: Put the decoder, type guard, or projection next to the data owner:
+### Pattern 5: Repeated `match` Arms
 
-```typescript
-if (isThreadEvent(ev)) {
-  renderThreadEvent(ev);
+**Bad**: The same variant-to-behavior mapping written in three places, drifting apart.
+
+**Good**: One function that maps the enum, called from all three. If the mapping needs per-caller
+variation, pass a parameter — do not fork the match.
+
+---
+
+## Exhaustive Matching Should Stay Exhaustive
+
+When state is derived from an enum, prefer one `match` over scattered `if` checks — and keep the
+match exhaustive.
+
+```rust
+// BAD - a catch-all arm hides newly added variants
+match event {
+    Event::Opened { .. } => handle_opened(),
+    _ => handle_other(),   // new variant silently falls in here
+}
+
+// GOOD - every variant handled explicitly; adding one breaks the build
+match event {
+    Event::Opened { .. } => handle_opened(),
+    Event::Comment { .. } => handle_comment(),
+    Event::Status { .. } => handle_status(),
 }
 ```
 
-**Rule**: If the same untyped payload field is read in 2+ places, create a
-shared type guard / normalizer / projection before adding a third reader.
+A wildcard `_` arm on a **locally defined** enum is a bug waiting for the next variant. Reserve
+`_` for genuinely open sets: foreign types, and `#[non_exhaustive]` APIs from other crates.
 
 ---
 
 ## When to Abstract
 
 **Abstract when**:
-- Same code appears 3+ times
+
+- The same code appears a **second** time and both call sites are real
 - Logic is complex enough to have bugs
-- Multiple people might need this
+- Two different data planes genuinely need it
 
 **Don't abstract when**:
+
 - Only used once
 - Trivial one-liner
 - Abstraction would be more complex than duplication
+- Sharing would require a dependency edge that violates `../backend/directory-structure.md`
+- The two copies are similar today but answer different questions (they will diverge)
+- It is a "just in case" generic layer with no second consumer
 
 ---
 
@@ -102,34 +168,26 @@ shared type guard / normalizer / projection before adding a third reader.
 When you've made similar changes to multiple files:
 
 1. **Review**: Did you catch all instances?
-2. **Search**: Run grep to find any missed
-3. **Consider**: Should this be abstracted?
+2. **Search**: Run `rg` to find any missed
+3. **Consider**: Should this be abstracted now that there are two of them?
 
-### Reducers Should Use Exhaustive Structure
+---
 
-When state is derived from action-like values (`action`, `kind`, `status`,
-`phase`), prefer a reducer with one `switch` over scattered `if/else` updates.
+## Gotcha: Asymmetric Mechanisms Producing The Same Output
 
-```typescript
-// BAD - action-specific state transitions are hard to audit
-if (action === "opened") { ... }
-else if (action === "comment") { ... }
-else if (action === "status") { ... }
+**Problem**: Two code paths must produce the same result — a "fast path" and a general path, or a
+config-compile path and a test-fixture path. Structural changes only propagate through one.
 
-// GOOD - one reducer owns the transition table
-switch (event.action) {
-  case "opened":
-    ...
-    return;
-  case "comment":
-    ...
-    return;
-}
-```
+**Symptom**: The general path works; the fast path silently drifts and returns stale or incomplete
+data.
 
-This matters when the event log is the source of truth. A reducer is the
-documented replay model; display code and commands should not duplicate pieces
-of that replay model.
+**Prevention**:
+
+- **Best**: Eliminate the asymmetry — have the narrow path call the general one instead of
+  maintaining its own copy.
+- **If asymmetry is unavoidable** (usually for measured performance): add a test asserting both
+  paths produce identical output for the same input, and keep that test next to the faster path.
+- When changing the shared structure, search for every code path that references the old shape.
 
 ---
 
@@ -137,87 +195,14 @@ of that replay model.
 
 - [ ] Searched for existing similar code
 - [ ] No copy-pasted logic that should be shared
-- [ ] No repeated untyped payload field extraction outside a shared decoder
-- [ ] Constants defined in one place
-- [ ] Similar patterns follow same structure
-- [ ] Reducer/action transitions live in one reducer or command dispatcher
+- [ ] No repeated untyped payload/JSON field extraction outside a shared decoder
+- [ ] Constants and config defaults have exactly one owner
+- [ ] Similar patterns follow the same structure
+- [ ] Enum dispatch lives in one `match`, and the match has no unnecessary `_` arm
+- [ ] Any new dependency edge is allowed by `../backend/directory-structure.md`
+- [ ] Any new abstraction has two real consumers, not one plus optimism
 
 ---
 
-## Gotcha: Python if/elif/else Exhaustive Check
-
-**Problem**: Python's if/elif/else chains have no compile-time exhaustive check. When you add a new value to a `Literal` type (e.g., `Platform`), existing if/elif/else chains silently fall through to `else` with wrong defaults.
-
-**Symptom**: New platform works partially — some methods return Claude defaults instead of platform-specific values. No error is raised.
-
-**Example** (`cli_adapter.py`):
-```python
-# BAD: "gemini" falls through to else, returns "claude"
-@property
-def cli_name(self) -> str:
-    if self.platform == "opencode":
-        return "opencode"
-    else:
-        return "claude"  # gemini silently gets "claude"!
-
-# GOOD: explicit branch for every platform
-@property
-def cli_name(self) -> str:
-    if self.platform == "opencode":
-        return "opencode"
-    elif self.platform == "gemini":
-        return "gemini"
-    else:
-        return "claude"
-```
-
-**Prevention**: When adding a new value to a Python `Literal` type, search for ALL if/elif/else chains that switch on that type and add explicit branches. Don't rely on `else` being correct for new values.
-
----
-
-## Gotcha: Asymmetric Mechanisms Producing Same Output
-
-**Problem**: When two different mechanisms must produce the same file set (e.g., recursive directory copy for init vs. manual `files.set()` for update), structural changes (renaming, moving, adding subdirectories) only propagate through the automatic mechanism. The manual one silently drifts.
-
-**Symptom**: Init works perfectly, but update creates files at wrong paths or misses files entirely.
-
-**Prevention**:
-- **Best**: Eliminate the asymmetry — have the manual path call the automatic one (e.g., `collectTemplateFiles()` calls `getAllScripts()` instead of maintaining its own list)
-- **If asymmetry is unavoidable**: Add a regression test that compares outputs from both mechanisms
-- When migrating directory structures, search for ALL code paths that reference the old structure
-
-**Real example**: `trellis update` had a manual `files.set()` list for 11 scripts that `getAllScripts()` already tracked. Fix: replaced the manual list with a `for..of getAllScripts()` loop. See `update.ts` refactor in v0.4.0-beta.3.
-
----
-
-## Template File Registration (Trellis-specific)
-
-When adding new files to `src/templates/trellis/scripts/`:
-
-**Single registration point**: `src/templates/trellis/index.ts`
-
-1. Add `export const xxxScript = readTemplate("scripts/path/file.py");`
-2. Add to `getAllScripts()` Map
-
-That's it. `commands/update.ts` uses `getAllScripts()` directly — no manual sync needed.
-
-**Why this matters**: Without registration in `getAllScripts()`, `trellis update` won't sync the file to user projects. Bug fixes and features won't propagate.
-
-**History**: Before v0.4.0-beta.3, `update.ts` had its own hand-maintained file list that frequently fell out of sync with `getAllScripts()`. This caused 11 Python files to be silently skipped during `trellis update`. The fix was to eliminate the duplicate list and use `getAllScripts()` as the single source of truth.
-
-### Quick Checklist for New Scripts
-
-```bash
-# After adding a new .py file, verify it's in getAllScripts():
-grep -l "newFileName" src/templates/trellis/index.ts  # Should match
-```
-
-### Template Sync Convention
-
-`.trellis/scripts/` (dogfooded) and `packages/cli/src/templates/trellis/scripts/` (template) must stay identical. After editing `.trellis/scripts/`, always sync:
-
-```bash
-rsync -av --delete --exclude='__pycache__' .trellis/scripts/ packages/cli/src/templates/trellis/scripts/
-```
-
-**Gotcha**: Running rsync with wrong source/destination paths can create nested garbage directories (e.g., `.trellis/scripts/packages/cli/...`). Always double-check paths before running.
+**Core Principle**: Search before you write; put the shared thing where the concept lives, not
+where it is convenient.
