@@ -1,4 +1,4 @@
-{"file": ".trellis/spec/backend/index.md", "reason": "未来实施前加载后端规范入口；当前规范尚待项目化，不能据此假定 Rust 约定。"}
+{"file": ".trellis/spec/backend/index.md", "reason": "后端规范入口：先读 Pre-Development Checklist、依赖方向硬规则与 Rust 速查表，再按 Guidelines Index 加载对应规范文件。"}
 {"file": ".trellis/tasks/11-03-unified-gateway-analysis/research/protocol-runtime-summary.md", "reason": "未来实施前加载精简协议约束；完整证据和 PoC 清单按摘要链接继续读取。"}
 {"file": ".trellis/tasks/11-03-unified-gateway-analysis/research/http-ai-implementation-review.md", "reason": "未来实施时保留大 body、SSE、重试、连接池和协议插件的工程正确性约束。"}
 {"file": ".trellis/tasks/11-03-unified-gateway-analysis/research/config-source-options.md", "reason": "未来实现 etcd 配置源时核对 Watch 语义、etcd-client API、大小限制和测试清单。"}

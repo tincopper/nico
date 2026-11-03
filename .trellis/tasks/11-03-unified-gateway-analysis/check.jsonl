@@ -1,4 +1,4 @@
-{"file": ".trellis/spec/backend/index.md", "reason": "未来质量检查时加载后端规范入口并核对其实际项目化状态。"}
+{"file": ".trellis/spec/backend/index.md", "reason": "质量检查入口：按 Quality Check 命令与 Code Review Checklist 逐项核对，并确认依赖边界检查通过。"}
 {"file": ".trellis/tasks/11-03-unified-gateway-analysis/research/protocol-runtime-summary.md", "reason": "未来检查时加载精简协议约束，并按链接读取完整测试矩阵。"}
 {"file": ".trellis/tasks/11-03-unified-gateway-analysis/research/http-ai-implementation-review.md", "reason": "未来检查时复核 HTTP/AI 工程约束没有被通用插件抽象破坏。"}
 {"file": ".trellis/tasks/11-03-unified-gateway-analysis/research/config-source-options.md", "reason": "未来检查 etcd 配置源时核对 revision/compaction/fragment/认证/LKG 和依赖冲突。"}
