@@ -19,3 +19,10 @@ If you're using Codex or another agent-capable tool, additional project-scoped h
 Managed by Trellis. Edits outside this block are preserved; edits inside may be overwritten by a future `trellis update`.
 
 <!-- TRELLIS:END -->
+
+## Documentation Rules
+
+- Design and planning documents must describe only the current final design. Do not add sections such as "corrections to the previous version", "changes from the last draft", or other comparisons against superseded designs.
+- A design document must be self-contained. Readers must not need earlier conversations, drafts, or prior task context to understand it.
+- Explain trade-offs as positive design principles, constraints, or alternatives. Put historical evolution, rejected options, and review history in `research/` or task records, not in the final design document.
+- When revising a design, rewrite the affected section in place instead of appending a correction log.
