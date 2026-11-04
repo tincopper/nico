@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "质量检查入口：Quality Check 命令、依赖边界检查、Code Review Checklist。"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Review Checklist 与 Testing Requirements：检查测试是否断言错误路径、是否引入未论证抽象、基线是否全绿。"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "检查依赖方向、crate 数量、是否误建 gateway-http/gateway-config-etcd、visibility 与文档。"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "检查错误分类是否对应调用方决策、是否有 unwrap/expect、日志是否重复记录同一错误。"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "检查日志字段、级别、是否泄露文档内容或 secret，字段命名是否与 ConfigStatus 一致。"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "检查 revision 比较、LKG 保留、缓存原子写、not-ready/stale 语义有无偏离规范。"}
+{"file": ".trellis/tasks/11-03-unified-gateway-analysis/research/protocol-runtime-summary.md", "reason": "核对 Pingora 结论是否与约束一致、未验证项是否显式标注。"}

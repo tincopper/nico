@@ -1,6 +1,6 @@
 # Rust 原生微内核 + 插件技术架构
 
-> 状态：架构设计稿，仅供评审；当前不创建 Cargo/Rust 产品代码。
+> 状态：架构设计稿。阶段 0（Workspace 骨架与 local 配置源）已交付；HTTP 数据面尚未实现。
 >
 > 当前范围：API 网关 + AI 网关；Pingora 用于 HTTP 数据面；WebRTC 暂缓。
 >
@@ -288,7 +288,7 @@ ArcSwap 原子发布 + 指标/审计
 
 ### 7.1 为什么这里值得有 trait
 
-第一期落地 local + etcd 两个真实实现，Nacos 保留同类扩展位；local 只需文件系统，etcd/Nacos 需要 gRPC、TLS、认证和长连接。这是一个真实的扩展点，不是一个假想的插件框架。
+第一期只落地 local 文件源；etcd 作为后续里程碑的第二个真实实现，Nacos 保留同类扩展位。local 只需文件系统，etcd/Nacos 需要 gRPC、TLS、认证和长连接，因此这是一个真实的扩展点，不是一个假想的插件框架。
 
 但仍保持 Rust 原生：
 
@@ -350,17 +350,17 @@ pub type ConfigWatch =
 
 | 来源 | 阶段 | 实现要点 | 必须验证 |
 |---|---|---|---|
-| local | 第一期 | 读文件 + 大小上限 + digest；可选 `notify` 或 SIGHUP；处理原子 rename、K8s symlink 切换、半写入 | 平台文件事件差异、重复事件、文件被删除 |
-| etcd | **第一期生产来源** | v3 API；单 key 保存完整文档；watch 从 `mod_revision + 1`；认证/TLS/endpoint failover | compaction、watch 断线、revision 回退、客户端版本行为 |
+| local | **第一期权威来源** | 读文件 + 大小上限 + digest + 进程内单调 revision；`notify` 目录监听与 SIGHUP；处理原子 rename、K8s symlink 切换、半写入、删除/重建 | 平台文件事件差异、重复事件、文件被删除（阶段 0 已实测覆盖） |
+| etcd | 后续里程碑 | v3 API；单 key 保存完整文档；watch 从 `mod_revision + 1`；认证/TLS/endpoint failover | compaction、fragment、watch 断线、revision 回退、客户端版本行为（阶段 0 报告 §8 列恢复条件） |
 | Nacos | 后续 | namespace/group/dataId；认证与 token 刷新；变更时读取完整内容 | 客户端协议版本差异、多 key 一致性、推送乱序/重复 |
 
-第一期候选客户端为 `etcd-client` 0.21.x（etcdv3/etcd-client）：基于 tonic/prost，支持 etcd v3、Watch 和 Auth；其 Watch 是低层双向流，调用方必须自行处理 `created/canceled/compact_revision/events/fragment`。具体 API、fragment 聚合和 endpoint failover 行为按锁定版本验证；同时必须用 `cargo tree -d` 检查其 tonic/hyper/TLS 依赖是否与 Pingora 冲突。etcd 实现先达到生产可用，Nacos 不阻塞第一期交付。
+`ConfigSource` 契约已由 local 实现验证，etcd 通过同一 trait 接入，不修改 reload 管线。etcd 里程碑的候选客户端为 `etcd-client` 0.21.x（etcdv3/etcd-client）：基于 tonic/prost，支持 etcd v3、Watch 和 Auth；其 Watch 是低层双向流，调用方必须自行处理 `created/canceled/compact_revision/events/fragment`。具体 API、fragment 聚合和 endpoint failover 行为须按锁定版本验证；同时必须用 `cargo tree -d` 检查其 tonic/hyper/TLS 依赖是否与 Pingora 冲突。Nacos 同样保留扩展位，不阻塞当前交付。
 
 ### 7.4 多 key 配置的一致性
 
 强烈推荐 **一个网关集群一份完整文档**，例如 `/gateway/prod/resources.yaml`。这样 etcd/Nacos 的每次变更天然对应一个可编译快照。
 
-第一期 etcd 默认采用单 key 完整文档；多 key 一致性是后续扩展，不作为 MVP 的前置条件。若要提前支持多 key，必须先完成全量重读和完整性门槛，再开放配置。
+etcd 里程碑默认采用单 key 完整文档；多 key 一致性是后续扩展，不作为 MVP 的前置条件。若要提前支持多 key，必须先完成全量重读和完整性门槛，再开放配置。
 
 etcd 单个 value 受服务端 `max-request-bytes` 限制。所核对 etcd release-3.5 源码的默认值为 `1.5 * 1024 * 1024` 字节（约 1.5 MiB，目标版本仍需复核）。`bootstrap.max_bytes` 必须小于该限制，建议第一期不超过 1 MiB；不能为了塞下大配置盲目调大 etcd 限制。优先压缩路由文档，超过预算时再设计受控的多 key 方案。
 
@@ -429,7 +429,7 @@ config_source:
 - 配置中心不可用期间在途 SSE/H2 不受影响。
 - 配置风暴下去抖与 single-flight 生效，无 reload 抖动。
 
-第一期使用固定版本 etcd 容器做集成测试，验证认证、TLS、watch 重连、compaction 和 endpoint failover；不能用 fake 测试替代真实客户端验证。Nacos 集成测试在其后续实现时补充。
+etcd 里程碑使用固定版本 etcd 容器做集成测试，验证认证、TLS、watch 重连、compaction 和 endpoint failover；不能用 fake 测试替代真实客户端验证。Nacos 集成测试在其后续实现时补充。当前 local-first 阶段已用 fake + local 覆盖去抖、single-flight、LKG 与乱序/重复场景。
 
 ## 8. 流式与异步的 Rust 实现取向
 
@@ -450,7 +450,7 @@ Feature 用于**编译期依赖裁剪**，配置用于**运行时行为**：
 - `default`：HTTP + 内置策略 + local 配置源。
 - `ai`：加入 `gateway-ai`。
 - `builtin-plugins`：加入 JWT/API Key/Rate Limit。
-- `config-etcd`：加入 `gateway-config-etcd`，第一期生产部署启用。
+- `config-etcd`：加入 `gateway-config-etcd`，etcd 里程碑部署启用。
 - `config-nacos`：后续里程碑启用，第一期不创建实现 crate。
 - 后续可选：`mqtt`、`quic`、`wasm-plugins`。
 
@@ -504,22 +504,21 @@ Feature 是 additive 的，不能依赖“启用 A 后悄悄改变 B 的非 feat
 
 ## 12. 阶段计划与验收
 
-### 阶段 0：Workspace、配置源与 Pingora PoC
+### 阶段 0：Workspace 与 local 配置源（已完成）
 
-- 建立上述 crate 的依赖边界，确认 local 配置源不依赖 etcd/Nacos。
-- 定义 `ConfigSource`、revision/digest、去抖和 single-flight 发布管线。
-- 用 `FakeConfigSource` 验证乱序、重复、断线、gap、编译失败和 LKG。
-- 验证 local 文件原子替换、SIGHUP/notify 和半写入处理。
-- 验证 Pingora H1/H2、body、SSE、背压、WebSocket/gRPC 限定代理。
-- 用两个手写 Filter 验证 CompiledRoute 和 ArcSwap reload。
+- 已建立 `gateway-core` / `gateway-config` / `gateway-server` 的依赖边界；`gateway-core` 不依赖协议或来源实现。
+- 已定义 `ConfigSource`、`Revision`（含 `Comparable` / `EqualityOnly`）、`ConfigDigest`、去抖与 single-flight 发布管线。
+- 已用 `FakeConfigSource` 与 local 文件源覆盖重复 digest、乱序/回退、慢消费者、编译失败保留 LKG、stale 启动、在途快照不受影响。
+- 已实测 Pingora `0.9.1` 的 H1/H2、body、SSE、背压、取消、连接池、graceful 与 WebSocket/gRPC 边界（证据见任务 `11-03-phase0-tech-verification`）。
+- 尚未实现 HTTP 数据面：`gateway-http` 在阶段 1 建立，必须先确定"依赖 body 的路由"策略。
 
-### 阶段 1：静态组合 MVP（etcd 先行）
+### 阶段 1：静态组合 MVP（local 先行）
 
-- HTTP 路由、JWT/API Key/Rate Limit、upstream、普通 API。
+- HTTP 路由、JWT/API Key/Rate Limit、upstream、普通 API；`gateway-http` 首次落地 Pingora 集成。
 - AI Filter、OpenAI Provider、SSE 透传。
 - 普通与 AI 路由共享 HTTP/Core，但使用不同 CompiledRoute。
-- 接入 **etcd** 作为第一期唯一实时权威来源：认证/TLS、`mod_revision` 续订、compaction 全量重载、endpoint failover、watch 断线和故障降级。
-- 单 key 完整文档优先；多 key 一致性验证推迟到 etcd 稳定后。
+- 配置来源使用 **local 文件**（`ConfigSource` 唯一实现）；etcd 作为后续里程碑接入，不改契约与管线。
+- 阶段 1 必须按 Pingora 实测结论实现：明文 H2 显式 `h2c`、按流式状态机处理 body、显式配置 graceful 宽限期、1xx 不插入响应头、gRPC 路由显式 `ALPN::H2`。
 - Nacos 保持 `ConfigSource` 扩展位，不进入第一期验收。
 
 ### 阶段 2：Provider 与长寿命状态
@@ -553,7 +552,7 @@ Feature 是 additive 的，不能依赖“启用 A 后悄悄改变 B 的非 feat
 
 > **Cargo Workspace + 6 个初始 crate（+2 个可选配置源 crate）+ crate 内模块 + 领域 trait + 启动时显式组装 + CompiledRoute + ArcSwap。**
 
-配置来源使用 `ConfigSource` trait，第一期落地 local + etcd，Nacos 保留扩展位；它只有“加载 + 订阅完整文档”职责。revision 排序、去抖、single-flight、校验、编译和发布仍集中在 `gateway-server` 的一条管线中。
+配置来源使用 `ConfigSource` trait，第一期只落地 local 文件源，etcd 与 Nacos 作为后续里程碑通过同一 trait 接入；它只有“加载 + 订阅完整文档”职责。revision 排序、去抖、single-flight、校验、编译和发布仍集中在 `gateway-server` 的一条管线中。
 
 第三方动态插件、`quick` 的准确含义、第一期 SLA 和 Provider 清单仍是独立后续决策，不影响这套 Rust 原生结构。
 

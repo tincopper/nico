@@ -1,0 +1,10 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "后端规范入口：Pre-Development Checklist、依赖方向硬规则、五条 Quality Check 基线命令。"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "crate/module 归属、依赖方向、命名与 visibility 规则；本任务建 core/config/server 三个 crate 的判据来源。"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "工具链固定、workspace lints、dispatch/snapshot 约定、测试与文档要求、Review Checklist。"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "ErrorCategory 与 ConfigSourceError 分层错误契约、Send+Sync 断言、panic-free 要求。"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "ConfigStatus 字段与 tracing 日志字段命名、指标命名基线（exporter 本阶段不实现）。"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Revision 语义、LKG 缓存原子写与元数据、启动 not-ready/stale 规则、本地文件与配置源职责边界。"}
+{"file": ".trellis/tasks/11-03-unified-gateway-analysis/design.md", "reason": "架构背景：crate 职责、ConfigSource 原始契约草图、ArcSwap 发布管线与阶段划分；local-first 修正以本任务 design.md 为准。"}
+{"file": ".trellis/tasks/11-03-unified-gateway-analysis/research/protocol-runtime-summary.md", "reason": "协议与 HTTP/AI 正确性约束、最小 PoC 集合，Pingora 取证项以它为准。"}
+{"file": ".trellis/tasks/11-03-unified-gateway-analysis/research/http-ai-implementation-review.md", "reason": "Pingora 行为待验证清单（body/SSE/池/graceful）与连接复用、重试边界。"}
+{"file": ".trellis/tasks/11-03-unified-gateway-analysis/research/config-source-options.md", "reason": "etcd 推迟，但契约必须保留可接入性：revision 包含式语义、fragment 聚合、key 删除/认证失败处理作为契约约束来源。"}

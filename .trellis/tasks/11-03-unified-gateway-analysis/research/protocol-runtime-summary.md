@@ -4,8 +4,12 @@
 
 ## 版本证据边界
 
-- 当前无锁定的 Cargo 依赖。Pingora 外部核对快照为官方 `main` 的 `1adcb3815b70d6594379db044b5aa67f9bc1af76`，只用于架构方向。
-- 具体 SPI、回调、TLS、WebSocket/gRPC 模式、body flush、连接池、failover 和 graceful reload 行为，实施前必须按锁定版本验证。
+- 产品 workspace 已锁定依赖（Rust 1.99.0、edition 2024、MSRV 1.85、`tokio 1.54.1`、`serde_norway 0.9.42`、
+  `notify 8.2.1`、`sha2 0.10.9`、`arc-swap 1.9.3`），`Cargo.lock` 已提交。
+- Pingora 已按 `0.9.1` 完成 HTTP 数据面取证（H1/H2、body 钩子、SSE、背压、取消、连接池、graceful、
+  WebSocket/gRPC 边界），结论与源码行号见任务 `11-03-phase0-tech-verification/poc/FINDINGS.md`。
+- 阶段 1 必须遵守的实证约束：明文 H2 需显式 `h2c`；body 为流式块、边界不稳定；过滤器读完 body 不会重放；
+  graceful 宽限期是固定 sleep（默认 300 s）；1xx 会进入响应过滤器；默认不加 `server` 头，上游默认 H1。
 - WebRTC 已由用户确认暂缓，不进入当前架构或实施范围；`quick` 暂按潜在 QUIC 笔误处理，仍待确认。
 
 ## 核心协议边界
@@ -32,7 +36,7 @@
 9. 跨 Provider fallback 必须验证模型能力、工具调用、成本、合规、响应 schema 和幂等，不得把模型当成普通 IP 备份。
 10. usage 区分 Provider 返回值与本地估算；默认不记录 prompt、response、Authorization 或 Provider secret。
 
-## 配置源约束（第一期 local + etcd，Nacos 后续）
+## 配置源约束（第一期 local；etcd/Nacos 为后续里程碑）
 
 1. `ConfigSource` 只负责 `load` + `watch` 完整文档，不解析路由、不直接修改运行快照；server 统一去抖、single-flight、校验、编译和 ArcSwap 发布。
 2. `Revision` 是来源内不透明版本（etcd `mod_revision`、Nacos 内容版本/MD5），绝不跨来源比较；MD5 只能判等不能排序时，adapter 保证单连接顺序，server 用本地 generation 单调递增。
@@ -43,10 +47,10 @@
 7. 启动无快照默认 not ready；仅显式允许时可用 LKG 缓存启动并标记 stale。运行期源不可用时继续用 LKG 并告警。
 8. 配置中心是特权输入：TLS/认证/RBAC、大小/深度/数量/编译时间上限、未知字段拒绝、禁止任意文件/命令路径、secret 仅存引用。
 9. 跨实例只保证最终一致，不承诺集群原子切换；路由变更先加后删，观测暴露 revision/digest/degraded。
-10. 第一期只交付 local + etcd；Nacos 保留扩展位，不进入 MVP 验收。local 需处理原子 rename、K8s symlink 切换、半写入和文件删除；etcd 客户端 API 与版本语义必须在锁定版本后验证。
-11. etcd 的 `start_revision` 是包含式：`load` 得到 revision R 后从 `R + 1` watch；compaction 或 watcher 跟不上进度时响应带 `compact_revision`，必须全量重载，不能重试旧 revision。默认单 key 完整文档。
-12. etcd release-3.5 源码默认 `max-request-bytes = 1.5 * 1024 * 1024`（目标版本复核）；`max_bytes` 建议不超过 1 MiB，必须小于该限制。大 revision 可能 fragment，adapter 需聚合或显式全量重载；key 删除/认证失败视为不可用而非空配置。
-13. 候选客户端 `etcd-client` 0.21.x 基于 tonic/prost，Watch 是低层双向流，需自行处理 created/canceled/compact/events/fragment；必须用 `cargo tree -d` 检查与 Pingora 的 tonic/hyper/TLS 依赖冲突。
+10. 第一期只交付 local 文件源，并已实现以下行为：大小上限、非法 UTF-8、原子 rename、K8s symlink 切换、半写入、删除后保留 LKG、SIGHUP；etcd/Nacos 保留扩展位，不进入当前验收。
+11. etcd 里程碑（deferred）：`start_revision` 是包含式，`load` 得到 R 后从 `R + 1` watch；compaction 或 watcher 落后时响应带 `compact_revision`，必须全量重载；默认单 key 完整文档。
+12. etcd 里程碑（deferred）：release-3.5 默认 `max-request-bytes = 1.5 * 1024 * 1024`；`max_bytes` 不超过 1 MiB。大 revision 可能 fragment，adapter 需聚合或显式全量重载；key 删除/认证失败视为不可用而非空配置。
+13. etcd 里程碑（deferred）：候选客户端 `etcd-client` 0.21.x 基于 tonic/prost，Watch 是低层双向流，需自行处理 created/canceled/compact/events/fragment；必须用 `cargo tree -d` 检查与 Pingora 的 tonic/hyper/TLS 依赖冲突。恢复条件清单见阶段 0 报告 §8。
 
 ## 最小 PoC 集合
 

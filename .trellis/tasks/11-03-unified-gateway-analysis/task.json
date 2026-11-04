@@ -18,7 +18,9 @@
   "commit": null,
   "pr_url": null,
   "subtasks": [],
-  "children": [],
+  "children": [
+    "11-03-phase0-tech-verification"
+  ],
   "parent": null,
   "relatedFiles": [],
   "notes": "",
