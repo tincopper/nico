@@ -7,7 +7,7 @@
 - 产品 workspace 已锁定依赖（Rust 1.99.0、edition 2024、MSRV 1.85、`tokio 1.54.1`、`serde_norway 0.9.42`、
   `notify 8.2.1`、`sha2 0.10.9`、`arc-swap 1.9.3`），`Cargo.lock` 已提交。
 - Pingora 已按 `0.9.1` 完成 HTTP 数据面取证（H1/H2、body 钩子、SSE、背压、取消、连接池、graceful、
-  WebSocket/gRPC 边界），结论与源码行号见任务 `11-03-phase0-tech-verification/poc/FINDINGS.md`。
+  WebSocket/gRPC 边界），结论与源码行号见任务 `archive/2026-11/11-03-phase0-tech-verification/poc/FINDINGS.md`。
 - 阶段 1 必须遵守的实证约束：明文 H2 需显式 `h2c`；body 为流式块、边界不稳定；过滤器读完 body 不会重放；
   graceful 宽限期是固定 sleep（默认 300 s）；1xx 会进入响应过滤器；默认不加 `server` 头，上游默认 H1。
 - WebRTC 已由用户确认暂缓，不进入当前架构或实施范围；`quick` 暂按潜在 QUIC 笔误处理，仍待确认。

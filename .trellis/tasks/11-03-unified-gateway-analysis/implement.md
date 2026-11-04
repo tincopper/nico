@@ -1,15 +1,15 @@
 # 后续 Rust 实施计划
 
 > 阶段 0（Workspace 骨架、`ConfigSource` 契约、local 配置源、发布管线、Pingora 取证）已由子任务
-> `11-03-phase0-tech-verification` 交付，证据见其 `research/phase0-capability-report.md`。
+> `archive/2026-11/11-03-phase0-tech-verification` 交付，证据见其 `research/phase0-capability-report.md`。
 > 本文件描述阶段 1 及以后的工作顺序。etcd 不再是第一期前置条件。
 
 ## 1. 前置决策门
 
 - [ ] 确认 `quick` 是否指 QUIC，以及目标是 HTTP/3、QUIC proxy 还是 WebTransport；未确认前不进入该阶段。
 - [ ] 确认第一期 AI provider、模型兼容范围、最大请求体、SLA 和部署环境。
-- [ ] 确认阶段 1 的「依赖 body 的路由」策略：不依赖 body（vhost/path/header），或受控缓冲 + 单次重放。
-      Pingora 过滤器读完 body 不会重放（阶段 0 实测），这决定 AI 路由能否按 `model` 选 provider。
+- [x] 「依赖 body 的路由」策略已定：阶段 1 **不依赖 body**（vhost / path / 路由级 `provider` 字段）。
+      "有界缓冲 + 单次重放"作为独立设计项在阶段 1 之后评审，不进入阶段 1 范围。
 - [x] 配置源策略：第一期权威来源为 local 文件；etcd 推迟为后续里程碑（恢复条件见 §5）。
 - [x] LKG 缓存策略：成功发布后始终写入；仅在 `allow_bootstrap_cache: true` 且启动 `load` 失败时读取，并标记 `stale`。
 - [x] 锁定版本：Rust 1.99.0、edition 2024、MSRV 1.85、`tokio 1.54.1`、`serde_norway 0.9.42`、
@@ -25,16 +25,16 @@
       gRPC 路由显式 `ALPN::H2`；不要开启响应压缩。
 - [ ] `gateway-plugins`：JWT / API Key / Rate Limit，注册在 `gateway-server`。
 - [ ] `gateway-ai`：AI Filter、OpenAI Provider 模块、有界 body 转发、SSE 透传。
-- [ ] 路由 schema 扩展：在 `Document` 中加入 `routes` / `upstreams` / `providers`，并落地
+- [ ] 路由 schema 扩展：在 `Document` 中加入 `routes` / `upstreams` / `providers`（路由级 `provider` 字段用于选上游），并落地
       解析 → 引用校验 → 语义校验 → 构造四段校验；同批加入文档嵌套深度与节点数上限（当前只有 `max_bytes`）。
 - [ ] 重试与 fallback：只允许"响应未提交且请求可重放"的受限重试；SSE 首字节后不得透明换源。
-- [ ] 观测：接入 metrics exporter（`config_*` 指标基线已由 `ConfigStatus` 预留），补 `gateway-http` 指标。
+- [ ] 观测：阶段 1 以 `ConfigStatus` + `tracing` 字段暴露观测点；metrics exporter 作为阶段 1 之后的独立任务，不在本阶段引入依赖。
 - [ ] 长连接与 drain：用真实 SSE/H2 在途请求验证宽限期配置与旧 generation 回收。
 
 **评审门**：新增 upstream/provider 不改 `gateway-core`；普通 API 路由无 AI 状态；任意 body 分片不丢字节；
-reload 失败不影响旧流量；body 依赖策略有明确结论与测试。
+reload 失败不影响旧流量；请求路径不因读取 body 而阻塞上游（阶段 0 实证的挂起问题不得复现）。
 
-**回滚点**：若 body 依赖策略需要引入缓冲/重放，先作为独立设计项评审，不在路由实现里临时打补丁。
+**回滚点**：一旦发现路由需要读取 body 才能决定上游，停止实现并回到设计：该能力属于"有界缓冲 + 单次重放"设计项，不在路由实现里临时打补丁。
 
 ## 3. 阶段 2：Provider 与长寿命状态
 

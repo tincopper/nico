@@ -1,0 +1,31 @@
+{
+  "id": "phase1-http-ai-mvp",
+  "name": "phase1-http-ai-mvp",
+  "title": "统一网关阶段 1：HTTP + AI 透传 MVP",
+  "description": "在阶段 0 骨架上实现 HTTP + AI 透传 MVP：声明式路由与 upstream 模型、Pingora 数据面、内置鉴权与限流、OpenAI 兼容 provider 透传与 SSE；配置来源仍为 local 文件；路由不依赖请求 body。",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "tincopper",
+  "assignee": "tincopper",
+  "createdAt": "2026-11-04",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "11-04-route-schema",
+    "11-04-http-data-plane",
+    "11-04-gateway-plugins",
+    "11-04-gateway-ai-passthrough"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}

@@ -20,7 +20,7 @@ that enforces what review would otherwise have to.
 > `gateway-plugins` do not exist yet. These files are the binding conventions for new code.
 > Architecture rationale is in `.trellis/tasks/11-03-unified-gateway-analysis/design.md`;
 > the empirically verified Pingora behaviour that constrains `gateway-http` is in
-> `.trellis/tasks/11-03-phase0-tech-verification/research/phase0-capability-report.md` §6.
+> `.trellis/tasks/archive/2026-11/11-03-phase0-tech-verification/research/phase0-capability-report.md` §6.
 
 ---
 

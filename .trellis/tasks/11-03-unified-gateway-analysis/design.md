@@ -508,8 +508,8 @@ Feature 是 additive 的，不能依赖“启用 A 后悄悄改变 B 的非 feat
 - 已建立 `gateway-core` / `gateway-config` / `gateway-server` 的依赖边界；`gateway-core` 不依赖协议或来源实现。
 - 已定义 `ConfigSource`、`Revision`（含 `Comparable` / `EqualityOnly`）、`ConfigDigest`、去抖与 single-flight 发布管线。
 - 已用 `FakeConfigSource` 与 local 文件源覆盖重复 digest、乱序/回退、慢消费者、编译失败保留 LKG、stale 启动、在途快照不受影响。
-- 已实测 Pingora `0.9.1` 的 H1/H2、body、SSE、背压、取消、连接池、graceful 与 WebSocket/gRPC 边界（证据见任务 `11-03-phase0-tech-verification`）。
-- 尚未实现 HTTP 数据面：`gateway-http` 在阶段 1 建立，必须先确定"依赖 body 的路由"策略。
+- 已实测 Pingora `0.9.1` 的 H1/H2、body、SSE、背压、取消、连接池、graceful 与 WebSocket/gRPC 边界（证据见已归档任务 `archive/2026-11/11-03-phase0-tech-verification`）。
+- 尚未实现 HTTP 数据面：`gateway-http` 在阶段 1 建立。
 
 ### 阶段 1：静态组合 MVP（local 先行）
 
@@ -517,6 +517,10 @@ Feature 是 additive 的，不能依赖“启用 A 后悄悄改变 B 的非 feat
 - AI Filter、OpenAI Provider、SSE 透传。
 - 普通与 AI 路由共享 HTTP/Core，但使用不同 CompiledRoute。
 - 配置来源使用 **local 文件**（`ConfigSource` 唯一实现）；etcd 作为后续里程碑接入，不改契约与管线。
+- **路由不依赖 body**：provider/upstream 由 vhost、path 与路由级 `provider` 字段决定；不实现"读请求 body 再选上游"。
+  依据：Pingora 过滤器读完 body 不会重放，上游会挂起（阶段 0 实证）。
+- "有界缓冲 + 单次重放"（按 `model` 路由）是独立的后续设计项，不进入阶段 1：它需要先定义重放语义、
+  缓冲上限、压缩 body 与超限拒绝规则，并单独验收。
 - 阶段 1 必须按 Pingora 实测结论实现：明文 H2 显式 `h2c`、按流式状态机处理 body、显式配置 graceful 宽限期、1xx 不插入响应头、gRPC 路由显式 `ALPN::H2`。
 - Nacos 保持 `ConfigSource` 扩展位，不进入第一期验收。
 
