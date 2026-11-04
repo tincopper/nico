@@ -13,6 +13,8 @@
     reason = "test helpers fail loudly when their fixture cannot be built"
 )]
 
+mod support;
+
 use std::{path::Path, time::Duration};
 
 use gateway_config::{LocalConfig, LocalFileSource, WatchMode};
@@ -20,29 +22,7 @@ use gateway_core::{ConfigStatus, ParseLimits, SnapshotHandle};
 use gateway_server::{ReloadError, ReloadLimits, Reloader};
 use tokio_util::sync::CancellationToken;
 
-const DOC_A: &[u8] = b"\
-apiVersion: gateway/v1
-limits:
-  max_request_body_bytes: 1024
-  request_timeout_ms: 1000
-";
-
-const DOC_B: &[u8] = b"\
-apiVersion: gateway/v1
-limits:
-  max_request_body_bytes: 2048
-  request_timeout_ms: 2000
-";
-
-const DOC_C: &[u8] = b"\
-apiVersion: gateway/v1
-limits:
-  max_request_body_bytes: 4096
-  request_timeout_ms: 3000
-";
-
-/// A document that parses as YAML but violates the schema.
-const INVALID_DOC: &[u8] = b"apiVersion: gateway/v1\nlimits: [not, a, mapping]\n";
+use crate::support::{DOC_A, DOC_B, DOC_C, INVALID_DOC};
 
 const DEBOUNCE: Duration = Duration::from_millis(50);
 const MAX_WAIT: Duration = Duration::from_millis(200);

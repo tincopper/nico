@@ -56,6 +56,6 @@ mod stream;
 
 pub use cache::{CacheError, CacheMeta, CacheStore, CachedSnapshot};
 pub use fake::FakeConfigSource;
-pub use gateway_core::config::{ConfigDigest, Revision, RevisionOrdering};
+pub use gateway_core::version::{ConfigDigest, Revision, RevisionOrdering};
 pub use local::{LocalConfig, LocalFileSource, WatchMode};
 pub use source::{ConfigEvent, ConfigSource, ConfigSourceError, ConfigVersion, ConfigWatch};

@@ -41,8 +41,10 @@ routes:
 ```
 
 - 每条路由必须且只能引用 `upstream` 或 `provider` 之一；两者都缺或都给 → 引用校验失败。
-- `provider.kind` 本阶段只接受 `openai`；未知 kind → 引用校验失败（不静默忽略）。
-- 路由字段：`id`、`host`（可选，精确匹配）、`path_prefix`（必填，以 `/` 开头）、`upstream` / `provider`、`timeout_ms`（可选，区间内）、`max_body_bytes`（可选，≤ 文档上限）。
+- `provider.kind` 本阶段只接受 `openai`；未知 kind 在解析阶段被 serde 拒绝
+  （`DocumentError::Yaml`，类别 `Client`），不静默忽略。
+- 路由字段：`id`、`host`（可选，精确匹配）、`path_prefix`（必填，以 `/` 开头）、`upstream` / `provider`、`timeout_ms`（可选，区间内）、`max_body_bytes`（可选，`1..=文档上限`）。
+- `upstreams[].host` 非空、无 scheme/端口/空白，长度 ≤ 253。
 - `upstream.scheme` 只接受 `http` / `https`；`port` 必填；`host` 非空。
 - 文档级结构继续 `#[serde(deny_unknown_fields)]`，不使用 `serde(default)`。
 
@@ -53,27 +55,41 @@ routes:
 3. **语义校验**：`path_prefix` 以 `/` 开头且不含 `..`；`scheme` 合法；`port` 非 0；`timeout_ms` 在 `1..=600_000`；`max_body_bytes` ≤ 文档 `limits.max_request_body_bytes`；同 `(host, path_prefix)` 组合不得重复。
 4. **构造**：全部通过后才构造 `Document`；任何阶段失败都不产生可发布文档。
 
-### R3：文档边界
+### R3：文档边界与 bootstrap 接线
 
-- `ParseLimits` 扩展为：`max_bytes`、`max_routes`、`max_upstreams`、`max_providers`、`max_nodes`（YAML 节点数近似上限）。
+- `ParseLimits` 由 `max_bytes` + `SchemaBounds`（`max_routes`、`max_upstreams`、`max_providers`、
+  `max_nodes`、`max_depth`）组成；`SchemaBounds` 实现 `Default`，默认值是唯一来源。
 - 超限分别报独立错误变体（不是笼统 `TooLarge`）。
 - 深度/节点数上限在本任务实现，替代阶段 0 留下的 "YAML 别名膨胀" 待办。
+- 这些上限可由运维覆盖：`config/bootstrap.yaml` 增加**可选** `schema_bounds` 段，可整段省略，也可只写部分字段；
+  省略的字段取 `SchemaBounds::default()`，未省略的字段覆盖默认值。`gateway-server` 用组装后的
+  `ParseLimits` 启动管线。
+- bootstrap 仍是不可信输入：未知字段、0 值、越界值在启动阶段失败并返回明确退出码；不存在的字段才是默认值，
+  拼错的字段不能被默认吸收。
 
 ### R4：错误与分类
 
-- 新增 `DocumentError` 变体：`ReferenceUnknown { kind, name }`、`DuplicateId { id }`、`RouteTargetMissing { id }`、`RouteTargetAmbiguous { id }`、`TooMany { kind, count, limit }`、`TooDeep { depth, limit }`、`InvalidField { field, reason }`。
+- 新增 `DocumentError` 变体：`ReferenceUnknown { kind, name }`、`DuplicateId { kind, id }`、`RouteTargetMissing { id }`、`RouteTargetAmbiguous { id }`、`TooMany { kind, count, limit }`、`TooDeep { depth, limit }`、`InvalidField { field, reason }`。
 - 每个变体映射 `ErrorCategory`：`ReferenceUnknown` / `DuplicateId` / `RouteTarget*` / `InvalidField` → `Client`；`TooMany` / `TooDeep` → `Limit`。
 
 ## Acceptance Criteria
 
-- [ ] 示例文档（含普通 API 路由与 AI 路由）可解析通过，且被文档测试覆盖。
-- [ ] 未知字段、错误 `apiVersion`、非法 UTF-8、超 `max_bytes` 仍按阶段 0 行为被拒。
-- [ ] 引用校验：未知 upstream/provider、路由缺目标、路由给两个目标、重复 route id、重复 upstream/provider 名各有测试与具体错误断言。
-- [ ] 语义校验：`path_prefix` 不以 `/` 开头、含 `..`、非法 scheme、port 0、timeout 越界、`max_body_bytes` 超过文档上限、重复 `(host, path_prefix)` 各有测试。
-- [ ] 边界：`max_routes` / `max_upstreams` / `max_providers` / `max_nodes` / 深度超限各有测试，且错误类别为 `Limit`。
-- [ ] proptest：任意字节输入 `Document::parse` 不 panic（沿用阶段 0 用例并扩展）。
-- [ ] 现有 127 个测试全部仍通过；`git diff` 中 `gateway-config` / `gateway-server` 无行为改动。
-- [ ] `cargo +nightly fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / `deny` 全绿。
+- [x] 示例文档（含普通 API 路由与 AI 路由）可解析通过，且被文档测试覆盖。
+- [x] 未知字段、错误 `apiVersion`、非法 UTF-8、超 `max_bytes` 仍按阶段 0 行为被拒。
+- [x] 引用校验：未知 upstream/provider、路由缺目标、路由给两个目标、重复 route id、重复 upstream/provider 名各有测试与具体错误断言。
+- [x] 语义校验：`path_prefix` 不以 `/` 开头、含 `..`、非法 scheme、非法 provider kind、port 0、timeout 越界、`max_body_bytes` 超过文档上限、重复 `(host, path_prefix)` 各有测试。
+- [x] 边界：`max_routes` / `max_upstreams` / `max_providers` / `max_nodes` / 深度超限各有测试，且错误类别为 `Limit`。
+- [x] proptest：任意字节输入 `Document::parse` 不 panic（沿用阶段 0 用例并扩展）。
+- [x] bootstrap 接线：省略 `schema_bounds` 时使用 `SchemaBounds::default()`；只写部分字段时其余取默认；
+      全部字段都成功传到 `Document::parse`。
+- [x] bootstrap 校验：未知字段在解析阶段被拒；每个 `schema_bounds` 字段的 `0` 与「超过策略上限」各一例被拒，
+      且错误消息引用的上限与实际生效的上限一致（`BootstrapError::InvalidField`）。
+- [x] 端到端：bootstrap 把 `max_routes` 设为 1、文档含 2 条路由时，管线拒绝该文档并保留 LKG
+      （`degraded`，generation 不变）。
+- [x] 现有 127 个测试全部仍通过；`gateway-config` 无行为改动（仅把 `ConfigDigest` / `Revision` /
+      `RevisionOrdering` 的重导出指向拥有者 `gateway_core::version`），`gateway-server` 只新增
+      `schema_bounds` 接线（`bootstrap.rs` + 构造 `ParseLimits` 处）与测试夹具中的必填段，其余行为不变。
+- [x] `cargo +nightly fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / `deny` 全绿。
 
 ## Out of Scope
 

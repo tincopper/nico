@@ -24,7 +24,7 @@ use std::{
 };
 
 use gateway_config::{CacheStore, ConfigSource, LocalFileSource};
-use gateway_core::{ParseLimits, SnapshotHandle};
+use gateway_core::SnapshotHandle;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
@@ -65,7 +65,7 @@ pub async fn serve(
         handle,
         Some(CacheStore::new(bootstrap.cache_dir().to_path_buf())),
         ReloadLimits::new(bootstrap.debounce(), bootstrap.max_wait()),
-        ParseLimits::new(bootstrap.source_max_bytes()),
+        bootstrap.parse_limits(),
         bootstrap.allow_bootstrap_cache(),
         shutdown,
     );
@@ -271,6 +271,36 @@ mod tests {
         assert_eq!(
             run(args(&["--bootstrap", "does-not-exist.yaml"])),
             ExitCode::from(FAILURE_EXIT_CODE)
+        );
+    }
+
+    #[test]
+    fn an_out_of_range_schema_bound_fails_at_startup() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let path = directory.path().join("bootstrap.yaml");
+        std::fs::write(
+            &path,
+            "\
+config_source:
+  type: local
+  path: ./resources.yaml
+  max_bytes: 4096
+  watch: notify
+debounce_ms: 100
+max_wait_ms: 500
+cache_dir: ./.tmp/cache
+allow_bootstrap_cache: false
+schema_bounds:
+  max_depth: 0
+",
+        )
+        .expect("the bootstrap fixture is written");
+        let path = path.to_str().expect("the fixture path is UTF-8");
+
+        assert_eq!(
+            run(args(&["--bootstrap", path])),
+            ExitCode::from(FAILURE_EXIT_CODE),
+            "a zero bound must stop the process, not fall back to the default"
         );
     }
 

@@ -8,309 +8,24 @@
 //! The watch is driven by [`ChannelSource`] rather than `FakeConfigSource`: a scripted fake enqueues
 //! its whole script at once, and a debounce is *supposed* to collapse that burst into one publish, so
 //! it cannot express "an event, then a quiet window, then another event". `FakeConfigSource` is
-//! still used where its own behaviour is the subject, namely a consumer that falls behind.
+//! still used where its own behaviour is the subject, namely a consumer that falls behind. Both
+//! fixtures live in [`support`].
 
-// The panic-free policy protects request paths. A test helper that cannot build its fixture has
-// nothing useful to return, and clippy only recognises the lint exemption inside `#[test]`
-// functions, not in the helpers they call.
-#![expect(
-    clippy::expect_used,
-    clippy::panic,
-    reason = "test helpers fail loudly when their fixture cannot be built"
-)]
+mod support;
 
-use std::{
-    collections::VecDeque,
-    fmt,
-    path::Path,
-    pin::Pin,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
-    task::{Context, Poll},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
-use async_trait::async_trait;
-use futures_core::Stream;
 use gateway_config::{
-    CacheMeta, CacheStore, ConfigEvent, ConfigSource, ConfigSourceError, ConfigVersion,
-    ConfigWatch, FakeConfigSource,
+    CacheMeta, CacheStore, ConfigEvent, ConfigSource, ConfigVersion, FakeConfigSource,
 };
-use gateway_core::{
-    ConfigDigest, ConfigStatus, ErrorCategory, ParseLimits, Revision, SnapshotHandle,
-};
-use gateway_server::{BootstrapConfig, ReloadError, ReloadLimits, Reloader, serve};
-use tokio::{sync::mpsc, task::JoinHandle};
+use gateway_core::{ConfigDigest, ErrorCategory, Revision};
+use gateway_server::{ReloadError, serve};
 use tokio_util::sync::CancellationToken;
 
-const DOC_A: &[u8] = b"\
-apiVersion: gateway/v1
-limits:
-  max_request_body_bytes: 1024
-  request_timeout_ms: 1000
-";
-
-const DOC_B: &[u8] = b"\
-apiVersion: gateway/v1
-limits:
-  max_request_body_bytes: 2048
-  request_timeout_ms: 2000
-";
-
-const DOC_C: &[u8] = b"\
-apiVersion: gateway/v1
-limits:
-  max_request_body_bytes: 4096
-  request_timeout_ms: 3000
-";
-
-/// A document that parses as YAML but violates the schema, which is what a bad edit looks like.
-const INVALID_DOC: &[u8] = b"apiVersion: gateway/v1\nlimits: [not, a, mapping]\n";
-
-const DEBOUNCE: Duration = Duration::from_millis(200);
-const MAX_WAIT: Duration = Duration::from_millis(1_000);
-
-/// Clock step used by [`Harness::advance_until`]; smaller than any pipeline timer on purpose.
-const STEP: Duration = Duration::from_millis(10);
-
-/// Enough steps to walk far past every timer the pipeline can arm.
-const MAX_STEPS: u32 = 5_000;
-
-/// One item of a configuration watch, mirrored from `gateway_config`.
-type WatchItem = Result<ConfigEvent, ConfigSourceError>;
-
-/// A source the test drives by hand: scripted loads, and a watch that stays open until the test
-/// stops pushing.
-///
-/// The watch never ends on its own, which is what lets a test assert "the pipeline stayed in this
-/// state" instead of racing a disconnect the pipeline would immediately try to recover from.
-#[derive(Debug)]
-struct ChannelSource {
-    name: &'static str,
-    state: Mutex<SourceState>,
-}
-
-#[derive(Debug, Default)]
-struct SourceState {
-    loads: VecDeque<Result<ConfigVersion, ConfigSourceError>>,
-    sender: Option<mpsc::Sender<WatchItem>>,
-}
-
-impl ChannelSource {
-    fn new(name: &'static str) -> Arc<Self> {
-        Arc::new(Self {
-            name,
-            state: Mutex::new(SourceState::default()),
-        })
-    }
-
-    /// Appends one `load` result. Once the queue is empty the source reports `Unavailable`.
-    fn push_load(&self, result: Result<ConfigVersion, ConfigSourceError>) {
-        self.lock().loads.push_back(result);
-    }
-
-    /// Sends one watch event, waiting for the pipeline to be subscribed and to have room.
-    async fn push(&self, item: WatchItem) {
-        let mut attempts = 0u32;
-        let sender = loop {
-            let sender = self.lock().sender.clone();
-            if let Some(sender) = sender {
-                break sender;
-            }
-            attempts += 1;
-            assert!(
-                attempts < 10_000,
-                "the pipeline never subscribed to the watch"
-            );
-            tokio::task::yield_now().await;
-        };
-        sender
-            .send(item)
-            .await
-            .expect("the pipeline still reads the watch");
-    }
-
-    /// Sends one snapshot event built from a comparable revision.
-    async fn push_comparable(&self, seq: u64, bytes: &[u8]) {
-        self.push(Ok(ConfigEvent::Snapshot(ConfigVersion::new(
-            Revision::comparable(seq),
-            bytes.to_vec().into(),
-        ))))
-        .await;
-    }
-
-    /// Sends one snapshot event built from an equality-only revision.
-    async fn push_equality_only(&self, seq: u64, bytes: &[u8]) {
-        self.push(Ok(ConfigEvent::Snapshot(ConfigVersion::new(
-            Revision::equality_only(seq),
-            bytes.to_vec().into(),
-        ))))
-        .await;
-    }
-
-    fn lock(&self) -> MutexGuard<'_, SourceState> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-}
-
-/// Reported when the scripted `load` queue is empty.
-#[derive(Debug)]
-struct ScriptExhausted;
-
-impl fmt::Display for ScriptExhausted {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("no scripted load result remains")
-    }
-}
-
-impl std::error::Error for ScriptExhausted {}
-
-#[async_trait]
-impl ConfigSource for ChannelSource {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    async fn load(&self) -> Result<ConfigVersion, ConfigSourceError> {
-        let next = self.lock().loads.pop_front();
-        next.unwrap_or_else(|| {
-            Err(ConfigSourceError::Unavailable {
-                source_name: self.name,
-                source: Box::new(ScriptExhausted),
-            })
-        })
-    }
-
-    async fn watch(&self, _from: Option<Revision>) -> Result<ConfigWatch, ConfigSourceError> {
-        let (sender, receiver) = mpsc::channel(8);
-        self.lock().sender = Some(sender);
-        Ok(Box::pin(HandDrivenWatch { receiver }))
-    }
-}
-
-/// The receiving half of a hand-driven watch.
-struct HandDrivenWatch {
-    receiver: mpsc::Receiver<WatchItem>,
-}
-
-impl Stream for HandDrivenWatch {
-    type Item = WatchItem;
-
-    fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.get_mut().receiver.poll_recv(context)
-    }
-}
-
-/// A running pipeline plus the handle it publishes into.
-struct Harness {
-    handle: Arc<SnapshotHandle>,
-    shutdown: CancellationToken,
-    task: JoinHandle<Result<(), ReloadError>>,
-}
-
-impl Harness {
-    fn start(source: Arc<dyn ConfigSource>) -> Self {
-        Self::start_with(source, None, false)
-    }
-
-    fn start_with(
-        source: Arc<dyn ConfigSource>,
-        cache: Option<CacheStore>,
-        allow_bootstrap_cache: bool,
-    ) -> Self {
-        let handle = SnapshotHandle::new();
-        let shutdown = CancellationToken::new();
-        let reloader = Reloader::new(
-            source,
-            Arc::clone(&handle),
-            cache,
-            ReloadLimits::new(DEBOUNCE, MAX_WAIT),
-            ParseLimits::new(4096),
-            allow_bootstrap_cache,
-            shutdown.clone(),
-        );
-        let task = tokio::spawn(reloader.run());
-        Self {
-            handle,
-            shutdown,
-            task,
-        }
-    }
-
-    fn status(&self) -> ConfigStatus {
-        self.handle.status()
-    }
-
-    fn generation(&self) -> u64 {
-        self.handle.status().generation
-    }
-
-    fn ready(&self) -> bool {
-        self.handle.status().ready
-    }
-
-    fn body_limit(&self) -> Option<u32> {
-        self.handle
-            .current()
-            .map(|snapshot| snapshot.document().limits().max_request_body_bytes())
-    }
-
-    /// Advances the paused clock in [`STEP`] increments until `condition` holds.
-    ///
-    /// The test task is always ready, so the runtime never auto-advances the clock behind the test's
-    /// back: the pipeline can only make timer-driven progress here.
-    async fn advance_until(&self, condition: impl Fn(&Self) -> bool) -> ConfigStatus {
-        for _ in 0..MAX_STEPS {
-            assert!(
-                !self.task.is_finished(),
-                "the pipeline stopped before the condition was met: {:?}",
-                self.status()
-            );
-            if condition(self) {
-                return self.status();
-            }
-            tokio::time::advance(STEP).await;
-        }
-        panic!(
-            "the condition was not met after {} ms of paused time: {:?}",
-            MAX_STEPS * 10,
-            self.status()
-        );
-    }
-
-    /// Cancels the pipeline and waits for it to stop.
-    async fn stop(self) -> Result<(), ReloadError> {
-        self.shutdown.cancel();
-        match tokio::time::timeout(Duration::from_secs(5), self.task).await {
-            Ok(result) => result.expect("the pipeline task did not panic"),
-            Err(_elapsed) => panic!("the pipeline did not stop within the timeout"),
-        }
-    }
-}
-
-/// Writes a bootstrap file into `directory` and loads it.
-fn bootstrap(directory: &Path, allow_bootstrap_cache: bool) -> BootstrapConfig {
-    let path = directory.join("bootstrap.yaml");
-    let text = format!(
-        "\
-config_source:
-  type: local
-  path: {document}
-  max_bytes: 4096
-  watch: notify
-debounce_ms: {debounce}
-max_wait_ms: {max_wait}
-cache_dir: {cache}
-allow_bootstrap_cache: {allow}
-",
-        document = directory.join("resources.yaml").display(),
-        debounce = DEBOUNCE.as_millis(),
-        max_wait = MAX_WAIT.as_millis(),
-        cache = directory.join("cache").display(),
-        allow = allow_bootstrap_cache,
-    );
-    std::fs::write(&path, text).expect("the bootstrap fixture is written");
-    BootstrapConfig::load(&path).expect("the bootstrap fixture is valid")
-}
+use crate::support::{
+    BootstrapFixture, ChannelSource, DEBOUNCE, DOC_A, DOC_B, DOC_C, Harness, INVALID_DOC, MAX_WAIT,
+    STEP, bootstrap,
+};
 
 #[tokio::test(flavor = "current_thread")]
 async fn publishes_a_new_generation_for_a_new_document() {
@@ -540,7 +255,7 @@ async fn reloads_the_whole_document_when_the_consumer_lags() {
 #[tokio::test(flavor = "current_thread")]
 async fn is_not_ready_when_the_source_fails_and_no_cache_is_allowed() {
     let directory = tempfile::TempDir::new().expect("temporary directory");
-    let bootstrap = bootstrap(directory.path(), false);
+    let bootstrap = bootstrap(directory.path(), BootstrapFixture::default());
     let source: Arc<dyn ConfigSource> = ChannelSource::new("channel");
 
     let error = serve(bootstrap, source, CancellationToken::new())
@@ -684,7 +399,7 @@ async fn an_in_flight_reader_keeps_the_snapshot_it_loaded() {
     harness.advance_until(Harness::ready).await;
 
     let in_flight = harness
-        .handle
+        .handle()
         .current()
         .expect("a snapshot is published before the reload");
 
@@ -704,7 +419,7 @@ async fn an_in_flight_reader_keeps_the_snapshot_it_loaded() {
 async fn stops_within_the_timeout_when_shutdown_is_cancelled() {
     // No paused clock: this test is about real cancellation latency.
     let directory = tempfile::TempDir::new().expect("temporary directory");
-    let bootstrap = bootstrap(directory.path(), false);
+    let bootstrap = bootstrap(directory.path(), BootstrapFixture::default());
     let source = ChannelSource::new("channel");
     source.push_load(Ok(ConfigVersion::new(
         Revision::comparable(1),
@@ -719,7 +434,7 @@ async fn stops_within_the_timeout_when_shutdown_is_cancelled() {
     ));
     // Wait for the watch to be live, so shutdown has something to interrupt.
     for _ in 0..1_000 {
-        if source.lock().sender.is_some() {
+        if source.is_watching() {
             break;
         }
         tokio::task::yield_now().await;

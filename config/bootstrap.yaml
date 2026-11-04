@@ -17,3 +17,15 @@ max_wait_ms: 1000
 cache_dir: ./.tmp/cache
 # Only start from the cache when explicitly allowed; the snapshot is then marked stale.
 allow_bootstrap_cache: false
+
+# Parse-time shape bounds for the resources document. The whole section may be omitted, and so may
+# any single field: an omitted bound takes its value from SchemaBounds::default(). A bound that is
+# written must be in 1..=1000000 (max_routes, max_upstreams, max_providers), 1..=10000000 (max_nodes)
+# or 1..=128 (max_depth). A value of 0 or any value above those limits fails at startup instead of
+# falling back to the default, so a typo never looks like an applied bound.
+schema_bounds:
+  max_routes: 1024
+  max_upstreams: 256
+  max_providers: 64
+  max_nodes: 100000
+  max_depth: 32

@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "质量检查入口：基线命令与依赖边界检查。"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Review Checklist：抽象必要性、文件预算、测试断言错误路径。"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "检查错误变体是否对应调用方决策、类别映射、无 unwrap/expect。"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "核对校验阶段顺序、未知字段拒绝、边界强制点是否在解析期。"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "核对拆分是否按业务边界而非技术层，公开 API 路径未变。"}
+{"file": ".trellis/tasks/11-04-s1-2-http-data-plane/prd.md", "reason": "核对 schema 是否满足数据面需求，是否提前固化了匹配语义。"}

@@ -105,6 +105,12 @@ not add the abstraction.
 find crates -name '*.rs' | xargs wc -l | awk '$1 > 500 && $NF != "total" {print}'
 ```
 
+A staged file that is already above the cap may not grow: the pre-commit gate compares the staged
+line count against `HEAD`, so the only passing change to an oversized file is one that shrinks it.
+Encoding content onto fewer lines to keep the count flat (`\n` escapes inside a fixture literal,
+semicolon-chained statements) is the behaviour the cap exists to stop — move the fixture to the file
+that owns it and split, do not compress.
+
 ### Module layout for large logic
 
 Prefer the directory form to keep one boundary per file while giving the reader a single entry
@@ -298,6 +304,13 @@ Rust's ownership system prefers borrow over clone. These are the patterns review
   usually borrowed).
 - `Copy` derives only on types whose fields are all `Copy`. Arrays of `Copy` are stack-allocated —
   a large array can overflow the stack.
+- When a small value type exposes **three or more** same-shaped fields, address them through one
+  field enum instead of a getter and a setter per field: `SchemaBounds::get(Bound::Routes)` /
+  `SchemaBounds::with(Bound::Routes, 1024)`, where `Bound::name()` is also the configuration key the
+  field is written as. The names then live in one table, a new field is one variant plus one match
+  arm, and the compiler points at every consumer that must decide something about it. Two fields, or
+  fields that mean different things, keep named accessors (`Limits::max_request_body_bytes`,
+  `Route::path_prefix`): an enum for them is ceremony, not cohesion.
 
 ### Option / Result
 
@@ -471,6 +484,12 @@ Tests are the first place a reader looks to understand behavior — they are liv
   reachable from an integration test.
 - Doc tests: `///` examples on public items.
 - Shared fixtures: `src/test_support.rs` behind `#[cfg(any(test, feature = "test-support"))]`.
+- Fixtures shared by several integration tests of one crate live in `crates/<crate>/tests/support/mod.rs`.
+  Each `tests/*.rs` is its own crate, so it compiles only the helpers it calls and the rest is
+  unreachable: that module carries `#![expect(dead_code, reason = "…")]`, and the exemption
+  disappears by itself once a helper is deleted. Moving fixtures and harnesses there is how a scenario
+  test file stays inside the 500-line cap — never by dropping assertions or compressing fixtures.
+  A helper that only one test file calls stays in that file.
 
 ### Naming and assertions
 

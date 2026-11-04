@@ -13,9 +13,10 @@ use std::{
 use arc_swap::ArcSwapOption;
 
 use crate::{
-    config::{ConfigDigest, Document, Generation, Revision},
+    config::Document,
     error::ErrorCategory,
     status::ConfigStatus,
+    version::{ConfigDigest, Generation, Revision},
 };
 
 /// A fully validated, immutable configuration snapshot.
@@ -184,6 +185,9 @@ apiVersion: gateway/v1
 limits:
   max_request_body_bytes: 1048576
   request_timeout_ms: 30000
+providers: []
+upstreams: []
+routes: []
 ";
 
     fn document() -> Document {

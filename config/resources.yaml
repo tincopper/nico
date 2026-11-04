@@ -1,10 +1,36 @@
 # Gateway resources document served by the local configuration source.
 #
-# This phase defines only the document envelope and global limits; routes, upstreams and providers
-# arrive with the routing schema, so they are rejected as unknown fields today.
+# The envelope and the global limits are fixed. `providers`, `upstreams` and `routes` are required
+# sections: each may be empty, but omitting one is a schema error rather than an implicit empty
+# list, so a truncated document never looks like a working configuration.
 apiVersion: gateway/v1
 limits:
   # 1..=8388608 bytes; the default bootstrap document stays within 1 MiB.
   max_request_body_bytes: 1048576
   # 1..=600000 milliseconds.
   request_timeout_ms: 30000
+
+# AI providers. Credentials are referenced, never written here: `env:VAR` or `file:/path`.
+providers:
+  - name: openai-primary
+    kind: openai
+    base_url: https://api.openai.com
+    credential_ref: env:OPENAI_API_KEY
+
+# Plain HTTP upstreams. The scheme is `http` or `https`; the port is required.
+upstreams:
+  - name: api-backend
+    scheme: http
+    host: 127.0.0.1
+    port: 8080
+
+# Every route names exactly one target: an `upstream` or a `provider`. `timeout_ms` and
+# `max_body_bytes` are optional per-route overrides, bounded by the `limits` section above.
+routes:
+  - id: api-public-v1
+    path_prefix: /api/
+    upstream: api-backend
+  - id: ai-chat
+    path_prefix: /v1/chat/
+    provider: openai-primary
+    timeout_ms: 120000

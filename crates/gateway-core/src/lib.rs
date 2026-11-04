@@ -2,7 +2,8 @@
 //!
 //! The crate holds only what more than one data plane genuinely needs:
 //!
-//! - [`config`] — the versioned document model, generation, revision and digest types.
+//! - [`config`] — the versioned document model and its parse-time bounds.
+//! - [`version`] — generation, revision and digest identifiers for published snapshots.
 //! - [`snapshot`] — the immutable runtime snapshot and its publication handle.
 //! - [`status`] — the operator-visible state of the configuration pipeline.
 //! - [`error`] — error classification that never names a wire format.
@@ -15,11 +16,13 @@ pub mod config;
 pub mod error;
 pub mod snapshot;
 pub mod status;
+pub mod version;
 
 pub use config::{
-    API_VERSION, ConfigDigest, Document, DocumentError, Generation, GenerationOverflow, Limits,
-    ParseLimits, Revision, RevisionOrdering,
+    API_VERSION, Bound, BoundsError, Document, DocumentError, Limits, ParseLimits, Provider,
+    ProviderKind, Route, RouteTarget, SchemaBounds, Scheme, Upstream,
 };
 pub use error::ErrorCategory;
 pub use snapshot::{RuntimeSnapshot, SnapshotHandle};
 pub use status::ConfigStatus;
+pub use version::{ConfigDigest, Generation, GenerationOverflow, Revision, RevisionOrdering};

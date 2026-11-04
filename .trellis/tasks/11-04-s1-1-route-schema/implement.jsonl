@@ -1,0 +1,8 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "实施前置清单与五条基线门禁；核对依赖方向与提交前质量命令。"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "模块命名、foo.rs+foo/ 拆分规则、300-500 行预算与依赖方向；本次拆分必须按此执行。"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "第一性原理设计、高内聚低耦合、测试与文档要求、Review Checklist。"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "DocumentError 变体设计、category() 映射、Send+Sync 断言与错误测试要求。"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "schema 校验四段顺序、deny_unknown_fields、边界（大小/深度/数量）与 secret 仅存引用。"}
+{"file": ".trellis/tasks/11-03-unified-gateway-analysis/design.md", "reason": "架构背景：Document/CompiledRoute 分工、配置来源与热重载约束。"}
+{"file": ".trellis/tasks/11-04-s1-2-http-data-plane/prd.md", "reason": "下游消费者契约：数据面需要哪些路由/上游字段（host、path_prefix、目标、上限）。"}
+{"file": ".trellis/tasks/11-04-s1-4-gateway-ai-passthrough/prd.md", "reason": "provider 字段的下游需求：base_url、credential_ref、model_allowlist、timeout。"}

@@ -5,19 +5,26 @@
 //! its configuration from, or which local directory it writes its cache to.
 //!
 //! The file selects one authoritative source, bounds how long a debounce may postpone a publish, and
-//! states whether a cached document may be served before the source has ever answered. It contains
-//! no routes: routing is runtime configuration, and it arrives through the source.
+//! states whether a cached document may be served before the source has ever answered. It also
+//! carries the optional parse-time shape bounds, so an operator can tighten or widen them without a
+//! rebuild — but only from this local file, never from the configuration source whose size those
+//! bounds are meant to contain.
+//!
+//! It contains no routes: routing is runtime configuration, and it arrives through the source.
 //!
 //! [`BootstrapConfig`] can only be built by [`BootstrapConfig::load`], so every instance is already
-//! validated: the source type is known, the watch mode is parsed, and the timing bounds are sane.
+//! validated: the source type is known, the watch mode is parsed, and the timing and shape bounds are
+//! sane.
 
 use std::{
+    borrow::Cow,
     fs, io,
     path::{Path, PathBuf},
     time::Duration,
 };
 
 use gateway_config::{LocalConfig, WatchMode};
+use gateway_core::{Bound, ParseLimits, SchemaBounds};
 use serde::Deserialize;
 
 /// The only accepted `config_source.type`.
@@ -28,6 +35,15 @@ const MAX_DEBOUNCE_MS: u64 = 10_000;
 
 /// Largest accepted `max_wait_ms`.
 const MAX_MAX_WAIT_MS: u64 = 60_000;
+
+/// Largest accepted `schema_bounds.max_routes`, `max_upstreams` and `max_providers`.
+const MAX_COLLECTION_BOUND: usize = 1_000_000;
+
+/// Largest accepted `schema_bounds.max_nodes`.
+const MAX_NODES_BOUND: usize = 10_000_000;
+
+/// Largest accepted `schema_bounds.max_depth`.
+const MAX_DEPTH_BOUND: usize = 128;
 
 /// A validated bootstrap configuration.
 ///
@@ -42,6 +58,7 @@ pub struct BootstrapConfig {
     max_wait_ms: u64,
     cache_dir: PathBuf,
     allow_bootstrap_cache: bool,
+    schema_bounds: SchemaBounds,
 }
 
 impl BootstrapConfig {
@@ -103,6 +120,16 @@ impl BootstrapConfig {
         self.allow_bootstrap_cache
     }
 
+    /// Builds the parse limits the pipeline applies to every document.
+    ///
+    /// The byte bound is `config_source.max_bytes`; the shape bounds are the `schema_bounds` section
+    /// with every omitted field filled from [`SchemaBounds::default`]. This is the pipeline's only
+    /// source of parse limits, so the file and the built-in defaults cannot diverge.
+    #[must_use]
+    pub fn parse_limits(&self) -> ParseLimits {
+        ParseLimits::new(self.source_max_bytes).with_schema(self.schema_bounds)
+    }
+
     /// Returns the debounce window as a duration.
     #[must_use]
     pub const fn debounce(&self) -> Duration {
@@ -152,12 +179,15 @@ pub enum BootstrapError {
         found: String,
     },
     /// A field is syntactically valid but outside the range this build accepts.
+    ///
+    /// Both parts borrow for a fixed rule and own only when they quote a limit, so a message can
+    /// never drift from the constant the check applied.
     #[error("bootstrap field `{field}` is invalid: {reason}")]
     InvalidField {
         /// Dotted field path, for example `config_source.watch`.
-        field: &'static str,
+        field: Cow<'static, str>,
         /// Why the value was rejected. Never contains credentials.
-        reason: &'static str,
+        reason: Cow<'static, str>,
     },
 }
 
@@ -175,6 +205,7 @@ const _: fn() = || {
 #[serde(deny_unknown_fields)]
 struct RawBootstrap {
     config_source: RawSource,
+    schema_bounds: Option<RawSchemaBounds>,
     debounce_ms: u64,
     max_wait_ms: u64,
     cache_dir: PathBuf,
@@ -191,6 +222,67 @@ struct RawSource {
     watch: String,
 }
 
+/// The optional `schema_bounds` section exactly as written.
+///
+/// Every field is optional, so the whole section or any single field can be omitted. A field that is
+/// absent keeps its [`SchemaBounds::default`] value; a field that is *present* must be accepted as
+/// written, so a typo or a `0` fails at startup instead of being absorbed by the default. The
+/// built-in values are never restated here: an omitted field is simply not applied.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSchemaBounds {
+    max_routes: Option<usize>,
+    max_upstreams: Option<usize>,
+    max_providers: Option<usize>,
+    max_nodes: Option<usize>,
+    max_depth: Option<usize>,
+}
+
+impl RawSchemaBounds {
+    /// Applies every written bound over the defaults, rejecting one outside its operator range.
+    fn resolve(&self) -> Result<SchemaBounds, BootstrapError> {
+        let mut bounds = SchemaBounds::default();
+        for (bound, written) in [
+            (Bound::Routes, self.max_routes),
+            (Bound::Upstreams, self.max_upstreams),
+            (Bound::Providers, self.max_providers),
+            (Bound::Nodes, self.max_nodes),
+            (Bound::Depth, self.max_depth),
+        ] {
+            let Some(value) = written else { continue };
+            if value > maximum(bound) {
+                return Err(out_of_range(bound, value));
+            }
+            bounds = bounds
+                .with(bound, value)
+                // The upper bound was checked above, so `with` can only reject a `0` here.
+                .map_err(|_error| out_of_range(bound, value))?;
+        }
+        Ok(bounds)
+    }
+}
+
+/// Returns the largest value an operator may write for `bound`.
+///
+/// This is a bootstrap policy, not a property of [`SchemaBounds`]: the parser accepts any non-zero
+/// bound, while a hand-written file is bounded so a typo cannot ask for a million routes. The match
+/// is exhaustive on purpose — a new bound must state its own limit instead of inheriting one.
+const fn maximum(bound: Bound) -> usize {
+    match bound {
+        Bound::Routes | Bound::Upstreams | Bound::Providers => MAX_COLLECTION_BOUND,
+        Bound::Nodes => MAX_NODES_BOUND,
+        Bound::Depth => MAX_DEPTH_BOUND,
+    }
+}
+
+/// Builds the error for a bound an operator may not write.
+fn out_of_range(bound: Bound, value: usize) -> BootstrapError {
+    BootstrapError::InvalidField {
+        field: format!("schema_bounds.{}", bound.name()).into(),
+        reason: format!("must be in 1..={} (found {value})", maximum(bound)).into(),
+    }
+}
+
 impl RawBootstrap {
     fn validate(self) -> Result<BootstrapConfig, BootstrapError> {
         if self.config_source.kind != SUPPORTED_SOURCE {
@@ -203,28 +295,41 @@ impl RawBootstrap {
 
         if self.config_source.max_bytes == 0 {
             return Err(BootstrapError::InvalidField {
-                field: "config_source.max_bytes",
-                reason: "must be greater than zero",
+                field: "config_source.max_bytes".into(),
+                reason: "must be greater than zero".into(),
             });
         }
         if self.debounce_ms > MAX_DEBOUNCE_MS {
             return Err(BootstrapError::InvalidField {
-                field: "debounce_ms",
-                reason: "must not exceed 10000",
+                field: "debounce_ms".into(),
+                reason: format!(
+                    "must be in 0..={MAX_DEBOUNCE_MS} (found {})",
+                    self.debounce_ms
+                )
+                .into(),
             });
         }
         if self.max_wait_ms < self.debounce_ms {
             return Err(BootstrapError::InvalidField {
-                field: "max_wait_ms",
-                reason: "must be at least debounce_ms",
+                field: "max_wait_ms".into(),
+                reason: "must be at least debounce_ms".into(),
             });
         }
         if self.max_wait_ms > MAX_MAX_WAIT_MS {
             return Err(BootstrapError::InvalidField {
-                field: "max_wait_ms",
-                reason: "must not exceed 60000",
+                field: "max_wait_ms".into(),
+                reason: format!(
+                    "must be in 0..={MAX_MAX_WAIT_MS} (found {})",
+                    self.max_wait_ms
+                )
+                .into(),
             });
         }
+
+        let schema_bounds = match &self.schema_bounds {
+            Some(raw) => raw.resolve()?,
+            None => SchemaBounds::default(),
+        };
 
         Ok(BootstrapConfig {
             source_path: self.config_source.path,
@@ -234,6 +339,7 @@ impl RawBootstrap {
             max_wait_ms: self.max_wait_ms,
             cache_dir: self.cache_dir,
             allow_bootstrap_cache: self.allow_bootstrap_cache,
+            schema_bounds,
         })
     }
 }
@@ -245,168 +351,11 @@ fn parse_watch_mode(value: &str) -> Result<WatchMode, BootstrapError> {
         "signal" => Ok(WatchMode::Signal),
         "notify+signal" | "signal+notify" => Ok(WatchMode::NotifyAndSignal),
         _ => Err(BootstrapError::InvalidField {
-            field: "config_source.watch",
-            reason: "must be one of `notify`, `signal`, `notify+signal`",
+            field: "config_source.watch".into(),
+            reason: "must be one of `notify`, `signal`, `notify+signal`".into(),
         }),
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn document(path: &str, watch: &str, debounce_ms: u64, max_wait_ms: u64) -> String {
-        format!(
-            "\
-config_source:
-  type: local
-  path: {path}
-  max_bytes: 4096
-  watch: {watch}
-debounce_ms: {debounce_ms}
-max_wait_ms: {max_wait_ms}
-cache_dir: ./.tmp/cache
-allow_bootstrap_cache: false
-"
-        )
-    }
-
-    /// Writes `document` to a temporary file and loads it.
-    fn load_document(document: &str) -> Result<BootstrapConfig, BootstrapError> {
-        let directory = tempfile::TempDir::new().expect("temporary directory");
-        let path = directory.path().join("bootstrap.yaml");
-        std::fs::write(&path, document).expect("fixture write succeeds");
-        BootstrapConfig::load(&path)
-    }
-
-    mod load {
-        use super::*;
-
-        #[test]
-        fn load_accepts_the_shipped_bootstrap_file() {
-            let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/bootstrap.yaml");
-            let bootstrap = BootstrapConfig::load(&path).expect("the shipped bootstrap is valid");
-
-            assert_eq!(bootstrap.watch_mode(), WatchMode::NotifyAndSignal);
-            assert_eq!(bootstrap.debounce_ms(), 200);
-            assert_eq!(bootstrap.max_wait_ms(), 1_000);
-            assert_eq!(bootstrap.source_max_bytes(), 1_048_576);
-            assert!(!bootstrap.allow_bootstrap_cache());
-            assert_eq!(bootstrap.debounce(), Duration::from_millis(200));
-            assert_eq!(bootstrap.max_wait(), Duration::from_millis(1_000));
-        }
-
-        #[test]
-        fn load_reports_a_missing_file_as_read() {
-            let directory = tempfile::TempDir::new().expect("temporary directory");
-            let error = BootstrapConfig::load(directory.path().join("absent.yaml"))
-                .expect_err("the file does not exist");
-            match error {
-                BootstrapError::Read { source } => {
-                    assert_eq!(source.kind(), io::ErrorKind::NotFound);
-                }
-                other => panic!("expected Read, got {other:?}"),
-            }
-        }
-
-        #[test]
-        fn load_rejects_unknown_fields() {
-            let mut text = document("./resources.yaml", "notify", 100, 500);
-            text.push_str("routes: []\n");
-            let error = load_document(&text).expect_err("unknown field");
-            assert!(
-                matches!(error, BootstrapError::Parse { .. }),
-                "expected Parse, got {error:?}"
-            );
-        }
-
-        #[test]
-        fn load_rejects_an_unknown_source_type() {
-            let text = document("./resources.yaml", "notify", 100, 500)
-                .replace("type: local", "type: etcd");
-            match load_document(&text).expect_err("etcd is not implemented yet") {
-                BootstrapError::UnsupportedSource { found } => assert_eq!(found, "etcd"),
-                other => panic!("expected UnsupportedSource, got {other:?}"),
-            }
-        }
-
-        #[test]
-        fn load_rejects_an_unknown_watch_mode() {
-            let text = document("./resources.yaml", "poll", 100, 500);
-            match load_document(&text).expect_err("`poll` is not a trigger source") {
-                BootstrapError::InvalidField { field, .. } => {
-                    assert_eq!(field, "config_source.watch");
-                }
-                other => panic!("expected InvalidField, got {other:?}"),
-            }
-        }
-
-        #[test]
-        fn load_accepts_every_documented_watch_mode() {
-            for (text, expected) in [
-                ("notify", WatchMode::Notify),
-                ("signal", WatchMode::Signal),
-                ("notify+signal", WatchMode::NotifyAndSignal),
-            ] {
-                let bootstrap = load_document(&document("./resources.yaml", text, 100, 500))
-                    .expect("the watch mode is documented");
-                assert_eq!(bootstrap.watch_mode(), expected);
-            }
-        }
-
-        #[test]
-        fn load_rejects_max_wait_below_the_debounce_window() {
-            let text = document("./resources.yaml", "notify", 500, 200);
-            match load_document(&text).expect_err("max_wait must not be shorter than debounce") {
-                BootstrapError::InvalidField { field, .. } => assert_eq!(field, "max_wait_ms"),
-                other => panic!("expected InvalidField, got {other:?}"),
-            }
-        }
-
-        #[test]
-        fn load_rejects_a_debounce_window_above_ten_seconds() {
-            let text = document("./resources.yaml", "notify", 10_001, 20_000);
-            match load_document(&text).expect_err("debounce is bounded") {
-                BootstrapError::InvalidField { field, .. } => assert_eq!(field, "debounce_ms"),
-                other => panic!("expected InvalidField, got {other:?}"),
-            }
-        }
-
-        #[test]
-        fn load_rejects_a_max_wait_above_sixty_seconds() {
-            let text = document("./resources.yaml", "notify", 100, 60_001);
-            match load_document(&text).expect_err("max_wait is bounded") {
-                BootstrapError::InvalidField { field, .. } => assert_eq!(field, "max_wait_ms"),
-                other => panic!("expected InvalidField, got {other:?}"),
-            }
-        }
-
-        #[test]
-        fn load_rejects_a_zero_document_size_bound() {
-            let text = document("./resources.yaml", "notify", 100, 500)
-                .replace("max_bytes: 4096", "max_bytes: 0");
-            match load_document(&text).expect_err("a zero bound accepts no document") {
-                BootstrapError::InvalidField { field, .. } => {
-                    assert_eq!(field, "config_source.max_bytes");
-                }
-                other => panic!("expected InvalidField, got {other:?}"),
-            }
-        }
-    }
-
-    mod local_config {
-        use super::*;
-
-        #[test]
-        fn local_config_carries_the_path_the_bound_and_the_watch_mode() {
-            let bootstrap =
-                load_document(&document("/etc/gateway/resources.yaml", "signal", 50, 90))
-                    .expect("the document is valid");
-            let config = bootstrap.local_config();
-
-            assert_eq!(config.path(), Path::new("/etc/gateway/resources.yaml"));
-            assert_eq!(config.max_bytes(), 4096);
-            assert_eq!(config.watch_mode(), WatchMode::Signal);
-        }
-    }
-}
+mod tests;

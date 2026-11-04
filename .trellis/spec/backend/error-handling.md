@@ -86,6 +86,13 @@ Requirements for every public error enum:
   (1:1 mapping with no extra context).
 - Messages are lowercase, no trailing period, and never contain secrets or full payloads.
 - `PartialEq` when practical, so tests can assert the exact variant instead of a string.
+- A message that quotes a limit is **derived from the constant the check applied**, never written as
+  a literal: the check formats it (`format!("must be at most {MAX_HOST_BYTES} bytes")`) and the
+  variant carries `Cow<'static, str>`. A hand-typed number in an error string is a second source of
+  truth and drifts the moment the constant changes, silently.
+- Keep the split explicit: `&'static str` for what names the failure (`field`, `kind`), `Cow` only
+  where the text is computed. A fixed sentence stays borrowed, so the common case still allocates
+  nothing.
 
 Forbidden in library error types: `Box<dyn std::error::Error>` as the error **type** itself,
 `String` as the only error variant (`MyError(String)`), and `anyhow::Error` in any `pub` signature
