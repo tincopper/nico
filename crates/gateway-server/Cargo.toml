@@ -8,8 +8,13 @@ publish.workspace = true
 description = "Gateway binary: bootstrap, configuration pipeline and (later) data planes"
 
 [dependencies]
+async-trait.workspace = true
 gateway-config.workspace = true
 gateway-core.workspace = true
+gateway-http.workspace = true
+# The binary is the one crate that assembles concrete implementations, so it names Pingora's server
+# directly. The `proxy` feature is already on through `gateway-http`, which owns that integration.
+pingora.workspace = true
 serde.workspace = true
 serde_norway.workspace = true
 thiserror.workspace = true
@@ -19,10 +24,14 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dev-dependencies]
-async-trait.workspace = true
+bytes.workspace = true
 futures-core.workspace = true
+# The HTTP data-plane tests drive a real server over a hand-written client and a hand-written mock
+# upstream on loopback sockets. No HTTP library is added on purpose: the wire bytes are the subject,
+# so a crate that frames them for us would hide the behaviour under test.
+sha2.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "test-util", "time"] }
 
 [lints]
 workspace = true

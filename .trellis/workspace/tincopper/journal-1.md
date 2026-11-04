@@ -104,3 +104,54 @@ kept etcd-compatible and a six-item re-verification checklist recorded for the l
 - Stage 1 planned as parent `11-04-s1-mvp` (titles numbered 1, 1.1-1.4) with four children: `route-schema` → `http-data-plane` → (`gateway-plugins`, `gateway-ai-passthrough`)
 - Decision recorded: stage 1 routes on vhost/path/route-level `provider`, never on the request body; bounded buffering + replay is a separate later design item
 - Still open: `quick` semantics, first-phase provider list/SLA, whether a metrics exporter lands before stage 2
+
+## Session 3: Stage-1 route schema shipped, HTTP data plane planned
+<!-- trellis-session: v=2 fp=s1-1-archived-s1-2-planned -->
+
+**Date**: 2026-11-04
+**Task**: 1.1 路由 schema 扩展与四段校验（完成）→ 1.2 gateway-http 数据面骨架（规划）
+**Branch**: `main`
+
+### Summary
+
+Delivered the stage-1 configuration model, then reviewed it against the backend spec before archiving:
+the review found seven issues (an over-cap test file with `\n` escapes used to dodge the line-budget
+gate, error messages quoting literals instead of the constants that enforce them, five test-only public
+builders, a `config` re-export pointing at the wrong owner, a missing provider-kind test, a
+non-`non_exhaustive` target enum, and a split that never became its own commit). All were fixed before
+the commit; the split stayed in one commit by decision.
+
+Fixed by structure rather than by patching: one `Bound` field enum replaced ten per-field accessors, an
+omitted bootstrap bound became `Option` instead of a second copy of the defaults, error reasons became
+`Cow<'static, str>` so limit numbers are formatted from the constants, and the three
+`gateway-server` integration tests share `tests/support/mod.rs` (pipeline.rs 736 → 451 lines). The
+new conventions were folded back into the backend spec.
+
+Then planned `1.2 http-data-plane` from the `pingora 0.9.1` source rather than from docs: `h2c` is only
+reachable through `ProxyServiceBuilder::server_options`, `RunArgs.shutdown_signal` is injectable (so a
+`CancellationToken` can drive the real graceful path in-process), `background_service` is the seam for
+the reload pipeline, and `ServerConf` has no `Clone` (construct once, then replace the `Arc`).
+
+### Changes
+
+| Hash | Message |
+|------|---------|
+| `4bfb513` | feat(config)!: route schema, four-stage validation and parse-time bounds |
+| (pending) | chore(task): archive route-schema and plan the HTTP data plane |
+
+### Testing
+
+- [OK] Five baseline gates green; 206 tests (net zero: +1 provider-kind case, −1 test made redundant by the `Option` bootstrap defaults)
+- [OK] File budget: touched files all ≤ 460 lines; remaining over-cap files are untouched backlog (`local.rs` 862, `reload.rs` 886, `cache.rs` 554)
+- [OK] Dependency direction unchanged: `gateway-core` tree has no pingora/protocol/config-center crate
+- [OK] `task.py validate` on the 1.2 context manifests: 10 implement + 7 check entries, all paths resolve
+
+### Status
+
+[OK] **1.1 completed and archived** (parent `11-04-s1-mvp` now 1/4). **1.2 planning complete, starting implementation.**
+
+### Next Steps
+
+- 1.2 implement steps 1-6 (crate skeleton → error/route/upstream/context/limits/filter), stopping at review gate A: pure logic unit-tested, no Pingora runtime needed
+- Decisions to revisit: `CompiledRoute` deliberately not built in 1.2 (linear scan over typed routes, evidence-first); `h2c` proven by unit assertion plus a documented `curl --http2-prior-knowledge` run, since an H2 test client would add a dependency the PRD excludes
+- `serve()` stays as the pipeline seam; production composes through `run()` → Pingora, gate B checks the two do not fork their logic

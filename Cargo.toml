@@ -16,6 +16,9 @@ async-trait = "=0.1.92"
 bytes = "=1.12.1"
 futures-core = "=0.3.31"
 notify = "=8.2.1"
+# The HTTP data plane's runtime. Pinned exactly: gateway-http's hook contract is derived from
+# 0.9.1 source (see .trellis/tasks/11-04-s1-2-http-data-plane/design.md); re-verify on upgrade.
+pingora = "=0.9.1"
 proptest = "1"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_norway = "=0.9.42"
@@ -29,6 +32,7 @@ tracing-subscriber = "=0.3.23"
 
 gateway-core = { version = "0.0.0", path = "crates/gateway-core" }
 gateway-config = { version = "0.0.0", path = "crates/gateway-config" }
+gateway-http = { version = "0.0.0", path = "crates/gateway-http" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

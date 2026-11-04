@@ -199,10 +199,10 @@ fn handle_mut(&mut self) -> &mut Handle {
 ```rust
 #[derive(Debug, thiserror::Error)]
 pub enum HttpError {
-    #[error("request cancelled by client or shutdown")]
-    Cancelled,
     #[error("request deadline exceeded after {elapsed_ms} ms")]
     DeadlineExceeded { elapsed_ms: u64 },
+    #[error("the request body was still incomplete when the deadline expired")]
+    RequestTimeout,
     #[error("upstream failed before response was committed: {source}")]
     UpstreamFailed { #[source] source: Box<dyn std::error::Error + Send + Sync> },
     #[error("response already committed; cannot retry or replace")]
@@ -211,6 +211,12 @@ pub enum HttpError {
 ```
 
 `ResponseCommitted` exists to make retry legality a type-level decision rather than a comment.
+Cancellation is **not** a variant: a client disconnect, a shutdown, or a deadline that expires after
+the response was committed produce no response at all, so they are an outcome carried in the request
+context and logged as `http.status = 499` with `error.category = Cancelled` — never a second
+response. A deadline that expires while the caller is still sending a body *is* a variant
+(`RequestTimeout`, `408`), because the data plane knows the request never finished arriving and the
+peer is not at fault.
 
 ### Retry and fallback legality
 
@@ -256,6 +262,7 @@ Mapping happens **once**, at the edge layer:
 | Category | HTTP | Notes |
 |---|---|---|
 | `Client` (bad input) | 400 | Include a stable machine-readable error code, not internal detail |
+| `Client` (incomplete request) | 408 | The caller stopped sending before its budget expired |
 | `Client` (auth) | 401 / 403 | Never echo the presented credential |
 | `Limit` | 429 / 413 | Include `Retry-After` only when a real budget is known |
 | `Upstream` | 502 / 504 | Distinguish "peer unreachable" from "peer timed out" |

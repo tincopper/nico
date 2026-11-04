@@ -25,7 +25,10 @@ use std::{
 
 use gateway_config::{LocalConfig, WatchMode};
 use gateway_core::{Bound, ParseLimits, SchemaBounds};
+use gateway_http::HttpSettings;
 use serde::Deserialize;
+
+mod http;
 
 /// The only accepted `config_source.type`.
 const SUPPORTED_SOURCE: &str = "local";
@@ -59,6 +62,7 @@ pub struct BootstrapConfig {
     cache_dir: PathBuf,
     allow_bootstrap_cache: bool,
     schema_bounds: SchemaBounds,
+    http: HttpSettings,
 }
 
 impl BootstrapConfig {
@@ -118,6 +122,15 @@ impl BootstrapConfig {
     #[must_use]
     pub const fn allow_bootstrap_cache(&self) -> bool {
         self.allow_bootstrap_cache
+    }
+
+    /// Returns the process-level settings of the HTTP data plane.
+    ///
+    /// They are validated here and nowhere else, so a listener or a drain window cannot disagree
+    /// between the binary that assembles the server and the service that runs it.
+    #[must_use]
+    pub const fn http(&self) -> &HttpSettings {
+        &self.http
     }
 
     /// Builds the parse limits the pipeline applies to every document.
@@ -206,6 +219,7 @@ const _: fn() = || {
 struct RawBootstrap {
     config_source: RawSource,
     schema_bounds: Option<RawSchemaBounds>,
+    http: Option<http::RawHttp>,
     debounce_ms: u64,
     max_wait_ms: u64,
     cache_dir: PathBuf,
@@ -331,6 +345,13 @@ impl RawBootstrap {
             None => SchemaBounds::default(),
         };
 
+        // An omitted section and an empty section must behave identically, so both go through
+        // `resolve`: the defaults are applied and validated on the same path.
+        let http = match &self.http {
+            Some(raw) => raw.resolve()?,
+            None => http::RawHttp::default().resolve()?,
+        };
+
         Ok(BootstrapConfig {
             source_path: self.config_source.path,
             source_max_bytes: self.config_source.max_bytes,
@@ -340,6 +361,7 @@ impl RawBootstrap {
             cache_dir: self.cache_dir,
             allow_bootstrap_cache: self.allow_bootstrap_cache,
             schema_bounds,
+            http,
         })
     }
 }

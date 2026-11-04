@@ -1,0 +1,10 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "实施前置清单（含 Pingora 相关项）与五条基线门禁。"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "crate/模块边界、foo.rs+foo/ 拆分、300-500 行预算、依赖方向（gateway-core 不得见 pingora）。"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "第一性原理设计、禁用模式（unwrap/expect/无界通道/字段枚举）、测试与文档要求。"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "HttpError 变体与 ErrorCategory 映射、唯一映射点、ResponseCommitted 语义、无 panic 请求路径。"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "请求日志保留字段（route_id/upstream/config.generation/elapsed_ms）、span 用法、不得记录 body 与凭证。"}
+{"file": ".trellis/tasks/11-04-s1-2-http-data-plane/design.md", "reason": "本任务设计：六条不变量、hook 契约、匹配规则、超时落地、扩展点与错误映射表。"}
+{"file": ".trellis/tasks/11-04-s1-2-http-data-plane/implement.md", "reason": "实施顺序与每步门禁，含评审门 A/B/C 的判据。"}
+{"file": ".trellis/tasks/archive/2026-11/11-03-phase0-tech-verification/research/phase0-capability-report.md", "reason": "Pingora 0.9.1 实证约束（§6）：h2c、body 块化、1xx、取消、连接池作用域、graceful 默认 300 s。"}
+{"file": ".trellis/tasks/11-03-unified-gateway-analysis/design.md", "reason": "crate 职责划分、HttpFilter 归属与 trait object 使用边界、单一运行时取向。"}
+{"file": "config/bootstrap.yaml", "reason": "要扩展的本地配置文件：新增 http 段的位置与注释风格。"}

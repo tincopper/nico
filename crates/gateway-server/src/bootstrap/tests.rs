@@ -279,3 +279,180 @@ mod schema_bounds {
         }
     }
 }
+
+mod http {
+    use std::time::Duration;
+
+    use super::*;
+
+    /// Appends an `http` section to an otherwise complete bootstrap document.
+    fn with_http(section: &str) -> String {
+        format!(
+            "{}http:\n{section}",
+            document("./resources.yaml", "notify", 100, 500)
+        )
+    }
+
+    /// Loads a document whose `http` section holds `section` and returns its settings.
+    fn settings(section: &str) -> gateway_http::HttpSettings {
+        load_document(&with_http(section))
+            .expect("the fixture is a valid bootstrap document")
+            .http()
+            .clone()
+    }
+
+    /// Loads a document whose `http` section holds `section` and expects it to be rejected.
+    fn rejection(section: &str) -> BootstrapError {
+        load_document(&with_http(section))
+            .err()
+            .unwrap_or_else(|| panic!("`{section}` must be rejected"))
+    }
+
+    #[test]
+    fn an_omitted_section_takes_every_default() {
+        let bootstrap = load_document(&document("./resources.yaml", "notify", 100, 500))
+            .expect("the document is valid");
+
+        assert_eq!(
+            bootstrap.http(),
+            &gateway_http::HttpSettings::default(),
+            "an omitted section must be the same value as its defaults"
+        );
+        assert_eq!(bootstrap.http(), &settings(""));
+    }
+
+    #[test]
+    fn the_shipped_section_is_the_documented_default() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/bootstrap.yaml");
+        let bootstrap = BootstrapConfig::load(&path).expect("the shipped bootstrap is valid");
+
+        assert_eq!(
+            bootstrap.http(),
+            &gateway_http::HttpSettings::default(),
+            "the shipped file documents the defaults instead of inventing policy"
+        );
+    }
+
+    #[test]
+    fn every_written_field_reaches_the_settings() {
+        let settings = settings(concat!(
+            "  listen: 127.0.0.1:9000\n",
+            "  h2c: true\n",
+            "  grace_period_ms: 1000\n",
+            "  graceful_shutdown_ms: 60000\n",
+            "  threads: 8\n",
+        ));
+
+        assert_eq!(settings.listen(), "127.0.0.1:9000");
+        assert!(settings.h2c());
+        assert_eq!(settings.grace_period(), Duration::from_secs(1));
+        assert_eq!(settings.graceful_shutdown(), Duration::from_secs(60));
+        assert_eq!(settings.threads(), 8);
+    }
+
+    #[test]
+    fn an_omitted_field_keeps_its_default_within_a_written_section() {
+        let settings = settings("  threads: 2\n");
+
+        assert_eq!(settings.threads(), 2);
+        assert_eq!(settings.listen(), "0.0.0.0:8080");
+        assert_eq!(settings.grace_period(), Duration::from_secs(5));
+        assert_eq!(settings.graceful_shutdown(), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn h2c_is_false_unless_it_is_explicitly_enabled() {
+        assert!(!settings("").h2c());
+        assert!(!settings("  h2c: false\n").h2c());
+        assert!(settings("  h2c: true\n").h2c());
+    }
+
+    #[test]
+    fn an_unparsable_listen_address_is_rejected_at_startup() {
+        let error = rejection("  listen: nowhere\n");
+
+        assert!(
+            matches!(
+                &error,
+                BootstrapError::InvalidField { field, .. } if field == "http.listen"
+            ),
+            "expected an invalid http.listen, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_zero_port_is_rejected_at_startup() {
+        let error = rejection("  listen: 0.0.0.0:0\n");
+
+        assert!(
+            matches!(
+                &error,
+                BootstrapError::InvalidField { field, .. } if field == "http.listen"
+            ),
+            "expected an invalid http.listen, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_zero_grace_period_is_rejected_at_startup() {
+        let error = rejection("  grace_period_ms: 0\n");
+
+        assert!(
+            matches!(
+                &error,
+                BootstrapError::InvalidField { field, .. } if field == "http.grace_period_ms"
+            ),
+            "expected an invalid http.grace_period_ms, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_grace_period_above_the_maximum_is_rejected_at_startup() {
+        assert!(matches!(
+            rejection("  grace_period_ms: 301000\n"),
+            BootstrapError::InvalidField { .. }
+        ));
+    }
+
+    #[test]
+    fn a_zero_shutdown_window_is_rejected_at_startup() {
+        assert!(matches!(
+            rejection("  graceful_shutdown_ms: 0\n"),
+            BootstrapError::InvalidField { .. }
+        ));
+    }
+
+    #[test]
+    fn a_shutdown_window_shorter_than_the_grace_period_is_rejected_at_startup() {
+        let error = rejection(concat!(
+            "  grace_period_ms: 10000\n",
+            "  graceful_shutdown_ms: 5000\n",
+        ));
+
+        assert!(
+            matches!(
+                &error,
+                BootstrapError::InvalidField { field, .. } if field == "http.graceful_shutdown_ms"
+            ),
+            "expected an invalid http.graceful_shutdown_ms, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn too_many_threads_are_rejected_at_startup() {
+        assert!(matches!(
+            rejection("  threads: 257\n"),
+            BootstrapError::InvalidField { .. }
+        ));
+    }
+
+    #[test]
+    fn an_unknown_http_field_is_rejected_rather_than_ignored() {
+        let error = rejection("  tls: true\n");
+
+        assert!(
+            matches!(error, BootstrapError::Parse { .. }),
+            "expected Parse, got {error:?}"
+        );
+    }
+}

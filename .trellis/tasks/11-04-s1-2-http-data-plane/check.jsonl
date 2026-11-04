@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "质量检查入口：五条基线命令、lefthook 门禁、依赖边界检查。"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Review Checklist：抽象必要性、文件预算、测试断言错误路径、日志结构化。"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "核对单一映射点、committed 后不得重写、取消不记 5xx、响应体不含上游细节。"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "核对保留字段拼写、单次日志、不记录 body/凭证/查询串。"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "核对拆分按业务边界、依赖方向未反转、新文件在预算内。"}
+{"file": ".trellis/tasks/11-04-s1-2-http-data-plane/design.md", "reason": "逐条核对六条不变量的落点（不读 body、单一运行时、单次快照、单点映射、不改上游语义、上限显式）。"}
+{"file": ".trellis/tasks/11-04-s1-2-http-data-plane/prd.md", "reason": "逐条核对验收标准（路由、body 完整性、SSE、1xx、取消、graceful、错误表、依赖边界、h2c 取证）。"}

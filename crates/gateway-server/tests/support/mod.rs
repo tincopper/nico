@@ -10,6 +10,10 @@
 //! is a watch the test drives by hand, and [`Harness`] runs one pipeline on a paused clock so
 //! "nothing else happened" is provable rather than a race.
 //!
+//! The end-to-end HTTP scenarios in `tests/http_*.rs` use [`http`] instead: a real Pingora server on
+//! its own thread, a hand-written client and a hand-written mock upstream. It lives in a submodule
+//! because it shares nothing with the paused-clock pipeline fixtures except this module's name.
+//!
 //! Each integration test is its own crate, so it only compiles the subset of this module it calls:
 //! a file that uses the documents but not the harness leaves most of this unreachable, which is what
 //! `dead_code` reports. The exemption is per test crate and disappears as soon as a helper is
@@ -23,6 +27,8 @@
     clippy::panic,
     reason = "a helper that cannot build its fixture has nothing useful to return"
 )]
+
+pub(crate) mod http;
 
 use std::{
     collections::VecDeque,

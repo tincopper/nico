@@ -29,3 +29,24 @@ schema_bounds:
   max_providers: 64
   max_nodes: 100000
   max_depth: 32
+
+# Process-level HTTP settings. They are deliberately not part of the resources document: the
+# listener and the drain windows belong to this process, so a pushed configuration must not be able
+# to move them. The whole section and every field in it may be omitted; an omitted field takes its
+# built-in default, while a field that is written is validated at startup instead of being absorbed
+# by that default. The values written here are the built-in defaults, so this file documents them
+# without changing behaviour.
+http:
+  # The `ip:port` (or `host:port`) the data plane binds. The port may not be zero.
+  listen: 0.0.0.0:8080
+  # Accept cleartext HTTP/2 (h2c) on that listener. Never implied: a proxy in front must know that
+  # it may speak HTTP/2 without TLS.
+  h2c: false
+  # How long in-flight requests may keep running once shutdown begins, and the upper bound on the
+  # final drain. The drain bound may not be shorter than the grace period, or a streaming response
+  # would be cut off before it could finish.
+  grace_period_ms: 5000
+  graceful_shutdown_ms: 30000
+  # Worker threads per service. At least one: the count is handed to Tokio's runtime builder, which
+  # rejects zero, so a written zero fails at startup instead of panicking on the first request.
+  threads: 1

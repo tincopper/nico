@@ -147,6 +147,18 @@ thiserror = "2"
 tracing = "0.1"
 ```
 
+### Dependency policy entries name their reason
+
+`deny.toml` is a gate, so an exception in it is a decision with evidence, not a mute:
+
+- Every `[licenses] allow` and `[advisories] ignore` entry carries a comment naming the crate that
+  needs it and the path that pulls it in (`brotli`/`zstd`/`serde_yaml` arrive as **non-optional**
+  dependencies of `pingora-core`, which is why they cannot be compiled out).
+- An `ignore` says why the advisory does not apply here (`unsafe-libyaml` is reachable only from
+  `ServerConf`'s YAML helpers, which this build never calls).
+- Re-check every entry when the pulling dependency is upgraded; delete the entry instead of
+  widening it.
+
 The YAML crate is **not** in `[workspace.dependencies]` above on purpose: upstream `serde_yaml` is
 archived (no security fixes). The pinned choice is `serde_norway = "=0.9.42"` — a maintained fork
 with `deny_unknown_fields` support, MSRV 1.71. Read `yaml::` in spec examples as "the pinned
@@ -484,6 +496,12 @@ Tests are the first place a reader looks to understand behavior — they are liv
   reachable from an integration test.
 - Doc tests: `///` examples on public items.
 - Shared fixtures: `src/test_support.rs` behind `#[cfg(any(test, feature = "test-support"))]`.
+- **One real server per integration-test binary.** A framework that owns the calling thread and
+  installs a global runtime (`pingora::server::Server::run`) must be started once per test target;
+  a second one in the same process tests the framework's globals, not our code. Scenario files in
+  that target then assert sequentially against that one server, waiting on real events (a log line,
+  a mock's observation, a received chunk) instead of sleeping. A unit test that needs a real server
+  belongs in its own `tests/` target, not next to fast `#[test]` unit tests.
 - Fixtures shared by several integration tests of one crate live in `crates/<crate>/tests/support/mod.rs`.
   Each `tests/*.rs` is its own crate, so it compiles only the helpers it calls and the rest is
   unreachable: that module carries `#![expect(dead_code, reason = "…")]`, and the exemption

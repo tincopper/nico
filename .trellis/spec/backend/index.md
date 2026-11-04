@@ -15,9 +15,9 @@ These specs encode **Rust best practices** applied to that architecture: ownersh
 typed errors over `anyhow`, explicit bounds and deadlines, snapshots over locks, and a toolchain
 that enforces what review would otherwise have to.
 
-> **Status**: the stage-0 skeleton exists — `gateway-core`, `gateway-config`,
-> `gateway-server` — with 127 tests and a green baseline. `gateway-http`, `gateway-ai` and
-> `gateway-plugins` do not exist yet. These files are the binding conventions for new code.
+> **Status**: `gateway-core`, `gateway-config`, `gateway-http` and `gateway-server` exist with a
+> green baseline. `gateway-ai` and `gateway-plugins` do not exist yet. These files are the binding
+> conventions for new code.
 > Architecture rationale is in `.trellis/tasks/11-03-unified-gateway-analysis/design.md`;
 > the empirically verified Pingora behaviour that constrains `gateway-http` is in
 > `.trellis/tasks/archive/2026-11/11-03-phase0-tech-verification/research/phase0-capability-report.md` §6.
@@ -53,6 +53,7 @@ Before writing backend code in a task:
 | [Error Handling](./error-handling.md) | `thiserror` per layer, `ErrorCategory`, panic-free paths, retry legality, HTTP mapping | Filled |
 | [Quality Guidelines](./quality-guidelines.md) | Toolchain, workspace lints, coding idioms, performance, forbidden/required patterns, testing, review checklist | Filled |
 | [Logging Guidelines](./logging-guidelines.md) | `tracing` spans, log levels, reserved fields, metric naming and cardinality | Filled |
+| [Pingora Guidelines](./pingora-guidelines.md) | Verified `0.9.1` hook/serve contracts, `ServerConf` mapping, data-plane error matrix | Filled |
 | [Documentation](./quality-guidelines.md#documentation) | `//!` crate/module docs, `///` with `# Errors`/`# Panics`, `#[non_exhaustive]`, comment prefixes | Filled |
 | [Performance](./quality-guidelines.md#performance-mindset) | Measure-first, `--release`, flamegraph, stack vs heap, `#[inline]` discipline | Filled |
 

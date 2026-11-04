@@ -32,7 +32,8 @@ Rules:
 
 - **Never `info!` on the per-request path** — at gateway volume that is a self-inflicted DoS on the
   logging pipeline. Per-request records are `debug!` at most.
-- An expected client disconnect or cancellation is `debug!`, not `error!`.
+- An expected client disconnect or cancellation is `debug!`, not `error!`. Report it with the
+  log-only `http.status = 499` plus `error.category = Cancelled`; `499` is never sent on the wire.
 - If you cannot say which action an operator takes after reading an `error!` line, it should be
   `warn!`.
 - Do not log the same failure twice (once in a helper, once at the caller). Log at the boundary that
@@ -60,6 +61,9 @@ Rules:
 | `error` | `%` display | The error, via `error = %err` |
 | `error.category` | `?` debug | `gateway_core::ErrorCategory` |
 | `elapsed_ms` / `duration_ms` | u64 | Timings; never log raw `Instant` |
+| `http.method` | string | Request method |
+| `http.status` | u16 | Status written to the caller; `499` for a cancelled request nobody answered, `0` when nothing was written |
+| `body_bytes` | u64 | Request body bytes actually metered through the proxy |
 
 ### Event shape
 

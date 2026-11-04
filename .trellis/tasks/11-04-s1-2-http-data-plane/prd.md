@@ -21,8 +21,11 @@
 ### R2：请求路径
 
 1. 读取 `SnapshotHandle::current()`；无快照或未 ready → `503`（带稳定错误码）。
-2. 按 `path_prefix` 最长匹配（同前缀按 `host` 精确匹配优先），无匹配 → `404`。
-3. 选择上游：`upstream` 用 `scheme/host/port`；`provider` 留给 `gateway-ai` 的 Filter 处理（本任务只需保证路由元数据可用）。
+2. 匹配顺序：**先按 host 分档，再按 `path_prefix` 最长匹配**——`host` 具体的路由优先于 host 无关的
+   路由（虚拟主机先于路径，与 nginx 同序），同档内取最长前缀，长度相同按文档顺序。无匹配 → `404`。
+   理由：host 是运维划定的信任边界，一条 host 专属规则不应被另一条通用规则的长前缀抢先。
+3. 选择上游：`upstream` 用 `scheme/host/port`；`provider` 交给 `gateway-ai` 的 Filter 在 `upstream_peer`
+   之前改写。没有过滤器接手时本 crate 不得猜测地址，返回 `502 provider_unavailable`（稳定 code）。
 4. 上游连接、请求头转发、body 流式透传（不整体缓冲、跨块状态由 Pingora 持有）。
 5. 响应头与响应体透传；不做响应压缩；不注入 `server` 头（除非显式配置）。
 
@@ -38,7 +41,10 @@
 
 - 请求体上限取 `route.max_body_bytes` 或文档 `limits.max_request_body_bytes`（取较小者），超限 `413`。
 - 超时取 `route.timeout_ms` 或文档 `limits.request_timeout_ms`。
-- 错误映射（按 `.trellis/spec/backend/error-handling.md`）：`Client`→400/401/403、`Limit`→413/429、`Upstream`→502/504、`Internal`→500、`Cancelled`→499（仅日志）。
+- 错误映射（按 `.trellis/spec/backend/error-handling.md`）：`Client`→400/401/403/408、`Limit`→413/429、
+  `Upstream`→502/504、`Internal`→500。`Cancelled` 不写响应：日志以 `http.status=499` +
+  `error.category=Cancelled` 表达，499 从不上线。`408` 只用于调用方在预算内没把请求发完（
+  `request_body_filter` 是唯一确知这件事的位置）。
 - 错误响应体使用稳定 `code` 字段，不回显上游细节或凭证。
 
 ### R5：观测
@@ -56,7 +62,9 @@
 - [ ] 1xx：`Expect: 100-continue` 场景下不在 100 响应上插入头（测试断言上游看到的 1xx 无附加头）。
 - [ ] 取消：客户端中途断开后上游连接被关闭，日志归为 `Cancelled`，无 5xx。
 - [ ] graceful：SSE 进行中触发停机，宽限期配置生效；测试断言配置值被读取且行为与配置一致（不依赖 300 s 默认）。
-- [ ] 错误映射表逐项有测试（400/413/429/502/504/500/499 日志）。
+- [ ] 错误映射表逐项有测试：400/408/413/429/499/500/502/503/504 的 status↔code↔category 三元组由单元
+      测试逐项覆盖；端到端覆盖本阶段**有触发点**的子集（404/408/413/502/503/504 与 499 日志），400/429/500
+      在本阶段没有触发路径（鉴权属 1.3、限流属 1.3、内部不变量破坏不应被构造）。
 - [ ] 依赖边界：`cargo tree -p gateway-core` 无 `pingora`；`cargo tree -p gateway-http | grep gateway-ai` 无输出。
 - [ ] 基线五条命令全绿；新增测试使用手写 tokio TCP mock 上游（不引入 axum/hyper 作为测试依赖）。
 

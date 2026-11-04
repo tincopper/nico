@@ -16,8 +16,8 @@ The backend is **one Cargo Workspace** at the repository root. The layout follow
 3. **One binary target** — `gateway-server`. Deployment roles (traffic / AI) are selected by Cargo
    features plus runtime config, not by adding more binaries.
 
-> **Status**: `gateway-core`, `gateway-config` and `gateway-server` exist as built. The remaining
-> crates below are the binding target structure. Architecture rationale lives in
+> **Status**: `gateway-core`, `gateway-config`, `gateway-http` and `gateway-server` exist as built. The
+> remaining crates below are the binding target structure. Architecture rationale lives in
 > `.trellis/tasks/11-03-unified-gateway-analysis/design.md` — do not re-derive it from this file.
 
 ---
@@ -51,12 +51,17 @@ nico/
     │       └── error.rs
     ├── gateway-http/           # Pingora integration + HTTP domain traits
     │   └── src/
-    │       ├── lib.rs
-    │       ├── proxy.rs
-    │       ├── route.rs
-    │       ├── filter.rs
-    │       ├── upstream.rs
-    │       └── stream.rs
+    │       ├── lib.rs          # //! + the public contract (HttpError, HttpFilter, Destination, …)
+    │       ├── context.rs      # HttpContext: snapshot, route, destination, deadline, budgets
+    │       ├── error.rs        # HttpError + the single (status, code) mapping
+    │       ├── filter.rs       # HttpFilter trait + FilterChain (budget-bounded stages)
+    │       ├── limits.rs       # crate-private: body and time budget arithmetic
+    │       ├── proxy.rs        # HttpApp + the unified rejection path
+    │       ├── proxy/          # hooks.rs, failure.rs, forward.rs, record.rs (the Pingora contract)
+    │       ├── route.rs        # match_route(header, routes)
+    │       ├── service.rs      # ServerConf derivation + ProxyServiceBuilder + listener
+    │       ├── settings.rs     # HttpSettings: bootstrap `http` defaults and ranges
+    │       └── upstream.rs     # crate-private: Destination → HttpPeer
     ├── gateway-ai/             # AI domain traits, providers, stream adapters
     │   └── src/
     │       ├── lib.rs
@@ -126,7 +131,8 @@ submodules. Name modules after the capability (`debounce`, `publish`, `cache`), 
 
 | Kind of code | Location |
 |---|---|
-| HTTP/Pingora lifecycle, route matching, `HttpFilter` | `gateway-http` |
+| HTTP/Pingora lifecycle, route matching, `HttpFilter`, upstream TLS policy | `gateway-http` |
+| Signals, runtime ownership, shutdown token, drain wiring | `gateway-server` |
 | AI provider semantics, model mapping, SSE translation | `gateway-ai` |
 | Config source protocol (etcd/Nacos clients) | `gateway-config-*` (own crate, own feature) |
 | Built-in HTTP policy (auth, rate limit) | `gateway-plugins` |
@@ -141,7 +147,7 @@ If you cannot name the second real consumer of an abstraction, it does **not** b
 ```text
 gateway-server
    ├──> gateway-core
-   ├──> gateway-http ──────────> gateway-core + pingora
+   ├──> gateway-http ──────────> gateway-core + pingora + tokio (time/net/rt; never signals)
    ├──> gateway-ai ────────────> gateway-http + gateway-core
    ├──> gateway-config ────────> gateway-core
    ├──> gateway-config-etcd ───> gateway-config     (feature: config-etcd)
@@ -153,7 +159,10 @@ Hard rules:
 
 - `gateway-core` must not depend on `gateway-http`, `gateway-ai`, `gateway-plugins`, `pingora`,
   `hyper`, or any config-center client.
-- `gateway-http` must not import `gateway-ai`. AI plugs in through HTTP extension points.
+- `gateway-http` must not import `gateway-ai`. AI plugs in through HTTP extension points: a filter
+  resolves a provider target and records a `Destination`, and this crate owns only how to reach it.
+- `gateway-http` must not install signal handlers or build a runtime; that is process assembly, and
+  it lives in `gateway-server`.
 - Config-center clients are never in the default dependency tree; they arrive only with their
   feature enabled.
 - Dependencies between sibling data planes are added only after a design update in

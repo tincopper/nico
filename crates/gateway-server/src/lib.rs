@@ -6,13 +6,16 @@
 //!   how far the process may trust its cache.
 //! - [`reload`] — the pipeline that loads, validates, de-bounces and publishes configuration
 //!   snapshots, keeping the last known good one in service when anything fails.
-//! - [`serve`] — wires one source to one publication handle and runs until shutdown.
+//! - [`serve`] — wires one source to one publication handle and runs the pipeline until shutdown.
+//! - [`server`] — assembles the process: Pingora's server, the pipeline on its runtime, and the
+//!   HTTP data plane that reads the published snapshots.
 //! - [`run`] — the command line: parse arguments, build the local source, map problems to exit
 //!   codes.
 //!
 //! `main.rs` is a thin shim over [`run`], so the whole wiring is reachable from an integration
-//! test. No data plane exists yet: [`serve`] creates the snapshot handle that a HTTP data plane
-//! will read in the next phase.
+//! test. Two entry points exist on purpose: [`server::serve`] is production (Pingora owns the
+//! runtime and the sockets) and [`serve`] is the pipeline seam a test drives without a socket. Both
+//! build the pipeline through the same [`Reloader`], so there is no second reload implementation.
 #![deny(missing_docs)]
 
 use std::{
@@ -30,6 +33,7 @@ use tracing_subscriber::EnvFilter;
 
 pub mod bootstrap;
 pub mod reload;
+pub mod server;
 
 pub use bootstrap::{BootstrapConfig, BootstrapError};
 pub use reload::{ReloadError, ReloadLimits, Reloader};
@@ -44,6 +48,10 @@ pub const FAILURE_EXIT_CODE: u8 = 1;
 pub const USAGE: &str = "usage: gateway-server --bootstrap <path>";
 
 /// Runs the configuration pipeline for one source until `shutdown` is cancelled.
+///
+/// This is the pipeline seam a test drives in-process; production composes the same [`Reloader`]
+/// with a real HTTP data plane in [`server::serve`]. Nothing here builds a runtime: the caller
+/// owns it, and in production that owner is Pingora.
 ///
 /// The cache is always written after a successful publish; it is only read when startup fails and
 /// `bootstrap.allow_bootstrap_cache()` is set, so passing `true` never changes the running
@@ -76,7 +84,8 @@ pub async fn serve(
 ///
 /// `--help` prints [`USAGE`] to stdout and succeeds. A missing, duplicated or unknown argument
 /// prints usage to stderr and returns [`USAGE_EXIT_CODE`]. A bootstrap file that cannot be read or
-/// accepted, or a pipeline that never reaches a serving state, returns [`FAILURE_EXIT_CODE`].
+/// accepted, a configuration source that cannot be built, or a pipeline that never reaches a
+/// serving state returns [`FAILURE_EXIT_CODE`].
 #[must_use]
 pub fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     init_subscriber();
@@ -105,79 +114,21 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         }
     };
 
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            tracing::error!(error = %error, "the async runtime could not be started");
-            return ExitCode::from(FAILURE_EXIT_CODE);
-        }
-    };
-
-    match runtime.block_on(start_gateway(bootstrap)) {
-        Ok(()) => ExitCode::SUCCESS,
+    let source: Arc<dyn ConfigSource> = match LocalFileSource::new(bootstrap.local_config()) {
+        Ok(source) => Arc::new(source),
         Err(error) => {
             tracing::error!(
                 error = %error,
                 error.category = ?error.category(),
-                "the gateway stopped before it could serve traffic"
+                "the local configuration source could not be built"
             );
-            ExitCode::from(FAILURE_EXIT_CODE)
+            return ExitCode::from(FAILURE_EXIT_CODE);
         }
-    }
-}
+    };
 
-/// Builds the concrete source and runs the pipeline until a signal arrives.
-async fn start_gateway(bootstrap: BootstrapConfig) -> Result<(), ReloadError> {
-    let shutdown = CancellationToken::new();
-    // Detached on purpose: the handler holds nothing but the token, and it ends with the runtime.
-    let _signal = tokio::spawn(watch_for_shutdown_signal(shutdown.clone()));
-
-    let source: Arc<dyn ConfigSource> = Arc::new(LocalFileSource::new(bootstrap.local_config())?);
-    serve(bootstrap, source, shutdown).await
-}
-
-/// Cancels the token on `SIGINT` or, where the platform has it, `SIGTERM`.
-async fn watch_for_shutdown_signal(shutdown: CancellationToken) {
-    wait_for_signal().await;
-    tracing::info!("shutdown signal received; draining");
-    shutdown.cancel();
-}
-
-#[cfg(unix)]
-async fn wait_for_signal() {
-    use tokio::signal::unix::{SignalKind, signal};
-
-    match signal(SignalKind::terminate()) {
-        Ok(mut terminate) => {
-            tokio::select! {
-                result = tokio::signal::ctrl_c() => report_signal(result, "SIGINT"),
-                _ = terminate.recv() => tracing::info!("SIGTERM received"),
-            }
-        }
-        Err(error) => {
-            tracing::warn!(
-                error = %error,
-                "SIGTERM handling is unavailable; only SIGINT will stop the gateway"
-            );
-            report_signal(tokio::signal::ctrl_c().await, "SIGINT");
-        }
-    }
-}
-
-#[cfg(not(unix))]
-async fn wait_for_signal() {
-    report_signal(tokio::signal::ctrl_c().await, "SIGINT");
-}
-
-/// Logs how a signal wait ended. A failed handler must not be mistaken for a signal.
-fn report_signal(result: io::Result<()>, name: &'static str) {
-    match result {
-        Ok(()) => tracing::info!(signal = name, "interrupt received"),
-        Err(error) => tracing::warn!(error = %error, signal = name, "signal handling failed"),
-    }
+    // Pingora owns the runtime from here: no Tokio runtime is built in this function, and the
+    // reload pipeline runs on Pingora's.
+    server::serve(&bootstrap, source, CancellationToken::new())
 }
 
 /// What the command line asked for.
