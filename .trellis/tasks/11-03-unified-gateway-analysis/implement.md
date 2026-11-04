@@ -19,26 +19,26 @@
 
 ## 2. 阶段 1：HTTP + AI 透传 MVP（local 配置源）
 
-- [ ] 建 `gateway-http`：Pingora `0.9.1` 接入、`HttpFilter`、`RouteTable`/`CompiledRoute`、upstream 选择。
+- [ ] 建 `nico-http`：Pingora `0.9.1` 接入、`HttpFilter`、`RouteTable`/`CompiledRoute`、upstream 选择。
       落地时必须按阶段 0 结论实现：明文 H2 显式 `h2c = true`；body 按流式状态机处理，跨块保存残包；
       graceful 宽限期显式配置（默认 300 s 是固定 sleep，不适用于长 SSE）；1xx 响应不插入响应头；
       gRPC 路由显式 `ALPN::H2`；不要开启响应压缩。
-- [ ] `gateway-plugins`：JWT / API Key / Rate Limit，注册在 `gateway-server`。
-- [ ] `gateway-ai`：AI Filter、OpenAI Provider 模块、有界 body 转发、SSE 透传。
+- [ ] `nico-plugins`：JWT / API Key / Rate Limit，注册在 `nico-server`。
+- [ ] `nico-ai`：AI Filter、OpenAI Provider 模块、有界 body 转发、SSE 透传。
 - [ ] 路由 schema 扩展：在 `Document` 中加入 `routes` / `upstreams` / `providers`（路由级 `provider` 字段用于选上游），并落地
       解析 → 引用校验 → 语义校验 → 构造四段校验；同批加入文档嵌套深度与节点数上限（当前只有 `max_bytes`）。
 - [ ] 重试与 fallback：只允许"响应未提交且请求可重放"的受限重试；SSE 首字节后不得透明换源。
 - [ ] 观测：阶段 1 以 `ConfigStatus` + `tracing` 字段暴露观测点；metrics exporter 作为阶段 1 之后的独立任务，不在本阶段引入依赖。
 - [ ] 长连接与 drain：用真实 SSE/H2 在途请求验证宽限期配置与旧 generation 回收。
 
-**评审门**：新增 upstream/provider 不改 `gateway-core`；普通 API 路由无 AI 状态；任意 body 分片不丢字节；
+**评审门**：新增 upstream/provider 不改 `nico-core`；普通 API 路由无 AI 状态；任意 body 分片不丢字节；
 reload 失败不影响旧流量；请求路径不因读取 body 而阻塞上游（阶段 0 实证的挂起问题不得复现）。
 
 **回滚点**：一旦发现路由需要读取 body 才能决定上游，停止实现并回到设计：该能力属于"有界缓冲 + 单次重放"设计项，不在路由实现里临时打补丁。
 
 ## 3. 阶段 2：Provider 与长寿命状态
 
-- [ ] 在 `gateway-ai::provider` 新增异构 Provider，复用 HTTP upstream。
+- [ ] 在 `nico-ai::provider` 新增异构 Provider，复用 HTTP upstream。
 - [ ] per-stream SSE/Provider 状态、错误事件与 usage 归一化。
 - [ ] 限流、熔断、重试预算与显式兼容模型 fallback。
 - [ ] `SharedServices` 与配置 generation 的继承、drain 和回收。
@@ -75,17 +75,17 @@ cargo deny check
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
 # 依赖边界（应无输出）
-cargo tree -p gateway-core | grep -E 'pingora|gateway-http|gateway-ai|gateway-config|notify|etcd'
-cargo tree -p gateway-config | grep -E 'gateway-server|pingora|etcd'
+cargo tree -p nico-core | grep -E 'pingora|nico-http|nico-ai|nico-config|notify|etcd'
+cargo tree -p nico-config | grep -E 'nico-server|pingora|etcd'
 
 # 真实文件热重载
-cargo run -p gateway-server -- --bootstrap config/bootstrap.yaml
+cargo run -p nico-server -- --bootstrap config/bootstrap.yaml
 
 # Pingora 一次性取证（独立 workspace）
 cd poc && cargo build --all-features && ./scripts/run-probes.sh
 ```
 
-阶段 1 起追加：`gateway-http` 的 route/filter/streaming 测试、feature 矩阵（`--no-default-features` / `--features ai`）、
+阶段 1 起追加：`nico-http` 的 route/filter/streaming 测试、feature 矩阵（`--no-default-features` / `--features ai`）、
 长连接 drain 与负载测试、真实 etcd 集成测试（etcd 里程碑）。
 
 ## 7. 当前分析任务检查

@@ -1,0 +1,29 @@
+[package]
+name = "nico-http"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Pingora HTTP data plane: routing, upstream selection and byte-stream passthrough"
+
+[dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+nico-core.workspace = true
+# `proxy` pulls `pingora-proxy`, whose `ProxyHttp` hooks this crate implements. No TLS backend is
+# enabled yet: TLS termination is out of scope for this milestone, and an upstream peer built here
+# is cleartext unless the document declares `https`, which needs the `tls`-terminating task.
+pingora = { workspace = true, features = ["proxy"] }
+thiserror.workspace = true
+# `time` bounds every filter stage by the request's remaining budget, and `net`+`rt` let an upstream
+# name be resolved on Tokio's blocking pool instead of the worker thread the request runs on. The
+# runtime itself (and the signals that stop it) belong to `nico-server`.
+tokio = { workspace = true, features = ["net", "rt", "time"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
+
+[lints]
+workspace = true

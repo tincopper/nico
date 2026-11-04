@@ -47,18 +47,18 @@ rg "<VALUE>" crates/
 
 ### Step 3: Pick The Right Home
 
-Reuse does not mean "put it in `gateway-core`". It means "put it in the crate that owns the
+Reuse does not mean "put it in `nico-core`". It means "put it in the crate that owns the
 concept":
 
 | Kind of logic                                              | Home             |
 | ---------------------------------------------------------- | ---------------- |
-| Protocol-agnostic (deadline, cancellation, error category)  | `gateway-core`   |
-| HTTP-specific (route match, header handling, upstream)      | `gateway-http`   |
-| AI-specific (model mapping, usage, SSE)                     | `gateway-ai`     |
-| Config loading/subscription                                 | `gateway-config` |
-| Built-in policy implementations                             | `gateway-plugins`|
+| Protocol-agnostic (deadline, cancellation, error category)  | `nico-core`   |
+| HTTP-specific (route match, header handling, upstream)      | `nico-http`   |
+| AI-specific (model mapping, usage, SSE)                     | `nico-ai`     |
+| Config loading/subscription                                 | `nico-config` |
+| Built-in policy implementations                             | `nico-plugins`|
 
-**The threshold is two real consumers, not three.** Promoting something into `gateway-core`
+**The threshold is two real consumers, not three.** Promoting something into `nico-core`
 requires two consumers in **different data planes**. One consumer plus "it feels generic" is not
 enough — and "we might need it later" is not a consumer.
 
@@ -82,7 +82,7 @@ dependency edge, the function is probably in the wrong crate.
 **Bad**: Creating a new `Provider` implementation that is 80% identical to an existing one.
 
 **Good**: Extend the existing implementation with a config knob, or extract the shared
-request/response shaping into a private helper inside `gateway-ai`.
+request/response shaping into a private helper inside `nico-ai`.
 
 ### Pattern 3: Repeated Constants
 
@@ -90,8 +90,8 @@ request/response shaping into a private helper inside `gateway-ai`.
 
 **Good**: One `pub const` (or one config default) in the owning crate, imported everywhere.
 
-Config defaults deserve special care: a limit that lives both as a `const` in `gateway-http` and
-as a `serde` default in `gateway-server` is two owners for one rule. Pick the config document and
+Config defaults deserve special care: a limit that lives both as a `const` in `nico-http` and
+as a `serde` default in `nico-server` is two owners for one rule. Pick the config document and
 let the constant be derived from it, or vice versa — never both independently.
 
 ### Pattern 4: Repeated Payload Decoding

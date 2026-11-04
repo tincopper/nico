@@ -2,7 +2,7 @@
 
 **Status: throwaway asset.** Nothing here is a contract, a library, or a candidate for
 `crates/`. The directory exists to answer, against the locked `pingora 0.9.1` and this machine,
-the questions that block `gateway-http` design. When the answers are recorded in
+the questions that block `nico-http` design. When the answers are recorded in
 [`FINDINGS.md`](./FINDINGS.md) and the phase-0 report, this directory is deleted.
 
 Read [`FINDINGS.md`](./FINDINGS.md) first; it is the deliverable. The code only exists so every

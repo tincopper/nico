@@ -37,7 +37,7 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
   structure) per module; dependencies point at the domain owner; no new registry/factory until a
   second implementation exists.
 - Local gates are orchestrated by lefthook (`lefthook.yml`, `lefthook install`); a red pre-commit or
-  pre-push hook must be fixed, not bypassed (`SKIP_GATEWAY_HOOKS=1` is for tool outages only and
+  pre-push hook must be fixed, not bypassed (`SKIP_NICO_HOOKS=1` is for tool outages only and
   must be mentioned in the commit). Never set `core.hooksPath` while lefthook manages hooks.
 - File budget: 300–500 lines per `.rs` file, **never above 500**. Split by boundary into
   `foo.rs` + `foo/` submodules instead of growing a file. Existing oversized files are refactor

@@ -23,14 +23,14 @@ Rules:
 - The LKG cache is **not** a peer source. It may only be used to start when
   `allow_bootstrap_cache: true`, and must be marked `stale`.
 - Nothing on the request path reads the store. Requests read the published snapshot.
-- No client library is allowed to leak into `gateway-core`; etcd/Nacos clients live in their own
+- No client library is allowed to leak into `nico-core`; etcd/Nacos clients live in their own
   feature-gated crates.
 
 ---
 
 ## Client and Version Pinning
 
-- The phase-1 source is the local file source (`gateway-config::local`), already implemented and
+- The phase-1 source is the local file source (`nico-config::local`), already implemented and
   covered by tests for atomic rename, symlink swap, half-write, deletion/recreation and SIGHUP.
   The LKG cache is written after every successful publish and read only when
   `allow_bootstrap_cache: true`.

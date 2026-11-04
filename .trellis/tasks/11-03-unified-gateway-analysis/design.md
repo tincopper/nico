@@ -33,20 +33,20 @@ nico/
 │   ├── bootstrap.yaml        # 仅本地：配置源连接、缓存路径、资源上限
 │   └── resources.yaml        # local source 时的网关资源
 └── crates/
-    ├── gateway-server/         # 唯一 binary：启动、组装、reload、角色选择
+    ├── nico-server/         # 唯一 binary crate（二进制 `nico`）：启动、组装、reload、角色选择
     │   └── src/
     │       ├── main.rs
     │       ├── bootstrap.rs
     │       └── reload.rs       # 订阅源、去抖、single-flight、编译与发布
     │
-    ├── gateway-core/           # 真正跨数据面复用的小核心
+    ├── nico-core/           # 真正跨数据面复用的小核心
     │   └── src/
     │       ├── lib.rs
     │       ├── config.rs       # 通用配置元数据、generation、secret ref
     │       ├── context.rs      # trace/peer/tenant/deadline/cancellation
     │       └── error.rs
     │
-    ├── gateway-http/           # Pingora 与 HTTP 领域
+    ├── nico-http/           # Pingora 与 HTTP 领域
     │   └── src/
     │       ├── lib.rs
     │       ├── proxy.rs        # Pingora ProxyHttp 接入
@@ -55,7 +55,7 @@ nico/
     │       ├── upstream.rs     # peer 选择、连接与重试约束
     │       └── stream.rs       # HTTP body/stream 辅助
     │
-    ├── gateway-ai/             # AI 领域插件与 Provider 模块
+    ├── nico-ai/             # AI 领域插件与 Provider 模块
     │   └── src/
     │       ├── lib.rs
     │       ├── filter.rs       # AI 请求元数据、模型路由
@@ -69,7 +69,7 @@ nico/
     │           ├── sse.rs
     │           └── anthropic.rs
     │
-    ├── gateway-config/         # ConfigSource trait、local 实现、测试 Fake
+    ├── nico-config/         # ConfigSource trait、local 实现、测试 Fake
     │   └── src/
     │       ├── lib.rs
     │       ├── source.rs       # trait 与错误类型
@@ -78,13 +78,13 @@ nico/
     │       ├── cache.rs        # last-known-good 本地缓存
     │       └── fake.rs         # 测试与故障注入
     │
-    ├── gateway-config-etcd/    # 可选：etcd v3 实现（重依赖，feature 开启）
+    ├── nico-config-etcd/    # 可选：etcd v3 实现（重依赖，feature 开启）
     │   └── src/lib.rs
     │
-    ├── gateway-config-nacos/   # 可选：Nacos 实现（重依赖，feature 开启）
+    ├── nico-config-nacos/   # 可选：Nacos 实现（重依赖，feature 开启）
     │   └── src/lib.rs
     │
-    └── gateway-plugins/        # 第一期内置 HTTP 策略，避免大量微 crate
+    └── nico-plugins/        # 第一期内置 HTTP 策略，避免大量微 crate
         └── src/
             ├── lib.rs
             ├── jwt.rs
@@ -94,7 +94,7 @@ nico/
 
 ### 不为每个 Provider 单独建 crate
 
-`openai`、`anthropic` 初期只是 `gateway-ai::provider` 下的模块。只有以下情况才拆成独立 crate：
+`openai`、`anthropic` 初期只是 `nico-ai::provider` 下的模块。只有以下情况才拆成独立 crate：
 
 - 依赖很重或需要独立 feature。
 - 需要被其他 Workspace 复用。
@@ -104,17 +104,17 @@ nico/
 ## 3. Crate 职责与依赖方向
 
 ```text
-gateway-server
-   ├──> gateway-core
-   ├──> gateway-http ─────────> gateway-core + pingora
-   ├──> gateway-ai ───────────> gateway-http + gateway-core
-   ├──> gateway-config ───────> gateway-core
-   ├──> gateway-config-etcd ──> gateway-config        (feature: config-etcd)
-   ├──> gateway-config-nacos ─> gateway-config        (feature: config-nacos)
-   └──> gateway-plugins ──────> gateway-http + gateway-core
+nico-server
+   ├──> nico-core
+   ├──> nico-http ─────────> nico-core + pingora
+   ├──> nico-ai ───────────> nico-http + nico-core
+   ├──> nico-config ───────> nico-core
+   ├──> nico-config-etcd ──> nico-config        (feature: config-etcd)
+   ├──> nico-config-nacos ─> nico-config        (feature: config-nacos)
+   └──> nico-plugins ──────> nico-http + nico-core
 ```
 
-### `gateway-core`
+### `nico-core`
 
 只保留已被多个数据面真实复用的内容：
 
@@ -123,43 +123,43 @@ gateway-server
 - 公共错误类别，避免映射为某种协议响应。
 - 必要的无业务工具，不包含 HTTP route、AI model 或 Pingora 类型。
 
-**依赖约束**：`gateway-core` 不得依赖 `gateway-http`、`gateway-ai`、`gateway-plugins` 或 Pingora。
+**依赖约束**：`nico-core` 不得依赖 `nico-http`、`nico-ai`、`nico-plugins` 或 Pingora。
 
-### `gateway-http`
+### `nico-http`
 
 - 拥有 Pingora `ProxyHttp` 适配与原生 HTTP Session 生命周期。
 - 定义 HTTP 专属 `HttpFilter`、路由、CompiledRoute 和 upstream 接口。
 - 处理 request/response headers、body、stream、commit、cancel 和 upstream 错误。
-- 不 import `gateway-ai`；AI 通过 HTTP 扩展点接入。
+- 不 import `nico-ai`；AI 通过 HTTP 扩展点接入。
 
-### `gateway-ai`
+### `nico-ai`
 
 - 定义 `Provider`、模型映射、AI 请求元数据和 usage 类型。
 - 实现 AI HTTP Filter 与 Provider Stream Adapter。
-- OpenAI/Anthropic 是模块，不进入 `gateway-core`。
-- 可以依赖 `gateway-http`，因为当前 AI API 就是 HTTP 领域能力。
+- OpenAI/Anthropic 是模块，不进入 `nico-core`。
+- 可以依赖 `nico-http`，因为当前 AI API 就是 HTTP 领域能力。
 
-### `gateway-plugins`
+### `nico-plugins`
 
 - 放置第一期受信任的 JWT、API Key、Rate Limit 等内置实现。
-- 当前实现 HTTP 策略时依赖 `gateway-http` 是合理的，不为了“看起来通用”抽象成无类型 Metadata 框架。
-- 当 MQTT 等第二个数据面确实能复用同一策略时，再把最小的通用部分下沉到 `gateway-core`。
+- 当前实现 HTTP 策略时依赖 `nico-http` 是合理的，不为了“看起来通用”抽象成无类型 Metadata 框架。
+- 当 MQTT 等第二个数据面确实能复用同一策略时，再把最小的通用部分下沉到 `nico-core`。
 
-### `gateway-config`
+### `nico-config`
 
 - 定义 `ConfigSource` trait、`Revision`、`ConfigVersion` 和配置源错误。
 - 提供 `local` 文件实现、last-known-good 缓存和测试用 `FakeConfigSource`。
-- 只依赖 `gateway-core`、`serde`、`bytes`、`tokio-util`、`async-trait` 等轻量库。
+- 只依赖 `nico-core`、`serde`、`bytes`、`tokio-util`、`async-trait` 等轻量库。
 - **不依赖** Pingora、HTTP、AI、etcd 或 Nacos 客户端。
 - 配置源只加载和订阅字节文档，不解析路由、不修改运行时快照。
 
-### `gateway-config-etcd` / `gateway-config-nacos`
+### `nico-config-etcd` / `nico-config-nacos`
 
 - 分别实现 `ConfigSource`，隔离各配置中心的重量级依赖和版本特性。
 - 仅通过 Cargo feature 编入 binary，未启用时不增加依赖和攻击面。
 - 负责协议连接、认证、watch 重连和 revision 映射，不包含网关路由编译逻辑。
 
-### `gateway-server`
+### `nico-server`
 
 - 唯一的具体组装入口：创建 Provider、Filter builder、HTTP Proxy、SharedServices。
 - 读取**本地 bootstrap 配置**选择唯一配置源，再启动订阅和发布管线。
@@ -172,20 +172,20 @@ gateway-server
 
 | Trait/抽象 | 所在 crate | 用途 |
 |---|---|---|
-| `HttpFilter` | `gateway-http` | HTTP 请求/响应阶段扩展 |
-| `Upstream` | `gateway-http` | 上游选择与调用约束 |
-| `Provider` | `gateway-ai` | AI 请求/响应语义适配 |
-| `ProviderStream` | `gateway-ai` | 每个响应流独立的转换状态 |
-| `ConfigSource` | `gateway-config` | local / etcd 的加载与订阅；Nacos 保留后续实现位 |
+| `HttpFilter` | `nico-http` | HTTP 请求/响应阶段扩展 |
+| `Upstream` | `nico-http` | 上游选择与调用约束 |
+| `Provider` | `nico-ai` | AI 请求/响应语义适配 |
+| `ProviderStream` | `nico-ai` | 每个响应流独立的转换状态 |
+| `ConfigSource` | `nico-config` | local / etcd 的加载与订阅；Nacos 保留后续实现位 |
 
-不要在 `gateway-core` 中提前定义 `ProtocolPlugin`、`PolicyPlugin`、`ConnectorPlugin`、`ExporterPlugin` 等一组没有多个真实消费者的 trait。
+不要在 `nico-core` 中提前定义 `ProtocolPlugin`、`PolicyPlugin`、`ConnectorPlugin`、`ExporterPlugin` 等一组没有多个真实消费者的 trait。
 
 ### 4.2 启动时显式注册
 
-- `gateway-server` 知道所有具体实现，并在启动时构造它们。
+- `nico-server` 知道所有具体实现，并在启动时构造它们。
 - 配置加载阶段可以用 `match plugin_type` 或 `HashMap<&str, Builder>` 将 YAML 类型名映射到构建函数。
 - 字符串映射只允许出现在**配置编译阶段**；请求阶段使用已构建的 `Arc<dyn HttpFilter>`、`Arc<dyn Provider>` 或 enum。
-- 新增 Provider 时修改 `gateway-ai` 和 server 注册点即可，Kernel/HTTP 路由算法不变。静态组合不要求“新增实现完全零注册代码”。
+- 新增 Provider 时修改 `nico-ai` 和 server 注册点即可，Kernel/HTTP 路由算法不变。静态组合不要求“新增实现完全零注册代码”。
 
 ### 4.3 Trait object 用在哪里
 
@@ -219,12 +219,12 @@ HTTP 热路径只做：`RouteTable::match → &CompiledRoute → 依次调用 Fi
 
 ### 5.2 上下文按领域划分
 
-- `gateway-core::RequestMeta`：trace、peer、tenant、deadline、cancellation。
-- `gateway-http::HttpContext`：HTTP Session 所需状态、上游状态和 response commit。
-- `gateway-ai::AiRequestState`：逻辑/物理模型、Provider、streaming、usage。
-- `gateway-ai::ProviderStream`：每个上游流独立的增量解析状态。
+- `nico-core::RequestMeta`：trace、peer、tenant、deadline、cancellation。
+- `nico-http::HttpContext`：HTTP Session 所需状态、上游状态和 response commit。
+- `nico-ai::AiRequestState`：逻辑/物理模型、Provider、streaming、usage。
+- `nico-ai::ProviderStream`：每个上游流独立的增量解析状态。
 
-AI 状态由 AI Filter 与请求本地状态关联，不放进 `gateway-core`。如使用 `http::Extensions` 等类型化扩展存储，应限定在明确的请求边界，不能演变成字符串键值或无约束对象袋；普通请求不应创建 AI 状态。
+AI 状态由 AI Filter 与请求本地状态关联，不放进 `nico-core`。如使用 `http::Extensions` 等类型化扩展存储，应限定在明确的请求边界，不能演变成字符串键值或无约束对象袋；普通请求不应创建 AI 状态。
 
 ## 6. 配置与热重载保持简单
 
@@ -247,7 +247,7 @@ AI 状态由 AI Filter 与请求本地状态关联，不放进 `gateway-core`。
 - reload 失败保留 last-known-good，并记录 generation、错误和 reload 时间。
 - 不在 reload 时无条件重建所有连接池、限流器或 DNS 状态。
 
-长寿命资源可由 `gateway-server` 创建的 `SharedServices` 持有，快照中只保留 `Arc` 引用和对应配置版本。是否需要保留旧状态由具体资源决定，不使用通用 Lifecycle Manager 猜测。
+长寿命资源可由 `nico-server` 创建的 `SharedServices` 持有，快照中只保留 `Arc` 引用和对应配置版本。是否需要保留旧状态由具体资源决定，不使用通用 Lifecycle Manager 猜测。
 
 ### 6.3 两种升级
 
@@ -291,7 +291,7 @@ ArcSwap 原子发布 + 指标/审计
 
 但仍保持 Rust 原生：
 
-- trait 放在 `gateway-config`，不放在 `gateway-core`，避免核心依赖配置中心客户端。
+- trait 放在 `nico-config`，不放在 `nico-core`，避免核心依赖配置中心客户端。
 - 每个进程只选择一个权威来源，通过本地 bootstrap 配置决定；不做多来源隐式合并。
 - 若未来确需多来源，必须显式实现 `CompositeSource` 并声明优先级/覆盖/冲突规则；本地 LKG 缓存不是同级来源，不能偷偷覆盖远端配置。
 - 配置源只负责加载/订阅完整文档，不解析业务路由、不直接修改运行快照。
@@ -302,7 +302,7 @@ ArcSwap 原子发布 + 指标/审计
 以下为接口示意，不是实施代码：
 
 ```rust
-// gateway-config/src/source.rs（示意）
+// nico-config/src/source.rs（示意）
 #[async_trait]
 pub trait ConfigSource: Send + Sync {
     fn name(&self) -> &'static str;
@@ -447,9 +447,9 @@ etcd 里程碑使用固定版本 etcd 容器做集成测试，验证认证、TLS
 Feature 用于**编译期依赖裁剪**，配置用于**运行时行为**：
 
 - `default`：HTTP + 内置策略 + local 配置源。
-- `ai`：加入 `gateway-ai`。
+- `ai`：加入 `nico-ai`。
 - `builtin-plugins`：加入 JWT/API Key/Rate Limit。
-- `config-etcd`：加入 `gateway-config-etcd`，etcd 里程碑部署启用。
+- `config-etcd`：加入 `nico-config-etcd`，etcd 里程碑部署启用。
 - `config-nacos`：后续里程碑启用，第一期不创建实现 crate。
 - 后续可选：`mqtt`、`quic`、`wasm-plugins`。
 
@@ -467,36 +467,36 @@ Feature 是 additive 的，不能依赖“启用 A 后悄悄改变 B 的非 feat
 
 ### 新增 AI Provider
 
-1. 在 `gateway-ai::provider` 新增模块和强类型 Config。
+1. 在 `nico-ai::provider` 新增模块和强类型 Config。
 2. 实现 `Provider` 与 `ProviderStream`。
 3. 在 server 的配置 builder 注册类型名。
-4. 不修改 `gateway-core` 和普通 HTTP Filter。
+4. 不修改 `nico-core` 和普通 HTTP Filter。
 
 ### 新增认证插件
 
-1. 在 `gateway-plugins` 新增模块。
-2. 实现 `gateway-http::HttpFilter`。
+1. 在 `nico-plugins` 新增模块。
+2. 实现 `nico-http::HttpFilter`。
 3. 在 server 注册 builder，由路由引用。
 4. 不修改 AI Provider 和 upstream 实现。
 
 ### 新增 MQTT 数据面
 
 1. 新建独立 MQTT crate/binary，定义 MQTT 自己的 packet/session trait。
-2. 只复用 `gateway-core` 中真正通用的 config/context 组件。
+2. 只复用 `nico-core` 中真正通用的 config/context 组件。
 3. 不让 MQTT Packet 适配成 Pingora Session，也不复用 HTTP Filter。
 
 ### 新增配置中心
 
-1. 在独立 crate 中实现 `gateway-config::ConfigSource`。
+1. 在独立 crate 中实现 `nico-config::ConfigSource`。
 2. 将客户端协议错误映射为 `ConfigSourceError`，将版本映射为来源内 `Revision`。
-3. 在 `gateway-server::bootstrap` 的 `match source_type` 中注册。
+3. 在 `nico-server::bootstrap` 的 `match source_type` 中注册。
 4. 不修改 reload 管线、路由编译和 HTTP/AI 代码。
 
 ## 11. 动态插件不是第一期内核的一部分
 
 如果未来确实需要第三方无需重编译即可安装插件：
 
-- 新增独立 `gateway-wasm` crate，使用 WASM 沙箱承载受限 Policy。
+- 新增独立 `nico-wasm` crate，使用 WASM 沙箱承载受限 Policy。
 - 或提供独立进程插件及有界 IPC，用于高风险/重依赖能力。
 - 动态 artifact 的版本、签名、权限和资源限制由该扩展层负责，不反向污染核心。
 - 不把 Rust dylib 作为默认方案，也不提前为假想需求设计 ABI。
@@ -505,15 +505,15 @@ Feature 是 additive 的，不能依赖“启用 A 后悄悄改变 B 的非 feat
 
 ### 阶段 0：Workspace 与 local 配置源（已完成）
 
-- 已建立 `gateway-core` / `gateway-config` / `gateway-server` 的依赖边界；`gateway-core` 不依赖协议或来源实现。
+- 已建立 `nico-core` / `nico-config` / `nico-server` 的依赖边界；`nico-core` 不依赖协议或来源实现。
 - 已定义 `ConfigSource`、`Revision`（含 `Comparable` / `EqualityOnly`）、`ConfigDigest`、去抖与 single-flight 发布管线。
 - 已用 `FakeConfigSource` 与 local 文件源覆盖重复 digest、乱序/回退、慢消费者、编译失败保留 LKG、stale 启动、在途快照不受影响。
 - 已实测 Pingora `0.9.1` 的 H1/H2、body、SSE、背压、取消、连接池、graceful 与 WebSocket/gRPC 边界（证据见已归档任务 `archive/2026-11/11-03-phase0-tech-verification`）。
-- 尚未实现 HTTP 数据面：`gateway-http` 在阶段 1 建立。
+- 尚未实现 HTTP 数据面：`nico-http` 在阶段 1 建立。
 
 ### 阶段 1：静态组合 MVP（local 先行）
 
-- HTTP 路由、JWT/API Key/Rate Limit、upstream、普通 API；`gateway-http` 首次落地 Pingora 集成。
+- HTTP 路由、JWT/API Key/Rate Limit、upstream、普通 API；`nico-http` 首次落地 Pingora 集成。
 - AI Filter、OpenAI Provider、SSE 透传。
 - 普通与 AI 路由共享 HTTP/Core，但使用不同 CompiledRoute。
 - 配置来源使用 **local 文件**（`ConfigSource` 唯一实现）；etcd 作为后续里程碑接入，不改契约与管线。
@@ -537,7 +537,7 @@ Feature 是 additive 的，不能依赖“启用 A 后悄悄改变 B 的非 feat
 
 ### 架构验收
 
-- `gateway-core` 的依赖树没有 Pingora、HTTP、AI 或具体插件。
+- `nico-core` 的依赖树没有 Pingora、HTTP、AI 或具体插件。
 - 新增 Provider 只需修改 AI 模块与 server 注册点。
 - 普通 API 路由没有 AI 状态初始化和模型分支。
 - 热路径没有插件名字符串查找、通用事件总线或 JSON 中转。
@@ -545,7 +545,7 @@ Feature 是 additive 的，不能依赖“启用 A 后悄悄改变 B 的非 feat
 - 配置源乱序/重复/断线/gap 不会发布错误快照；配置中心故障期间请求继续使用 LKG。
 - etcd watch 从 `mod_revision + 1` 续订，compaction 后强制全量重载；fragment 被正确处理；endpoint failover 和认证/TLS 通过集成测试。
 - `etcd-client` 锁定版本的 Watch/Auth/TLS API 通过编译验证；`cargo tree -d` 不出现与 Pingora 冲突的 tonic/hyper/TLS 栈。
-- `gateway-core` 与默认 binary 的依赖树没有 etcd 客户端；Nacos 客户端在后续实现前不存在。
+- `nico-core` 与默认 binary 的依赖树没有 etcd 客户端；Nacos 客户端在后续实现前不存在。
 - `cargo check/test/clippy` 在不同 feature 组合下通过。
 - 全 Workspace 不存在为了“看起来像插件系统”而增加的空 trait、空 Manager 或单实现微 crate。
 
@@ -555,7 +555,7 @@ Feature 是 additive 的，不能依赖“启用 A 后悄悄改变 B 的非 feat
 
 > **Cargo Workspace + 6 个初始 crate（+2 个可选配置源 crate）+ crate 内模块 + 领域 trait + 启动时显式组装 + CompiledRoute + ArcSwap。**
 
-配置来源使用 `ConfigSource` trait，第一期只落地 local 文件源，etcd 与 Nacos 作为后续里程碑通过同一 trait 接入；它只有“加载 + 订阅完整文档”职责。revision 排序、去抖、single-flight、校验、编译和发布仍集中在 `gateway-server` 的一条管线中。
+配置来源使用 `ConfigSource` trait，第一期只落地 local 文件源，etcd 与 Nacos 作为后续里程碑通过同一 trait 接入；它只有“加载 + 订阅完整文档”职责。revision 排序、去抖、single-flight、校验、编译和发布仍集中在 `nico-server` 的一条管线中。
 
 第三方动态插件、`quick` 的准确含义、第一期 SLA 和 Provider 清单仍是独立后续决策，不影响这套 Rust 原生结构。
 

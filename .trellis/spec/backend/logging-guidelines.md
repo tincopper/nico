@@ -10,7 +10,7 @@
   anywhere in `crates/` (enforced by clippy `clippy::print_stdout` / `clippy::print_stderr` /
   `clippy::dbg_macro`).
 - **Emit from libraries, configure from the binary**: library crates only create events and spans.
-  Subscriber setup, filtering, formatting, and exporters live in `gateway-server`.
+  Subscriber setup, filtering, formatting, and exporters live in `nico-server`.
 - **No custom observability framework**: `tracing` spans plus a small set of shared fields are
   enough. Do not build an `ExporterPlugin`/`MetricsRegistry` abstraction for one consumer.
 - **Structured first, formatted second**: prefer fields over string interpolation so the same event
@@ -59,7 +59,7 @@ Rules:
 | `config.generation` | u64 | Snapshot generation in use |
 | `config.revision` | string | Source-scoped revision (etcd `mod_revision`, etc.) |
 | `error` | `%` display | The error, via `error = %err` |
-| `error.category` | `?` debug | `gateway_core::ErrorCategory` |
+| `error.category` | `?` debug | `nico_core::ErrorCategory` |
 | `elapsed_ms` / `duration_ms` | u64 | Timings; never log raw `Instant` |
 | `http.method` | string | Request method |
 | `http.status` | u16 | Status written to the caller; `499` for a cancelled request nobody answered, `0` when nothing was written |
@@ -142,7 +142,7 @@ async move { /* work */ }.instrument(request_span).await
 
 ## Metrics
 
-- Metrics are separate from logs: use `metrics` + an exporter configured in `gateway-server`. The
+- Metrics are separate from logs: use `metrics` + an exporter configured in `nico-server`. The
   global recorder is installed once at startup (`OnceLock`/`LazyLock`), never re-initialized on
   reload.
 - Naming: `gateway_<subsystem>_<noun>_<unit>`; counters end in `_total`, timings in `_seconds`

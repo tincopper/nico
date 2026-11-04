@@ -83,7 +83,7 @@ not add the abstraction.
 - Prefer configuration-driven variation over new code branches; features gate capability, never
   default behaviour.
 - New extension points are added where the domain already owns the vocabulary (HTTP filter in
-  `gateway-http`, provider in `gateway-ai`), not in a central "plugins" catch-all.
+  `nico-http`, provider in `nico-ai`), not in a central "plugins" catch-all.
 
 ### File budget: 300–500 lines, hard cap 500
 
@@ -106,7 +106,8 @@ find crates -name '*.rs' | xargs wc -l | awk '$1 > 500 && $NF != "total" {print}
 ```
 
 A staged file that is already above the cap may not grow: the pre-commit gate compares the staged
-line count against `HEAD`, so the only passing change to an oversized file is one that shrinks it.
+line count against `HEAD` (for a pure rename, against the path it came from — moving a file does not
+grow it), so the only passing change to an oversized file is one that shrinks it.
 Encoding content onto fewer lines to keep the count flat (`\n` escapes inside a fixture literal,
 semicolon-chained statements) is the behaviour the cap exists to stop — move the fixture to the file
 that owns it and split, do not compress.
@@ -248,11 +249,11 @@ Without these, `cargo clippy --all-targets` would reject `expect("fixture parses
 
 `missing_docs` is **not** in `[workspace.lints.rust]` above. Because the baseline runs
 `-D warnings`, a workspace-level `warn` would be promoted to an error in the binary too and force
-internal documentation of `gateway-server` internals. Instead each library crate declares it at its
+internal documentation of `nico-server` internals. Instead each library crate declares it at its
 root:
 
 ```rust
-// crates/gateway-core/src/lib.rs
+// crates/nico-core/src/lib.rs
 #![deny(missing_docs)]
 ```
 
@@ -403,7 +404,7 @@ Glob imports (`use foo::*`) are forbidden except in `#[cfg(test)] mod tests { us
 | `unreachable!` in request/config paths | Same | Return an error. Allowed **only** where a type-state invariant makes it impossible, with `#[expect(clippy::unreachable, reason = "...")]` and a comment naming the invariant |
 | `unsafe` | Not needed in this architecture | Safe abstractions; a dedicated task + `// SAFETY:` + Miri if ever required |
 | `Box<dyn std::error::Error>` in a public API | Unmatchable, loses classification | `thiserror` enum |
-| `anyhow` in a library's public signature | Same | `thiserror`; `anyhow` only in `gateway-server::main` |
+| `anyhow` in a library's public signature | Same | `thiserror`; `anyhow` only in `nico-server::main` |
 | `String` as the only error variant | No structure, no source chain | Typed variant with `#[source]` |
 | Error types not `Send + Sync + 'static` | `?` across `.await` and in spawned tasks fails to compile | Derive/verify the bounds |
 | `.clone()` to satisfy the borrow checker | Hides an ownership design problem | Restructure borrows; `Arc` when sharing is real |
@@ -492,7 +493,7 @@ Tests are the first place a reader looks to understand behavior — they are liv
   `mod test { mod compile { fn keeps_lkg_when_yaml_invalid() {...} } }` →
   `test::compile::keeps_lkg_when_yaml_invalid`.
 - Integration tests: `crates/<crate>/tests/*.rs` — they only see the public API.
-  **This is why `gateway-server` ships `src/lib.rs` alongside `src/main.rs`**: the wiring must be
+  **This is why `nico-server` ships `src/lib.rs` alongside `src/main.rs`**: the wiring must be
   reachable from an integration test.
 - Doc tests: `///` examples on public items.
 - Shared fixtures: `src/test_support.rs` behind `#[cfg(any(test, feature = "test-support"))]`.
@@ -536,10 +537,10 @@ Tests are the first place a reader looks to understand behavior — they are liv
 
 | Layer | Must be covered |
 |---|---|
-| `gateway-config` | digest dedup, out-of-order/regressed revisions, watch disconnect, compaction/gap → `ResyncRequired`, oversized document, invalid UTF-8/YAML, unknown fields rejected, compile failure keeps LKG, subsequent fix publishes, debounce + single-flight, in-flight requests unaffected during outage |
-| `gateway-http` | route matching, filter ordering, response commit state, retry legality, deadline propagation, SSE/WebSocket streaming boundaries, backpressure and slow client |
-| `gateway-ai` | SSE chunk-splitting across event/line/UTF-8/JSON boundaries, provider error mapping, usage accounting separation (measured vs reported), no fallback after first byte |
-| `gateway-core` | error category mapping, deadline/cancellation semantics |
+| `nico-config` | digest dedup, out-of-order/regressed revisions, watch disconnect, compaction/gap → `ResyncRequired`, oversized document, invalid UTF-8/YAML, unknown fields rejected, compile failure keeps LKG, subsequent fix publishes, debounce + single-flight, in-flight requests unaffected during outage |
+| `nico-http` | route matching, filter ordering, response commit state, retry legality, deadline propagation, SSE/WebSocket streaming boundaries, backpressure and slow client |
+| `nico-ai` | SSE chunk-splitting across event/line/UTF-8/JSON boundaries, provider error mapping, usage accounting separation (measured vs reported), no fallback after first byte |
+| `nico-core` | error category mapping, deadline/cancellation semantics |
 
 ### Property, snapshot, and integration testing
 
@@ -562,7 +563,7 @@ Tests are the first place a reader looks to understand behavior — they are liv
 
 ## Code Review Checklist
 
-- [ ] Does the change respect the dependency direction (`gateway-core` untouched by protocol
+- [ ] Does the change respect the dependency direction (`nico-core` untouched by protocol
       crates)? Run the `cargo tree` checks from `directory-structure.md`.
 - [ ] Is any new abstraction backed by **two real consumers**? If not, inline it.
 - [ ] Does the change keep one business boundary (or one data structure) per module, and is the new

@@ -7,11 +7,11 @@
 # as "done": formatting, clippy with -D warnings, the whole test suite, docs, and
 # cargo-deny when it is installed.
 #
-# Bypass for emergencies: SKIP_GATEWAY_HOOKS=1 git push
+# Bypass for emergencies: SKIP_NICO_HOOKS=1 git push
 set -euo pipefail
 
-if [[ "${SKIP_GATEWAY_HOOKS:-0}" == "1" ]]; then
-    echo "[hook] SKIP_GATEWAY_HOOKS=1: push gate skipped"
+if [[ "${SKIP_NICO_HOOKS:-0}" == "1" ]]; then
+    echo "[hook] SKIP_NICO_HOOKS=1: push gate skipped"
     exit 0
 fi
 

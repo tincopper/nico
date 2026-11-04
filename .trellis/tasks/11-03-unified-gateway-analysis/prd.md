@@ -73,9 +73,9 @@
 ### R9：Rust 原生插件契约与组合
 
 - 插件首先是实现领域 trait 的 Rust crate 或 module，不引入 Java 式 Plugin Container、通用 SPI 层或 Manifest 生命周期框架。
-- trait 定义在领域拥有者 crate 中，例如 `HttpFilter` 属于 HTTP crate、`Provider` 属于 AI crate；不集中放入万能 `gateway-spi`。
+- trait 定义在领域拥有者 crate 中，例如 `HttpFilter` 属于 HTTP crate、`Provider` 属于 AI crate；不集中放入万能 `nico-spi`。
 - 优先 module，只有需要独立编译、依赖隔离或复用时才拆 crate；Provider 初期作为 AI crate 内部模块。
-- 启动时由 `gateway-server` 显式注册具体实现；配置加载时可按类型名调用 builder，热路径只持有已构建的 trait object 或 enum。
+- 启动时由 `nico-server` 显式注册具体实现；配置加载时可按类型名调用 builder，热路径只持有已构建的 trait object 或 enum。
 - 配置使用 `serde` 反序列化为各插件的类型化 Config；路由发布前编译为不可变调用链，热路径不按字符串发现插件。
 - 闭合集合并需要极限性能时优先 enum/泛型；开放扩展点使用少量 `Arc<dyn Trait>`，不追求全系统静态分发或全系统动态分发。
 - 流式适配器拥有 per-stream Rust 状态对象，不使用全局 Plugin Instance 保存请求状态。
@@ -85,7 +85,7 @@
 - 通过 `ConfigSource` trait 支持 local 文件与 etcd；Nacos 作为后续实现，接口保持兼容。第一期只交付 local + etcd。
 - 每个进程选择一个权威来源；第一期 etcd 是生产权威来源，local 同时承担文件模式和 last-known-good 缓存。
 - 配置源只负责加载/订阅完整文档及提供 source-scoped revision，不解析路由、不直接修改运行快照。
-- 配置源 trait 放在独立 `gateway-config` crate；etcd 实现为可选 crate + `config-etcd` feature，Nacos crate 推迟创建。
+- 配置源 trait 放在独立 `nico-config` crate；etcd 实现为可选 crate + `config-etcd` feature，Nacos crate 推迟创建。
 - 启动所需的来源类型、地址、认证引用、缓存路径和资源上限只来自本地 bootstrap，不能来自配置中心自身。
 - server 统一执行去抖、single-flight、revision 排序、schema/引用校验、编译和 ArcSwap 发布。
 - watch 必须可取消、有界、可重连；断线、compaction、乱序、重复和慢消费者不得导致错误快照发布。

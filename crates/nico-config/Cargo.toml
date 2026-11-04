@@ -1,0 +1,28 @@
+[package]
+name = "nico-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Configuration source contract and implementations for the gateway"
+
+[dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+futures-core.workspace = true
+nico-core.workspace = true
+notify.workspace = true
+serde.workspace = true
+serde_norway.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt", "signal", "sync", "time"] }
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
+
+[lints]
+workspace = true

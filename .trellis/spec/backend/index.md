@@ -6,20 +6,20 @@
 
 ## Overview
 
-The backend is a Rust Cargo Workspace: a small protocol-agnostic kernel (`gateway-core`), one HTTP
-data plane on Pingora (`gateway-http`), one AI data plane (`gateway-ai`), config sources
-(`gateway-config*`), built-in policies (`gateway-plugins`), and a single binary (`gateway-server`)
+The backend is a Rust Cargo Workspace: a small protocol-agnostic kernel (`nico-core`), one HTTP
+data plane on Pingora (`nico-http`), one AI data plane (`nico-ai`), config sources
+(`nico-config*`), built-in policies (`nico-plugins`), and a single binary (`nico`, built by `nico-server`)
 that wires them together.
 
 These specs encode **Rust best practices** applied to that architecture: ownership over cloning,
 typed errors over `anyhow`, explicit bounds and deadlines, snapshots over locks, and a toolchain
 that enforces what review would otherwise have to.
 
-> **Status**: `gateway-core`, `gateway-config`, `gateway-http` and `gateway-server` exist with a
-> green baseline. `gateway-ai` and `gateway-plugins` do not exist yet. These files are the binding
+> **Status**: `nico-core`, `nico-config`, `nico-http` and `nico-server` exist with a
+> green baseline. `nico-ai` and `nico-plugins` do not exist yet. These files are the binding
 > conventions for new code.
 > Architecture rationale is in `.trellis/tasks/11-03-unified-gateway-analysis/design.md`;
-> the empirically verified Pingora behaviour that constrains `gateway-http` is in
+> the empirically verified Pingora behaviour that constrains `nico-http` is in
 > `.trellis/tasks/archive/2026-11/11-03-phase0-tech-verification/research/phase0-capability-report.md` §6.
 
 ---
@@ -33,7 +33,7 @@ Before writing backend code in a task:
       rules). If it does not fit an existing crate, that is a design question first.
 - [ ] If the change touches an HTTP data plane or the Pingora integration, read the verified
       constraints in the phase-0 capability report §6 before designing hooks or flushing.
-- [ ] Confirm the change does not create a dependency from `gateway-core` to a protocol crate.
+- [ ] Confirm the change does not create a dependency from `nico-core` to a protocol crate.
 - [ ] Identify the error type this code returns and how it maps to `ErrorCategory`.
 - [ ] Identify resource bounds (size, time, channel capacity) for anything touching I/O.
 - [ ] Identify how the change behaves on cancellation, timeout, and reload.
@@ -96,7 +96,7 @@ lefthook install             # writes .git/hooks/{pre-commit,pre-push}
 
 Rules:
 
-- A red hook is a real failure; fix it instead of bypassing. `SKIP_GATEWAY_HOOKS=1` exists for tool
+- A red hook is a real failure; fix it instead of bypassing. `SKIP_NICO_HOOKS=1` exists for tool
   outages and must be mentioned in the commit or PR; `git commit --no-verify` bypasses lefthook
   itself and is reserved for the same cases.
 - Do not set `core.hooksPath` while lefthook manages hooks — it silently disables them.
@@ -112,7 +112,7 @@ Rules:
 |---|---|
 | Ownership | Prefer `&T`/`&str`/`&[T]`; clone only when ownership transfer, `Arc` sharing, or an immutable snapshot is real |
 | Copy | `Copy` only for small (≤~24B) plain-data types. `Bytes` is a cheap `Clone`, **not** `Copy` |
-| Errors | `thiserror` in libraries, `anyhow` only in `gateway-server::main`; no `unwrap`/`expect` outside tests |
+| Errors | `thiserror` in libraries, `anyhow` only in `nico-server::main`; no `unwrap`/`expect` outside tests |
 | Dispatch | Generics/`impl Trait` for closed hot paths; `Arc<dyn Trait>` at config-compiled extension points; box at the boundary, not inside structs |
 | Shared state | `ArcSwap<Snapshot>` read once per request; `OnceLock`/`LazyLock` for statics; no `Rc`/`RefCell`/`Cell` in async code |
 | Async | Bounded channels, `CancellationToken`, whole-call deadlines, no guard held across `.await` |

@@ -14,21 +14,21 @@ Layering:
 
 | Layer | Error type | Responsibility |
 |---|---|---|
-| `gateway-core` | `ErrorCategory` (protocol-agnostic classification) | Says *what kind* of failure it is, never what status code to return |
-| `gateway-config` | `ConfigSourceError` | Source protocol failure, mapped from etcd/Nacos/file errors |
-| `gateway-http` | `HttpError` | HTTP semantics: bad request, upstream failure, timeout, response already committed |
-| `gateway-ai` | `ProviderError` | Provider call failure, upstream quota, malformed provider response |
-| `gateway-server` | `anyhow::Result` in `main` only | Startup/reload orchestration reporting |
+| `nico-core` | `ErrorCategory` (protocol-agnostic classification) | Says *what kind* of failure it is, never what status code to return |
+| `nico-config` | `ConfigSourceError` | Source protocol failure, mapped from etcd/Nacos/file errors |
+| `nico-http` | `HttpError` | HTTP semantics: bad request, upstream failure, timeout, response already committed |
+| `nico-ai` | `ProviderError` | Provider call failure, upstream quota, malformed provider response |
+| `nico-server` | `anyhow::Result` in `main` only | Startup/reload orchestration reporting |
 
 Errors wrap, they do not flatten. A layered crate nests the error of a crate it is **allowed** to
 depend on (see the dependency direction in `directory-structure.md`) instead of copying its fields:
 
 ```rust
-// gateway-ai may depend on gateway-http, so it can nest HttpError.
+// nico-ai may depend on nico-http, so it can nest HttpError.
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
     #[error("provider transport failed: {0}")]
-    Transport(#[from] gateway_http::HttpError),
+    Transport(#[from] nico_http::HttpError),
     #[error("provider returned malformed stream: {reason}")]
     MalformedStream { reason: String },
     #[error("provider quota exhausted for {provider}")]
@@ -36,8 +36,8 @@ pub enum ProviderError {
 }
 ```
 
-The reverse direction is forbidden: `gateway-http` must not name `ProviderError`, and
-`gateway-core` must not name any of them. Those layers keep their own error type and rely on
+The reverse direction is forbidden: `nico-http` must not name `ProviderError`, and
+`nico-core` must not name any of them. Those layers keep their own error type and rely on
 `ErrorCategory` to classify what happened.
 
 ---
@@ -47,7 +47,7 @@ The reverse direction is forbidden: `gateway-http` must not name `ProviderError`
 Libraries use `thiserror`; binaries may use `anyhow`. Both rules are hard:
 
 ```rust
-// gateway-config/src/source.rs
+// nico-config/src/source.rs
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigSourceError {
     #[error("config source unavailable: {source_name}")]
@@ -96,7 +96,7 @@ Requirements for every public error enum:
 
 Forbidden in library error types: `Box<dyn std::error::Error>` as the error **type** itself,
 `String` as the only error variant (`MyError(String)`), and `anyhow::Error` in any `pub` signature
-of a `gateway-*` library crate. `Box<dyn Error + Send + Sync>` **is** allowed as a `#[source]`
+of a `nico-*` library crate. `Box<dyn Error + Send + Sync>` **is** allowed as a `#[source]`
 field — that is how `thiserror` nests a foreign cause — but never as the return type of a library
 function. It is also the correct return type for a `tokio::spawn`ed task boundary.
 
@@ -232,7 +232,7 @@ awareness — see the AI design notes. Never fall back after the first streamed 
 
 ### Error categories in the kernel
 
-`gateway-core` classifies but does not decide HTTP:
+`nico-core` classifies but does not decide HTTP:
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -248,10 +248,10 @@ pub enum ErrorCategory {
 `ErrorCategory` derives `Copy` because it is a five-variant fieldless enum — the textbook `Copy`
 case from the handbook: tag-like, all payloads trivially copyable. `Upstream` deliberately does
 **not** carry the error value; the concrete error lives in the layer that produced it, and the
-category is the only thing that crosses into `gateway-core`.
+category is the only thing that crosses into `nico-core`.
 
 Protocol layers map categories to their own representation (HTTP status, MQTT reason code, gRPC
-status). `gateway-core` must never contain `StatusCode` or any wire-level detail.
+status). `nico-core` must never contain `StatusCode` or any wire-level detail.
 
 ---
 

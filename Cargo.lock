@@ -626,71 +626,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gateway-config"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "bytes",
- "futures-core",
- "gateway-core",
- "notify",
- "serde",
- "serde_norway",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
-name = "gateway-core"
-version = "0.0.0"
-dependencies = [
- "arc-swap",
- "proptest",
- "serde",
- "serde_norway",
- "sha2",
- "thiserror",
-]
-
-[[package]]
-name = "gateway-http"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "bytes",
- "gateway-core",
- "pingora",
- "thiserror",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "gateway-server"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "bytes",
- "futures-core",
- "gateway-config",
- "gateway-core",
- "gateway-http",
- "pingora",
- "serde",
- "serde_norway",
- "sha2",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -984,6 +919,71 @@ dependencies = [
  "log",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "nico-config"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "futures-core",
+ "nico-core",
+ "notify",
+ "serde",
+ "serde_norway",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "nico-core"
+version = "0.0.0"
+dependencies = [
+ "arc-swap",
+ "proptest",
+ "serde",
+ "serde_norway",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
+name = "nico-http"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "nico-core",
+ "pingora",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "nico-server"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "futures-core",
+ "nico-config",
+ "nico-core",
+ "nico-http",
+ "pingora",
+ "serde",
+ "serde_norway",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

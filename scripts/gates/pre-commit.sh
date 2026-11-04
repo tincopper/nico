@@ -10,12 +10,12 @@
 #   4. file budget: reject staged .rs files that exceed 500 lines or grew past it
 #   5. soft reminder when src/ changed without a test change
 #
-# Bypass for emergencies: SKIP_GATEWAY_HOOKS=1 git commit ...
+# Bypass for emergencies: SKIP_NICO_HOOKS=1 git commit ...
 # Full baseline (clippy, docs, deny, workspace tests) lives in scripts/gates/pre-push.sh.
 set -euo pipefail
 
-if [[ "${SKIP_GATEWAY_HOOKS:-0}" == "1" ]]; then
-    echo "[hook] SKIP_GATEWAY_HOOKS=1: commit gate skipped"
+if [[ "${SKIP_NICO_HOOKS:-0}" == "1" ]]; then
+    echo "[hook] SKIP_NICO_HOOKS=1: commit gate skipped"
     exit 0
 fi
 
@@ -79,8 +79,8 @@ for pkg in meta["packages"]:
     if any(f == rel or f.startswith(rel + "/") for f in staged):
         pkgs.append(pkg["name"])
 
-# Reverse-dependency closure inside the workspace: a change to gateway-core
-# must also test gateway-config and gateway-server.
+# Reverse-dependency closure inside the workspace: a change to nico-core
+# must also test nico-config and nico-server.
 by_name = {pkg["name"]: pkg for pkg in meta["packages"]}
 changed = set(pkgs)
 while True:
@@ -114,10 +114,26 @@ import subprocess, sys
 LIMIT = 500
 staged = [line for line in sys.argv[1].splitlines() if line.strip()]
 
+# A pure rename must be compared against the file it came from: the rule is "a file that is
+# already over the cap may not grow", and moving a file does not grow it.
+def rename_sources():
+    out = subprocess.run(
+        ["git", "diff", "--cached", "--name-status", "-M", "--diff-filter=R"],
+        check=True, capture_output=True, text=True).stdout
+    pairs = {}
+    for line in out.splitlines():
+        fields = line.split("\t")
+        if len(fields) == 3:
+            pairs[fields[2]] = fields[1]
+    return pairs
+
+renames = rename_sources()
+
 def head_lines(path):
+    source = renames.get(path, path)
     try:
         return int(subprocess.run(
-            ["git", "show", f"HEAD:{path}"],
+            ["git", "show", f"HEAD:{source}"],
             check=True, capture_output=True, text=True).stdout.count("\n"))
     except subprocess.CalledProcessError:
         return None  # new file

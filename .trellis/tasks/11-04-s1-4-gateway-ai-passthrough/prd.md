@@ -1,22 +1,22 @@
-# gateway-ai：OpenAI Provider 与 SSE 透传
+# nico-ai：OpenAI Provider 与 SSE 透传
 
 ## Goal
 
-建立 `gateway-ai`：AI 领域的 Filter 与 Provider 模块。阶段 1 只做 **OpenAI 兼容透传** —— 按路由级 `provider` 选择上游、注入凭证引用、透传请求与 SSE 响应，**不解析请求 body**，不做模型级路由，不做协议转换。
+建立 `nico-ai`：AI 领域的 Filter 与 Provider 模块。阶段 1 只做 **OpenAI 兼容透传** —— 按路由级 `provider` 选择上游、注入凭证引用、透传请求与 SSE 响应，**不解析请求 body**，不做模型级路由，不做协议转换。
 
 ## Dependencies
 
 - 前置：`1.2 http-data-plane`（Filter 扩展点、上游选择、响应流生命周期）。
 - 前置：`1.1 route-schema`（`providers` 段与路由级 `provider` 引用）。
-- 与 `1.3 gateway-plugins` 无顺序依赖，可并行。
+- 与 `1.3 nico-plugins` 无顺序依赖，可并行。
 - 依赖 `1.1 route-schema` 与 `1.2 http-data-plane` 均完成后才能开工。
 
 ## Requirements
 
 ### R1：crate 与依赖边界
 
-- 新建 `crates/gateway-ai`，依赖 `gateway-core` + `gateway-http`；**不**被 `gateway-http` 反向依赖。
-- `gateway-server` 增加依赖并注册 AI Filter。
+- 新建 `crates/nico-ai`，依赖 `nico-core` + `nico-http`；**不**被 `nico-http` 反向依赖。
+- `nico-server` 增加依赖并注册 AI Filter。
 - Provider 初期是模块（`provider::openai`），不拆微 crate。
 
 ### R2：Provider 配置与选择
@@ -56,7 +56,7 @@
 - [ ] 首字节后不重试：注入上游中途断流，断言没有第二次上游请求。
 - [ ] 错误映射：上游 429/5xx → `Upstream`，客户端得到稳定错误码，不含 provider 细节。
 - [ ] 日志不含 prompt/response/凭证（有测试断言）。
-- [ ] 依赖边界：`cargo tree -p gateway-http | grep gateway-ai` 无输出；基线五条命令全绿。
+- [ ] 依赖边界：`cargo tree -p nico-http | grep nico-ai` 无输出；基线五条命令全绿。
 
 ## Out of Scope
 

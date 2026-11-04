@@ -244,14 +244,14 @@ WebSocket 与 gRPC 的透明代理可在第一阶段验证，但“消息内容�
 
 ## 11. Crate 与依赖边界建议
 
-不建议把所有协议塞进单个 `gateway-protocols`，可按依赖和发布角色拆分：
+不建议把所有协议塞进单个 `nico-protocols`，可按依赖和发布角色拆分：
 
-- `gateway-server`：启动、角色选择、信号与生命周期。
-- `gateway-core`：配置、快照、公共元数据、策略和错误模型；不依赖 Pingora HTTP Session。
-- `gateway-http`：Pingora 接入和 HTTP 专属 hooks。
-- `gateway-ai`：provider/model 领域、AI 请求与 SSE 适配。
-- `gateway-policy` 或少量插件 crate：鉴权、限流、安全策略。
-- 后续独立的 `gateway-l4`、`gateway-mqtt`、`gateway-quic` 等。
+- `nico-server`：启动、角色选择、信号与生命周期。
+- `nico-core`：配置、快照、公共元数据、策略和错误模型；不依赖 Pingora HTTP Session。
+- `nico-http`：Pingora 接入和 HTTP 专属 hooks。
+- `nico-ai`：provider/model 领域、AI 请求与 SSE 适配。
+- `nico-policy` 或少量插件 crate：鉴权、限流、安全策略。
+- 后续独立的 `nico-l4`、`nico-mqtt`、`nico-quic` 等。
 
 WASM 插件不建议进入第一阶段。流式 ABI、异步取消、内存/fuel 限制、宿主能力和版本兼容会显著放大核心攻坚范围，应在同步 Rust 管线稳定后独立评估。
 

@@ -10,7 +10,7 @@
 
 ## 1. 结论摘要
 
-| 能力 | 结论 | 证据等级 | 证据 | 对 gateway-http 的影响 |
+| 能力 | 结论 | 证据等级 | 证据 | 对 nico-http 的影响 |
 |---|---|---|---|---|
 | 1. H1/H2 同端口 | **有约束**：同一监听可同时服务 H1 与 h2c，但明文 H2 必须显式开启 `HttpServerOptions::h2c`；默认只按 H1 解析 | L2 + L0 | `.evidence/1-h1-h2.txt`；`pingora-core/src/apps/mod.rs:66,270,299` | 阶段 1 必须构建 `ProxyServiceBuilder` 并设置 `h2c = true`，否则 `curl --http2-prior-knowledge` 直接失败。TLS 侧走 ALPN，与 h2c 无关 |
 | 2. 请求/响应 body 钩子 | **成立**：按块可见、非强制整体缓冲、可无损透传；块边界不稳定，不能当契约 | L2 | `.evidence/2-body.txt`、`2-body-hooks.txt`；8 MiB 上传 128×65536 字节，摘要一致；1 MiB chunked 收 32 块（末块 299 B） | 过滤器必须按流式状态机实现（跨块残包自留），不得假设 64 KiB 或 1:1 块映射。请求头先发给上游、body 随后流式转发 |
@@ -19,7 +19,7 @@
 | 5. 慢客户端背压 | **成立**：上游写入被反压，网关内存有界 | L2 | `.evidence/5-backpressure.txt`：32 MiB / 2 MiB·s⁻¹，mock 每 8 MiB 用时 1.8/4.1/4.5/4.3 s；网关 RSS 采样在 7 MB 量级保持恒定（10 次） | 不需要自建缓冲队列；禁止为"提速"在过滤器里 collect 整个响应体，否则有界性由你负责 |
 | 6. 取消传播 | **成立**：客户端断开后上游连接在 ~70 ms 内被关闭 | L2 | `.evidence/6-cancel.txt`：网关 504 ms 记为 `ConnectionClosed / Downstream`，mock 570 ms 写失败 EPIPE | 取消不需要手工转发；但要把 `Downstream ConnectionClosed` 归为 Cancelled，不能记 500，也不要重试 |
 | 7. 连接池作用域 | **成立**：池属于 service 实例（进程级，`Arc` 被所有 worker 共享），不是 per-worker；H1 池每条连接同时只承载一个请求 | L2 + L0 | `.evidence/7-pool.txt`、`7b-pool-workers.txt`：5 次独立下游连接复用同一上游端口；4 worker 下 8 并发→8 条连接，随后 8 次顺序请求复用这 8 条；`services/listening.rs:299`、`upstreams/peer.rs:777` | 连接数 ≈ 并发请求数（H1 不复用多路）；不要假设"每 worker 一份池"。下游 H1/H2 共享同一上游池；池键由 `HttpPeer` 哈希（地址/scheme/SNI/证书/校验开关）决定 |
-| 8. graceful 退出 | **有约束**：SIGTERM 后立即停止监听，但在途流只被"宽限期"保护；宽限期是固定 sleep，不是等空闲；默认 300 s | L2 + L0 | `.evidence/8-graceful.txt`：`grace=3` 时 10 s SSE 在 17 个事件处被截断、进程约 3.1 s 退出；0.4 s SSE 完整收尾；默认日志 `grace period 300s starts` 且 8 s 后进程仍在；`server/mod.rs:63,809` | `gateway-server` 必须显式设置 `grace_period_seconds` 与 `graceful_shutdown_timeout_seconds`；要 drain 长 SSE，宽限期必须覆盖最长流时长，或用 499/事件化收尾 |
+| 8. graceful 退出 | **有约束**：SIGTERM 后立即停止监听，但在途流只被"宽限期"保护；宽限期是固定 sleep，不是等空闲；默认 300 s | L2 + L0 | `.evidence/8-graceful.txt`：`grace=3` 时 10 s SSE 在 17 个事件处被截断、进程约 3.1 s 退出；0.4 s SSE 完整收尾；默认日志 `grace period 300s starts` 且 8 s 后进程仍在；`server/mod.rs:63,809` | `nico-server` 必须显式设置 `grace_period_seconds` 与 `graceful_shutdown_timeout_seconds`；要 drain 长 SSE，宽限期必须覆盖最长流时长，或用 499/事件化收尾 |
 | 9. WebSocket / gRPC | **有约束**：H1 WebSocket 透明代理成立（101 + 双向帧）；H2 明文 gRPC 透明代理成立（上游需显式 h2 + trailers 透传）。WS over H2、gRPC 双向流未验证 | L2 + L0 | `.evidence/9-ws-grpc.txt`：text/binary/ping/close 全部回显；`grpc-status: 0`/`grpc-message` 到达 curl，`upstream_response_trailer_filter` 收到同一对；`server.rs:787`（H2 下 `is_upgrade_req()` 恒 false） | 阶段 1 只能承诺"WS 透明字节转发（H1）"和"gRPC unary/服务端流（H2）"；不要承诺 WS 消息感知或 gRPC 转码/反射 |
 | 10. 大 body（8 MiB，关键字段在末尾） | **成立**：请求与响应都字节无损，摘要一致；未触发任何默认大小限制 | L2 | `.evidence/2-body.txt`：上传/下载 sha256 均与对端声明一致 | 必须自己设上限（本 PoC 8 MiB 通过，说明"没有默认限制"≠"有保护"）。`Expect: 100-continue` 原样转发，上游的 100 会进入 `upstream_response_filter`（status=100），过滤器必须按 `is_informational()` 分支 |
 
@@ -96,7 +96,7 @@ $ curl -sv --http2-prior-knowledge http://127.0.0.1:18080/hello
 `apps/mod.rs:277-299` 说明 TLS 连接忽略 h2c 并用 ALPN，明文连接只有在
 `h2c == true` 时才 peek `PRI * HTTP/2.0` 前言并进入 H2 握手。
 
-**影响**：`gateway-http` 需要 `ProxyServiceBuilder::server_options`，且明文角色显式开 h2c；
+**影响**：`nico-http` 需要 `ProxyServiceBuilder::server_options`，且明文角色显式开 h2c；
 TLS 角色由 ALPN 决定。二者不能靠同一个默认值蒙混。
 
 ### 3.2 请求/响应 body 钩子（结论：成立，L2）
@@ -180,7 +180,7 @@ mock.conn.error ... error=eof with 0 of 1048576 body bytes
 `proxy_h1.rs:483` 的 `get_retry_buffer()` 只在**重试**时用于重放；`v1/server.rs:586-596` 的
 `read_body_bytes` 只把读到的数据写入 retry buffer，不改变"首个上游尝试从下游流读取 body"的事实。
 
-**影响**：AI 路由若需要 body 内的 `model`，阶段 1 必须在 `gateway-http` 明确选一条受支持的路：
+**影响**：AI 路由若需要 body 内的 `model`，阶段 1 必须在 `nico-http` 明确选一条受支持的路：
 (a) 路由不依赖 body；(b) 在进入 ProxyHttp 之前完成缓冲并改写请求（自定义 forwarding / subrequest）；
 (c) 有界扫描并延迟上游选择，但要解决重放。这个选择是本 PoC 给出的**最大未决设计点**。
 
@@ -399,7 +399,7 @@ spike.upstream.response elapsed_ms=0 status=100 version=HTTP/1.1 headers={}
 spike.upstream.response elapsed_ms=31 status=200 version=HTTP/1.1 headers={"content-type": "application/json", ...}
 ```
 
-## 4. 对 `gateway-http` 的直接约束
+## 4. 对 `nico-http` 的直接约束
 
 1. **监听配置**：明文角色必须 `h2c = true`；TLS 角色走 ALPN。`Server` 头需要自己加。
 2. **过滤器形态**：`request_body_filter` / `upstream_response_body_filter` /

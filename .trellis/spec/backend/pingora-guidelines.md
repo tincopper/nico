@@ -3,13 +3,13 @@
 > The HTTP data plane runs on Pingora `=0.9.1`. Every statement below was verified against that
 > version's source; a upgrade is a re-verification task, not a version bump.
 >
-> Owner: `gateway-http`. `gateway-server` composes it, `gateway-core` never sees it.
+> Owner: `nico-http`. `nico-server` composes it, `nico-core` never sees it.
 
 ---
 
 ## 1. Scope / Trigger
 
-Read this before touching `crates/gateway-http/src/proxy/**`, `service.rs`, or the `gateway-server`
+Read this before touching `crates/nico-http/src/proxy/**`, `service.rs`, or the `nico-server`
 assembly in `src/server/`. Pingora's defaults are *product decisions* (300 s drain, retries,
 compression, `server` header), so any hook, feature flag or `ServerConf` field changed here changes
 gateway behaviour for every request.
@@ -17,7 +17,7 @@ gateway behaviour for every request.
 ## 2. Signatures
 
 ```rust
-// gateway-http — HTTP semantics only; it never installs a signal handler or owns the runtime
+// nico-http — HTTP semantics only; it never installs a signal handler or owns the runtime
 pub fn server_conf(settings: &HttpSettings) -> Arc<ServerConf>;
 pub fn service(
     conf: &Arc<ServerConf>,
@@ -26,21 +26,21 @@ pub fn service(
     settings: &HttpSettings,
 ) -> Service<HttpProxy<HttpApp, ()>>;
 
-// gateway-http, crate-private: the peer seam a filter uses for a target this crate cannot resolve
+// nico-http, crate-private: the peer seam a filter uses for a target this crate cannot resolve
 pub struct Destination { /* scheme, host, port */ }
 impl HttpContext {
     pub fn set_destination(&mut self, destination: Destination);
     pub fn destination(&self) -> Option<&Destination>;
 }
 
-// gateway-server — process assembly owns signals, runtime and shutdown
+// nico-server — process assembly owns signals, runtime and shutdown
 pub fn serve(bootstrap: &BootstrapConfig, source: Arc<dyn ConfigSource>, shutdown: CancellationToken) -> ExitCode;
 // src/server/shutdown.rs, pub(super)
 fn run_args(shutdown: CancellationToken) -> RunArgs;
 struct CancelWatch; // impl ShutdownSignalWatch
 ```
 
-The shutdown bridge lives in `gateway-server` on purpose: a data-plane library that installs a signal
+The shutdown bridge lives in `nico-server` on purpose: a data-plane library that installs a signal
 handler as a side effect of being linked cannot be embedded in a test.
 
 ## 3. Contracts
@@ -85,7 +85,7 @@ handler as a side effect of being linked cannot be embedded in a test.
 
 | Assertion point | Test |
 |---|---|
-| routing does not touch the body (head arrives before the first client body write) | `gateway-server/tests/http_body.rs` |
+| routing does not touch the body (head arrives before the first client body write) | `nico-server/tests/http_body.rs` |
 | 8 MiB both ways keeps sha256 and order | `http_body.rs` |
 | SSE events arrive per write, byte-identical, no `Content-Encoding`/`Server` | `http_streaming.rs` |
 | `100 Continue` keeps exactly the origin's headers | `http_interim.rs` |
@@ -93,9 +93,9 @@ handler as a side effect of being linked cannot be embedded in a test.
 | client disconnect → upstream released, `http.status=499`, no 5xx, next request healthy | `http_cancel.rs` |
 | a client that trickles its body is answered `408` and logged as a client fault | `http_limits.rs` |
 | configured grace period is honoured, then `serve` returns | `http_shutdown.rs` |
-| `h2c` set/cleared through `ProxyServiceBuilder` | `gateway-http/src/service/tests.rs` |
-| a filter stage cannot outlive the request budget | `gateway-http/src/filter/tests.rs` |
-| a cancelled token becomes a graceful termination | `gateway-server/src/server/shutdown/tests.rs` |
+| `h2c` set/cleared through `ProxyServiceBuilder` | `nico-http/src/service/tests.rs` |
+| a filter stage cannot outlive the request budget | `nico-http/src/filter/tests.rs` |
+| a cancelled token becomes a graceful termination | `nico-server/src/server/shutdown/tests.rs` |
 | `max_retries == 1`, seconds rounded up and never `0`, `threads` passthrough | `service/tests.rs` |
 
 One server per integration-test binary: `Server::run` owns the calling thread and installs a global

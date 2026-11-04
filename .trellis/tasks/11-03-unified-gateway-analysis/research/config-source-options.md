@@ -113,7 +113,7 @@ ConfigSource::watch(from)
   -> DELETE -> 配置不可用（不是空快照）
 ```
 
-adapter 不应把 `WatchStream` 暴露给 `gateway-server`，只暴露 `ConfigEvent`，避免 etcd 类型泄漏到 reload 管线。
+adapter 不应把 `WatchStream` 暴露给 `nico-server`，只暴露 `ConfigEvent`，避免 etcd 类型泄漏到 reload 管线。
 
 ### 3.3 依赖风险
 

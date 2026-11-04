@@ -45,7 +45,7 @@ git config core.hooksPath # must print nothing
 | `pre-commit` | only when `*.rs`, `*.toml` or `*.lock` is staged | rustfmt check, `cargo check --workspace --all-targets`, tests for the changed crates **and their reverse dependencies**, the 500-line file budget for staged files, and a warning when `src/` changed without a test change |
 | `pre-push` | every push | fmt, `clippy -D warnings`, `cargo test --workspace`, `cargo doc` with `RUSTDOCFLAGS="-D warnings"`, `cargo deny check` |
 
-- Fix a red hook; do not bypass it. If a tool is unavailable, `SKIP_GATEWAY_HOOKS=1` skips the check
+- Fix a red hook; do not bypass it. If a tool is unavailable, `SKIP_NICO_HOOKS=1` skips the check
   and the bypass must be mentioned in the commit or PR.
 - Hooks read the working tree, not the staged blob: stage everything the commit should contain.
 - Run them manually with `lefthook run pre-commit` / `lefthook run pre-push`.
@@ -62,8 +62,9 @@ cargo +nightly fmt --all
 cargo deny check
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
-# run the gateway with the local file configuration source
-cargo run -p gateway-server -- --bootstrap config/bootstrap.yaml
+# run nico with the local file configuration source (the package is the binary crate, the
+# command is the product name)
+cargo run -p nico-server -- --bootstrap config/bootstrap.yaml
 ```
 
 ## Code rules
@@ -89,16 +90,17 @@ and [`directory-structure.md`](.trellis/spec/backend/directory-structure.md). Th
 - Use a type prefix: `feat:`, `fix:`, `docs:`, `chore:`, `test:`, `refactor:` (optionally scoped,
   e.g. `feat(config): ...`).
 - Keep a commit to one purpose. File splits and behaviour changes go in separate commits.
-- A bypassed hook (`SKIP_GATEWAY_HOOKS=1` or `--no-verify`) must be explained in the commit body.
+- A bypassed hook (`SKIP_NICO_HOOKS=1` or `--no-verify`) must be explained in the commit body.
 - Work is tracked in Trellis tasks under `.trellis/tasks/`; planning artifacts are reviewed before
   implementation starts.
 
 ## Repository layout
 
 ```text
-crates/gateway-core/     document model, revisions, snapshots, error categories
-crates/gateway-config/   ConfigSource contract, local file source, LKG cache, fake
-crates/gateway-server/   bootstrap, reload pipeline, CLI
+crates/nico-core/     document model, revisions, snapshots, error categories
+crates/nico-config/   ConfigSource contract, local file source, LKG cache, fake
+crates/nico-http/     Pingora data plane: routing, filters, forwarding, one error mapping
+crates/nico-server/   bootstrap, reload pipeline, process assembly, CLI (binary `nico`)
 config/                  bootstrap.yaml + resources.yaml for local runs
 scripts/gates/           the checks behind the git hooks
 poc/                     throwaway Pingora probes; not part of the workspace

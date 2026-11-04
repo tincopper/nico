@@ -20,8 +20,8 @@ Common cross-layer bugs in this project:
 - A request reads two different `RuntimeSnapshot` generations and mixes them.
 - A stream parser reports usage that does not match the bytes actually delivered.
 
-> "Layer" here means **crate boundary or process boundary** — `gateway-core` / `gateway-http` /
-> `gateway-ai` / `gateway-config` / `gateway-plugins` / `gateway-server`, plus the edges to the
+> "Layer" here means **crate boundary or process boundary** — `nico-core` / `nico-http` /
+> `nico-ai` / `nico-config` / `nico-plugins` / `nico-server`, plus the edges to the
 > client, the upstream, and the config store. It is not the generic "API / service / database"
 > stack.
 
@@ -35,11 +35,11 @@ Draw out how data moves. Write the actual type at every arrow — not a descript
 
 ```text
 ConfigSource (Bytes + Revision)
-  → gateway-server (deserialize, validate, compile)
+  → nico-server (deserialize, validate, compile)
   → RuntimeSnapshot (ArcSwap)
-  → gateway-http (CompiledRoute + HttpContext)
-  → gateway-plugins (HttpFilter chain)
-  → gateway-ai (Provider + ProviderStream)
+  → nico-http (CompiledRoute + HttpContext)
+  → nico-plugins (HttpFilter chain)
+  → nico-ai (Provider + ProviderStream)
   → client (response bytes / SSE events)
 ```
 
@@ -55,12 +55,12 @@ For each arrow, ask:
 
 | Boundary                              | Common Issues                                                                       |
 | ------------------------------------- | ----------------------------------------------------------------------------------- |
-| `ConfigSource` ↔ `gateway-server`     | Revision vs digest semantics, out-of-order events, raw bytes vs parsed document      |
-| `gateway-server` ↔ `RuntimeSnapshot`  | Partially validated config, lost generation, two snapshots in one request            |
-| `RuntimeSnapshot` ↔ `gateway-http`    | `CompiledRoute` missing resource limits, unstable filter ordering                    |
-| `gateway-http` ↔ `gateway-plugins`    | Filter wants typed HTTP state but receives untyped metadata                          |
-| `gateway-http` ↔ `gateway-ai`         | AI state leaking into `gateway-core`, or created for non-AI requests                 |
-| `gateway-ai` ↔ `Provider`             | Request semantics (model mapping) vs response semantics (stream, usage) conflated    |
+| `ConfigSource` ↔ `nico-server`     | Revision vs digest semantics, out-of-order events, raw bytes vs parsed document      |
+| `nico-server` ↔ `RuntimeSnapshot`  | Partially validated config, lost generation, two snapshots in one request            |
+| `RuntimeSnapshot` ↔ `nico-http`    | `CompiledRoute` missing resource limits, unstable filter ordering                    |
+| `nico-http` ↔ `nico-plugins`    | Filter wants typed HTTP state but receives untyped metadata                          |
+| `nico-http` ↔ `nico-ai`         | AI state leaking into `nico-core`, or created for non-AI requests                 |
+| `nico-ai` ↔ `Provider`             | Request semantics (model mapping) vs response semantics (stream, usage) conflated    |
 | `ProviderStream` ↔ client             | Lost incremental events, writes after cancel, usage not matching delivered bytes     |
 | request ↔ request (state)             | Shared mutable state between two in-flight streams                                   |
 
@@ -85,11 +85,11 @@ coding.
 **Bad**: Assuming a config field is always present because the local YAML has it.
 
 **Good**: Every config struct uses `deny_unknown_fields` plus explicit `Option`/default handling,
-and validation happens once in `gateway-server`.
+and validation happens once in `nico-server`.
 
 ### Mistake 2: Scattered Validation
 
-**Bad**: `gateway-http` re-checks limits that `gateway-server` already validated during compilation.
+**Bad**: `nico-http` re-checks limits that `nico-server` already validated during compilation.
 Two owners for one rule means the second one goes stale after a tuning change.
 
 **Good**: Validate once at the entry point, then encode the guarantee in the type so the second
@@ -111,9 +111,9 @@ lets the receiver drop the check without losing the invariant.
 
 ### Mistake 3: Leaky Abstractions
 
-**Bad**: `gateway-core` gains an HTTP route concept "because both planes might need it".
+**Bad**: `nico-core` gains an HTTP route concept "because both planes might need it".
 
-**Good**: `gateway-core` stays protocol-agnostic. If only one data plane uses a concept, it belongs
+**Good**: `nico-core` stays protocol-agnostic. If only one data plane uses a concept, it belongs
 to that data plane's crate.
 
 ### Mistake 4: Every Consumer Parses The Same Payload
@@ -175,7 +175,7 @@ the hot path trusts without re-checking.
 
 - [ ] Add the field to the typed `serde` struct with explicit default/optional semantics — never a
       bare `serde_json::Value`.
-- [ ] Add validation in `gateway-server`'s compile step, not in the data plane.
+- [ ] Add validation in `nico-server`'s compile step, not in the data plane.
 - [ ] Confirm the field is carried into `RuntimeSnapshot` and reachable from the `CompiledRoute` or
       shared handle that needs it.
 - [ ] Search for every reader of the old shape: `rg "<field_name>" crates/`
@@ -197,7 +197,7 @@ exactly one published generation, one metric sample, and one audit record.
 
 ```text
 ConfigSource event (Snapshot | ResyncRequired)
-  → gateway-server (debounce, single-flight, validate, compile)
+  → nico-server (debounce, single-flight, validate, compile)
   → RuntimeSnapshot publish (ArcSwap)
   → metrics + tracing (generation, revision, digest, result)
   → audit log

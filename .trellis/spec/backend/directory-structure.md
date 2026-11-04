@@ -11,12 +11,12 @@ The backend is **one Cargo Workspace** at the repository root. The layout follow
 1. **Module before crate** — start inside a single crate. Split into a new crate only when a real
    boundary appears: independent Cargo feature, heavy/conflicting dependency, separate release,
    separate team, or compile isolation that clearly pays for itself.
-2. **Dependency direction is enforced, not suggested** — `gateway-core` never depends on a protocol
-   crate or on Pingora; `gateway-server` is the only crate that knows every concrete implementation.
-3. **One binary target** — `gateway-server`. Deployment roles (traffic / AI) are selected by Cargo
+2. **Dependency direction is enforced, not suggested** — `nico-core` never depends on a protocol
+   crate or on Pingora; `nico-server` is the only crate that knows every concrete implementation.
+3. **One binary target** — `nico` (built by the `nico-server` crate). Deployment roles (traffic / AI) are selected by Cargo
    features plus runtime config, not by adding more binaries.
 
-> **Status**: `gateway-core`, `gateway-config`, `gateway-http` and `gateway-server` exist as built. The
+> **Status**: `nico-core`, `nico-config`, `nico-http` and `nico-server` exist as built. The
 > remaining crates below are the binding target structure. Architecture rationale lives in
 > `.trellis/tasks/11-03-unified-gateway-analysis/design.md` — do not re-derive it from this file.
 
@@ -36,20 +36,20 @@ nico/
 │   ├── bootstrap.yaml          # local-only: config source connection, cache path, limits
 │   └── resources.yaml          # gateway resources when using the local config source
 └── crates/
-    ├── gateway-server/         # the only binary: wiring, reload pipeline, role selection
+    ├── nico-server/         # the only binary crate (binary `nico`): wiring, reload pipeline
     │   └── src/
     │       ├── main.rs         # thin: parse args, call lib::run, map error to exit code
     │       ├── lib.rs          # //! doc + pub fn run(...); makes wiring integration-testable
     │       ├── bootstrap.rs
     │       ├── reload.rs       # watch loop + debounce + single-flight + publish
     │   └── tests/              # integration tests reach the wiring through lib.rs
-    ├── gateway-core/           # small kernel shared by every data plane
+    ├── nico-core/           # small kernel shared by every data plane
     │   └── src/
     │       ├── lib.rs          # //! crate doc + #![deny(missing_docs)]
     │       ├── config.rs
     │       ├── context.rs
     │       └── error.rs
-    ├── gateway-http/           # Pingora integration + HTTP domain traits
+    ├── nico-http/           # Pingora integration + HTTP domain traits
     │   └── src/
     │       ├── lib.rs          # //! + the public contract (HttpError, HttpFilter, Destination, …)
     │       ├── context.rs      # HttpContext: snapshot, route, destination, deadline, budgets
@@ -62,7 +62,7 @@ nico/
     │       ├── service.rs      # ServerConf derivation + ProxyServiceBuilder + listener
     │       ├── settings.rs     # HttpSettings: bootstrap `http` defaults and ranges
     │       └── upstream.rs     # crate-private: Destination → HttpPeer
-    ├── gateway-ai/             # AI domain traits, providers, stream adapters
+    ├── nico-ai/             # AI domain traits, providers, stream adapters
     │   └── src/
     │       ├── lib.rs
     │       ├── filter.rs
@@ -74,7 +74,7 @@ nico/
     │       └── stream/
     │           ├── sse.rs
     │           └── anthropic.rs
-    ├── gateway-config/         # ConfigSource trait, local source, LKG cache, fakes
+    ├── nico-config/         # ConfigSource trait, local source, LKG cache, fakes
     │   └── src/
     │       ├── lib.rs
     │       ├── source.rs
@@ -82,11 +82,11 @@ nico/
     │       ├── local.rs
     │       ├── cache.rs
     │       └── fake.rs
-    ├── gateway-config-etcd/    # optional, behind feature `config-etcd`
+    ├── nico-config-etcd/    # optional, behind feature `config-etcd`
     │   └── src/lib.rs
-    ├── gateway-config-nacos/   # optional, behind feature `config-nacos` (later milestone)
+    ├── nico-config-nacos/   # optional, behind feature `config-nacos` (later milestone)
     │   └── src/lib.rs
-    └── gateway-plugins/        # built-in HTTP policies: JWT, API key, rate limit
+    └── nico-plugins/        # built-in HTTP policies: JWT, API key, rate limit
         └── src/
             ├── lib.rs
             ├── jwt.rs
@@ -98,7 +98,7 @@ Per-crate test helpers live in `tests/` (integration) or in a `#[cfg(test)]` mod
 file under test. Shared test utilities for one crate go in `src/test_support.rs` behind
 `#[cfg(any(test, feature = "test-support"))]` — never in a separate published crate.
 
-`gateway-server` is the one crate with both `main.rs` and `lib.rs`. `main.rs` stays a thin shim
+`nico-server` is the one crate with both `main.rs` and `lib.rs`. `main.rs` stays a thin shim
 (parse args → call `lib::run` → map the error to an exit code) so the wiring, reload pipeline and
 role selection are reachable from `tests/`. A binary-only crate cannot be integration-tested.
 
@@ -131,38 +131,38 @@ submodules. Name modules after the capability (`debounce`, `publish`, `cache`), 
 
 | Kind of code | Location |
 |---|---|
-| HTTP/Pingora lifecycle, route matching, `HttpFilter`, upstream TLS policy | `gateway-http` |
-| Signals, runtime ownership, shutdown token, drain wiring | `gateway-server` |
-| AI provider semantics, model mapping, SSE translation | `gateway-ai` |
-| Config source protocol (etcd/Nacos clients) | `gateway-config-*` (own crate, own feature) |
-| Built-in HTTP policy (auth, rate limit) | `gateway-plugins` |
-| Wiring, feature selection, reload pipeline, shutdown | `gateway-server` |
-| Anything two data planes genuinely share (trace id, deadline, config generation, error category) | `gateway-core` |
+| HTTP/Pingora lifecycle, route matching, `HttpFilter`, upstream TLS policy | `nico-http` |
+| Signals, runtime ownership, shutdown token, drain wiring | `nico-server` |
+| AI provider semantics, model mapping, SSE translation | `nico-ai` |
+| Config source protocol (etcd/Nacos clients) | `nico-config-*` (own crate, own feature) |
+| Built-in HTTP policy (auth, rate limit) | `nico-plugins` |
+| Wiring, feature selection, reload pipeline, shutdown | `nico-server` |
+| Anything two data planes genuinely share (trace id, deadline, config generation, error category) | `nico-core` |
 
 If you cannot name the second real consumer of an abstraction, it does **not** belong in
-`gateway-core`. One implementation behind a trait is a warning sign, not a design.
+`nico-core`. One implementation behind a trait is a warning sign, not a design.
 
 ### Dependency rules
 
 ```text
-gateway-server
-   ├──> gateway-core
-   ├──> gateway-http ──────────> gateway-core + pingora + tokio (time/net/rt; never signals)
-   ├──> gateway-ai ────────────> gateway-http + gateway-core
-   ├──> gateway-config ────────> gateway-core
-   ├──> gateway-config-etcd ───> gateway-config     (feature: config-etcd)
-   ├──> gateway-config-nacos ──> gateway-config     (feature: config-nacos)
-   └──> gateway-plugins ───────> gateway-http + gateway-core
+nico-server
+   ├──> nico-core
+   ├──> nico-http ──────────> nico-core + pingora + tokio (time/net/rt; never signals)
+   ├──> nico-ai ────────────> nico-http + nico-core
+   ├──> nico-config ────────> nico-core
+   ├──> nico-config-etcd ───> nico-config     (feature: config-etcd)
+   ├──> nico-config-nacos ──> nico-config     (feature: config-nacos)
+   └──> nico-plugins ───────> nico-http + nico-core
 ```
 
 Hard rules:
 
-- `gateway-core` must not depend on `gateway-http`, `gateway-ai`, `gateway-plugins`, `pingora`,
+- `nico-core` must not depend on `nico-http`, `nico-ai`, `nico-plugins`, `pingora`,
   `hyper`, or any config-center client.
-- `gateway-http` must not import `gateway-ai`. AI plugs in through HTTP extension points: a filter
+- `nico-http` must not import `nico-ai`. AI plugs in through HTTP extension points: a filter
   resolves a provider target and records a `Destination`, and this crate owns only how to reach it.
-- `gateway-http` must not install signal handlers or build a runtime; that is process assembly, and
-  it lives in `gateway-server`.
+- `nico-http` must not install signal handlers or build a runtime; that is process assembly, and
+  it lives in `nico-server`.
 - Config-center clients are never in the default dependency tree; they arrive only with their
   feature enabled.
 - Dependencies between sibling data planes are added only after a design update in
@@ -191,7 +191,7 @@ groups. This is enforced by `rustfmt.toml` (`group_imports = "StdExternalCrate"`
 
 | Thing | Rule | Example |
 |---|---|---|
-| Crate | `gateway-<domain>` kebab-case | `gateway-config-etcd` |
+| Crate | `nico-<domain>` kebab-case | `nico-config-etcd` |
 | Module / file | `snake_case`, one concern per file | `reload.rs` |
 | Trait | noun describing the role, in the owning crate | `HttpFilter`, `Provider`, `ConfigSource` |
 | Type | `PascalCase`, no `Impl`/`Manager`/`Factory` prefixes | `CompiledRoute`, `RuntimeSnapshot` |
@@ -208,12 +208,12 @@ unless the type really manages several lifecycles or algorithms.
 
 ## Examples
 
-- Adding an AI provider: new module in `crates/gateway-ai/src/provider/`, strong-typed config,
-  registration in `gateway-server` bootstrap. No changes to `gateway-core` or `gateway-http`.
-- Adding an auth filter: new module in `crates/gateway-plugins/src/`, implements
-  `gateway_http::HttpFilter`, registered in `gateway-server`. No changes to `gateway-ai`.
-- Adding a config center: new `gateway-config-*` crate implementing
-  `gateway_config::ConfigSource`, feature-gated, registered in `bootstrap.rs`. No changes to the
+- Adding an AI provider: new module in `crates/nico-ai/src/provider/`, strong-typed config,
+  registration in `nico-server` bootstrap. No changes to `nico-core` or `nico-http`.
+- Adding an auth filter: new module in `crates/nico-plugins/src/`, implements
+  `nico_http::HttpFilter`, registered in `nico-server`. No changes to `nico-ai`.
+- Adding a config center: new `nico-config-*` crate implementing
+  `nico_config::ConfigSource`, feature-gated, registered in `bootstrap.rs`. No changes to the
   reload pipeline.
 
 ---
@@ -222,9 +222,9 @@ unless the type really manages several lifecycles or algorithms.
 
 ```bash
 # Dependency boundary checks (must produce no output)
-cargo tree -p gateway-core --prefix none | grep -E 'pingora|gateway-http|gateway-ai|etcd-client|nacos'
-cargo tree -p gateway-config --prefix none | grep -E 'pingora|gateway-http|gateway-ai|etcd-client'
-cargo tree -p gateway-http --prefix none | grep -E 'gateway-ai'
+cargo tree -p nico-core --prefix none | grep -E 'pingora|nico-http|nico-ai|etcd-client|nacos'
+cargo tree -p nico-config --prefix none | grep -E 'pingora|nico-http|nico-ai|etcd-client'
+cargo tree -p nico-http --prefix none | grep -E 'nico-ai'
 
 # Feature matrix must build
 cargo check --no-default-features

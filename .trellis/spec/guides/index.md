@@ -63,7 +63,7 @@ instead.
 - [ ] **You're creating a new utility/helper function** ← Search first!
 - [ ] Two modules decode the same payload shape
 - [ ] Multiple branches update the same derived state from an enum
-- [ ] You are tempted to put something into `gateway-core` "because it feels generic"
+- [ ] You are tempted to put something into `nico-core` "because it feels generic"
 
 → Read [Code Reuse Thinking Guide](./code-reuse-thinking-guide.md)
 

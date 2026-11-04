@@ -13,7 +13,7 @@
 #
 # Emergency bypass (must be mentioned in the commit/PR):
 #
-#   SKIP_GATEWAY_HOOKS=1 lefthook run pre-commit   # or: git commit --no-verify
+#   SKIP_NICO_HOOKS=1 lefthook run pre-commit   # or: git commit --no-verify
 min_version: 2.0.0
 colors: true
 

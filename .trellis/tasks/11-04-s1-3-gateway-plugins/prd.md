@@ -2,13 +2,13 @@
 
 ## Goal
 
-建立 `gateway-plugins`：提供三个内置 HTTP 策略（JWT、API Key、Rate Limit），以 `gateway_http::HttpFilter` 实现，通过路由配置引用并在 `gateway-server` 注册。策略是受信任的静态组合，不做通用插件容器。
+建立 `nico-plugins`：提供三个内置 HTTP 策略（JWT、API Key、Rate Limit），以 `nico_http::HttpFilter` 实现，通过路由配置引用并在 `nico-server` 注册。策略是受信任的静态组合，不做通用插件容器。
 
 ## Dependencies
 
 - 前置：`1.2 http-data-plane`（需要 `HttpFilter` trait、请求上下文与响应提交语义）。
 - 前置：`1.1 route-schema`（需要路由模型；本任务会按需追加策略引用字段）。
-- 后续：无强依赖；`1.4 gateway-ai-passthrough` 可复用同一 Filter 机制。
+- 后续：无强依赖；`1.4 nico-ai-passthrough` 可复用同一 Filter 机制。
 
 ## Requirements
 
@@ -39,7 +39,7 @@
 
 ### R5：集成与失败语义
 
-- `gateway-server` 显式构造并注册 Filter；新增策略只改本 crate 与注册点，不动 `gateway-http` 路由算法。
+- `nico-server` 显式构造并注册 Filter；新增策略只改本 crate 与注册点，不动 `nico-http` 路由算法。
 - 认证失败为 fail-closed；限流状态异常（内部错误）fail-closed 并记 `Internal`。
 - 策略执行在响应提交前完成；提交后不得改变状态码。
 
@@ -52,7 +52,7 @@
 - [ ] 顺序：同一路由上认证先于限流（用 mock 断言未认证请求不消耗令牌）。
 - [ ] 日志不含 token/key；有专门测试格式化错误后不包含凭证。
 - [ ] 路由未引用策略时行为不变（回归测试）。
-- [ ] 基线五条命令全绿；`gateway-core` 依赖树不变。
+- [ ] 基线五条命令全绿；`nico-core` 依赖树不变。
 
 ## Out of Scope
 
