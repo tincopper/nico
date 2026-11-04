@@ -1,8 +1,8 @@
 {
-  "id": "gateway-plugins",
-  "name": "gateway-plugins",
-  "title": "内置 HTTP 策略：JWT / API Key / 限流",
-  "description": "建立 gateway-plugins：JWT、API Key、Rate Limit 三个内置 HttpFilter，强类型配置、server 注册点与失败语义。",
+  "id": "s1-4-gateway-ai-passthrough",
+  "name": "s1-4-gateway-ai-passthrough",
+  "title": "1.4 gateway-ai：OpenAI Provider 与 SSE 透传",
+  "description": "建立 gateway-ai：AI Filter、OpenAI Provider 模块、按路由级 provider 选上游、凭证引用注入、SSE 透传与任意分片安全。",
   "status": "planning",
   "dev_type": null,
   "scope": null,
@@ -19,7 +19,7 @@
   "pr_url": null,
   "subtasks": [],
   "children": [],
-  "parent": "11-04-phase1-http-ai-mvp",
+  "parent": "11-04-s1-mvp",
   "relatedFiles": [],
   "notes": "",
   "meta": {}

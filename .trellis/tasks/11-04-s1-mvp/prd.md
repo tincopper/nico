@@ -22,10 +22,10 @@
 
 | 子任务 | 交付 | 依赖顺序 |
 |---|---|---|
-| `route-schema` | `routes` / `upstreams` / `providers` 配置模型、四段校验、文档边界 | 最先，其它三个都依赖它 |
-| `http-data-plane` | `gateway-http`：Pingora 接入、路由匹配、upstream、流式 body、SSE、h2c、graceful、1xx | 依赖 `route-schema` |
-| `gateway-plugins` | JWT / API Key / Rate Limit 内置 HttpFilter | 依赖 `http-data-plane` |
-| `gateway-ai-passthrough` | `gateway-ai`：AI Filter、OpenAI Provider、按路由级 provider 选上游、SSE 透传 | 依赖 `http-data-plane`（可与 `gateway-plugins` 并行） |
+| `1.1 route-schema` | `routes` / `upstreams` / `providers` 配置模型、四段校验、文档边界 | 最先，其它三个都依赖它 |
+| `1.2 http-data-plane` | `gateway-http`：Pingora 接入、路由匹配、upstream、流式 body、SSE、h2c、graceful、1xx | 依赖 `1.1` |
+| `1.3 gateway-plugins` | JWT / API Key / Rate Limit 内置 HttpFilter | 依赖 `1.2` |
+| `1.4 gateway-ai-passthrough` | `gateway-ai`：AI Filter、OpenAI Provider、按路由级 provider 选上游、SSE 透传 | 依赖 `1.2`（可与 `1.3` 并行） |
 
 子任务之间的顺序写在各子任务 `prd.md` 的 "Dependencies" 段，不靠树位置隐含。
 

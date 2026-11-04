@@ -6,10 +6,10 @@
 
 ## Dependencies
 
-- 前置：`http-data-plane`（Filter 扩展点、上游选择、响应流生命周期）。
-- 前置：`route-schema`（`providers` 段与路由级 `provider` 引用）。
-- 与 `gateway-plugins` 无顺序依赖，可并行。
-- 依赖 `route-schema` 与 `http-data-plane` 均完成后才能开工。
+- 前置：`1.2 http-data-plane`（Filter 扩展点、上游选择、响应流生命周期）。
+- 前置：`1.1 route-schema`（`providers` 段与路由级 `provider` 引用）。
+- 与 `1.3 gateway-plugins` 无顺序依赖，可并行。
+- 依赖 `1.1 route-schema` 与 `1.2 http-data-plane` 均完成后才能开工。
 
 ## Requirements
 

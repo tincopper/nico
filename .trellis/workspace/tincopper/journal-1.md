@@ -101,6 +101,6 @@ kept etcd-compatible and a six-item re-verification checklist recorded for the l
 
 ### Next Steps
 
-- Stage 1 planned as parent `11-04-phase1-http-ai-mvp` with four children: `route-schema` → `http-data-plane` → (`gateway-plugins`, `gateway-ai-passthrough`)
+- Stage 1 planned as parent `11-04-s1-mvp` (titles numbered 1, 1.1-1.4) with four children: `route-schema` → `http-data-plane` → (`gateway-plugins`, `gateway-ai-passthrough`)
 - Decision recorded: stage 1 routes on vhost/path/route-level `provider`, never on the request body; bounded buffering + replay is a separate later design item
 - Still open: `quick` semantics, first-phase provider list/SLA, whether a metrics exporter lands before stage 2

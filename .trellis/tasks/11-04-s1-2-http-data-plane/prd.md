@@ -6,8 +6,8 @@
 
 ## Dependencies
 
-- 前置：`route-schema`（需要 `Document.routes` / `upstreams` / `providers` 模型）。
-- 后续：`gateway-plugins`（在本 crate 的 `HttpFilter` 上扩展）、`gateway-ai-passthrough`（依赖本 crate）。
+- 前置：`1.1 route-schema`（需要 `Document.routes` / `upstreams` / `providers` 模型）。
+- 后续：`1.3 gateway-plugins`（在本 crate 的 `HttpFilter` 上扩展）、`1.4 gateway-ai-passthrough`（依赖本 crate）。
 - 不满足前置时不得开工。
 
 ## Requirements
@@ -62,7 +62,7 @@
 
 ## Out of Scope
 
-- 过滤器链与策略执行（`gateway-plugins`）。
+- 过滤器链与策略执行（`1.3 gateway-plugins`）。
 - provider 语义、凭证注入、SSE 转换（`gateway-ai`）。
 - 重试与 fallback（阶段 1 之后，需先定重放语义）。
 - TLS 终止与证书热更新、连接池调参、metrics exporter、管理 API。

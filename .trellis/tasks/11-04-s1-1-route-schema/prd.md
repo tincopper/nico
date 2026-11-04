@@ -7,7 +7,7 @@
 ## Dependencies
 
 - 无前置子任务；本任务是阶段 1 的第一步。
-- 后续：`http-data-plane`（消费本模型并编译路由表）、`gateway-plugins`（在其上增加策略引用）、`gateway-ai-passthrough`（消费 `providers`）。
+- 后续：`1.2 http-data-plane`（消费本模型并编译路由表）、`1.3 gateway-plugins`（在其上增加策略引用）、`1.4 gateway-ai-passthrough`（消费 `providers`）。
 
 ## Requirements
 
@@ -77,7 +77,7 @@ routes:
 
 ## Out of Scope
 
-- 路由匹配算法与 `CompiledRoute`（属 `http-data-plane`）。
-- 策略（filters/policies）引用字段：由 `gateway-plugins` 任务按需要追加，本任务不预置。
+- 路由匹配算法与 `CompiledRoute`（属 `1.2 http-data-plane`）。
+- 策略（filters/policies）引用字段：由 `1.3 gateway-plugins` 任务按需要追加，本任务不预置。
 - 任何网络代码或 `gateway-http` 变更。
 - 配置文档拆分多文件、include、锚点复用。

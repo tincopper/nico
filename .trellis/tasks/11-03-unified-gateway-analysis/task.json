@@ -1,7 +1,7 @@
 {
   "id": "unified-gateway-analysis",
   "name": "unified-gateway-analysis",
-  "title": "统一 API 与 AI 多模态网关方案分析",
+  "title": "0. 统一 API 与 AI 多模态网关方案分析（架构分析）",
   "description": "分析并校正基于 Rust 与 Pingora 的统一流量网关和 AI 网关方案，明确多协议边界、核心架构、风险与分阶段落地路线，不编写产品代码。",
   "status": "planning",
   "dev_type": null,

@@ -6,9 +6,9 @@
 
 ## Dependencies
 
-- 前置：`http-data-plane`（需要 `HttpFilter` trait、请求上下文与响应提交语义）。
-- 前置：`route-schema`（需要路由模型；本任务会按需追加策略引用字段）。
-- 后续：无强依赖；`gateway-ai` 可复用同一 Filter 机制。
+- 前置：`1.2 http-data-plane`（需要 `HttpFilter` trait、请求上下文与响应提交语义）。
+- 前置：`1.1 route-schema`（需要路由模型；本任务会按需追加策略引用字段）。
+- 后续：无强依赖；`1.4 gateway-ai-passthrough` 可复用同一 Filter 机制。
 
 ## Requirements
 
