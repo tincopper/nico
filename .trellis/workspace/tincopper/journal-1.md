@@ -52,3 +52,55 @@ Filled .trellis/spec from empty templates: backend Rust best practices (9-chapte
 - 11-03-unified-gateway-analysis remains in planning; spec is now usable as its implementation context
 - Frontend spec asserts React 19 / TanStack Query / Zustand / Tailwind without a requirement source; re-verify when a frontend task is created
 - YAML crate is undecided; spec examples use a yaml:: placeholder until a maintained fork is pinned
+
+## Session 2: Stage 0 config pipeline + Pingora verification, then stage-1 planning
+<!-- trellis-session: v=2 fp=phase0-stage1 -->
+
+**Date**: 2026-11-04
+**Task**: 阶段 0：本地配置源骨架与 Pingora 能力验证
+**Branch**: `main`
+
+### Summary
+
+Built the first real code in the workspace and closed the questions stage 0 was supposed to answer.
+Delivered `gateway-core` (document model, source-scoped revision, digest, ArcSwap snapshot, status),
+`gateway-config` (bounded `ConfigSource` contract, notify+SIGHUP local file source, scripted fake,
+atomic last-known-good cache) and `gateway-server` (bootstrap parsing, debounce + max-wait +
+single-flight + digest dedup pipeline, CLI). 127 tests, all five baseline gates green.
+
+Verified Pingora `0.9.1` behaviour in a throwaway `poc/` workspace instead of guessing from docs. The
+findings changed two design assumptions: filters that read the request body get no replay (the
+upstream hangs), and the graceful "grace period" is a fixed sleep defaulting to 300 s. Also confirmed
+`h2c` must be opted into explicitly, 1xx responses reach `upstream_response_filter`, and the upstream
+connection pool is process-wide rather than per worker.
+
+etcd stays deferred by decision: phase 1 uses the local file source, with the `ConfigSource` contract
+kept etcd-compatible and a six-item re-verification checklist recorded for the later milestone.
+
+### Changes
+
+| Hash | Message |
+|------|---------|
+| `4961c24` | feat(config): add workspace skeleton, ConfigSource contract and local file source |
+| `8987605` | chore(poc): add pingora 0.9.1 capability probes |
+| `5180a28` | docs(task): record phase 0 capability report and local-first plan |
+| `2debf13` | docs(spec): fold stage-0 facts into the backend specs |
+| `f98eeb6` | docs: fix stale gateway-server module layout after stage 0 |
+| `fe49536` | chore(task): archive stage 0 and plan stage 1 |
+
+### Testing
+
+- [OK] `cargo +nightly fmt --all -- --check`, clippy `-D warnings`, 127 tests, `cargo doc -D warnings`, `cargo deny check`
+- [OK] Dependency boundaries: `gateway-core` has no protocol/source dependency; `gateway-config` has no `gateway-server`
+- [OK] Real-file e2e: generation 1→2→3, invalid document keeps LKG (`error.category=Limit`), deleted file degrades, cache written atomically, SIGTERM drains
+- [OK] Pingora probes replayable via `poc/scripts/run-probes.sh` (10 capabilities, source refs at 0.9.1)
+
+### Status
+
+[OK] **Completed** — stage 0 archived.
+
+### Next Steps
+
+- Stage 1 planned as parent `11-04-phase1-http-ai-mvp` with four children: `route-schema` → `http-data-plane` → (`gateway-plugins`, `gateway-ai-passthrough`)
+- Decision recorded: stage 1 routes on vhost/path/route-level `provider`, never on the request body; bounded buffering + replay is a separate later design item
+- Still open: `quick` semantics, first-phase provider list/SLA, whether a metrics exporter lands before stage 2
