@@ -67,12 +67,14 @@ thiserror = "2"
 tracing = "0.1"
 ```
 
-The YAML crate is **not** listed above on purpose: upstream `serde_yaml` is archived (no security
-fixes), so pick a maintained fork and pin it, recording the choice in the task's `research/`.
+The YAML crate is **not** in `[workspace.dependencies]` above on purpose: upstream `serde_yaml` is
+archived (no security fixes). The pinned choice is `serde_norway = "=0.9.42"` — a maintained fork
+with `deny_unknown_fields` support, MSRV 1.71. Read `yaml::` in spec examples as "the pinned
+crate", and never reach for `serde_yaml` just because it is the well-known name.
 
-Until that choice is made, spec examples use `yaml::` as a placeholder for "the pinned YAML
-crate". Read `yaml::from_slice` as "whatever crate the task pinned", not as an API to copy
-verbatim, and never reach for `serde_yaml` just because it is the well-known name.
+Workspace lint priorities: `nonstandard_style` and `future_incompatible` must carry
+`priority = -1`. Without it `clippy::lint_groups_priority` fails the build under `-D warnings`
+because `clippy::all` (priority 10) overlaps them.
 
 Lint levels are configured at workspace scope (that is configuration, not an override); individual
 sites are silenced only with `#[expect]` + `reason`:

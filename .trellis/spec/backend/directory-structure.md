@@ -16,8 +16,8 @@ The backend is **one Cargo Workspace** at the repository root. The layout follow
 3. **One binary target** — `gateway-server`. Deployment roles (traffic / AI) are selected by Cargo
    features plus runtime config, not by adding more binaries.
 
-> **Status**: no Rust code exists in this repository yet. The layout below is the binding target
-> structure. Architecture rationale lives in
+> **Status**: `gateway-core`, `gateway-config` and `gateway-server` exist as built. The remaining
+> crates below are the binding target structure. Architecture rationale lives in
 > `.trellis/tasks/11-03-unified-gateway-analysis/design.md` — do not re-derive it from this file.
 
 ---
@@ -41,7 +41,7 @@ nico/
     │       ├── main.rs         # thin: parse args, call lib::run, map error to exit code
     │       ├── lib.rs          # //! doc + pub fn run(...); makes wiring integration-testable
     │       ├── bootstrap.rs
-    │       ├── config_watch.rs
+    │       ├── reload.rs        # watch loop + debounce + single-flight + publish
     │       └── reload.rs
     │   └── tests/              # integration tests reach the wiring through lib.rs
     ├── gateway-core/           # small kernel shared by every data plane
@@ -178,7 +178,7 @@ groups. This is enforced by `rustfmt.toml` (`group_imports = "StdExternalCrate"`
 | Thing | Rule | Example |
 |---|---|---|
 | Crate | `gateway-<domain>` kebab-case | `gateway-config-etcd` |
-| Module / file | `snake_case`, one concern per file | `config_watch.rs` |
+| Module / file | `snake_case`, one concern per file | `reload.rs` |
 | Trait | noun describing the role, in the owning crate | `HttpFilter`, `Provider`, `ConfigSource` |
 | Type | `PascalCase`, no `Impl`/`Manager`/`Factory` prefixes | `CompiledRoute`, `RuntimeSnapshot` |
 | Function | `snake_case`, verb first | `build_snapshot`, `publish` |

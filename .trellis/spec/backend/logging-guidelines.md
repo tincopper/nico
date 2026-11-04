@@ -146,6 +146,10 @@ async move { /* work */ }.instrument(request_span).await
 - Label cardinality is a budget. Allowed labels: `source`, `result`, `route_id`, `provider`,
   `status_class` (`2xx`/`4xx`/`5xx`), `error_category`. Not allowed: raw paths, full URLs,
   per-user values.
+- Current config observability is `ConfigStatus` on the snapshot handle plus the `tracing` fields
+  `source`, `config.generation`, `config.revision`, `digest`, `size`, `error.category`. The
+  `metrics` crate and an exporter arrive with the phase-1 data plane; until then these names are the
+  contract to emit against.
 - Config subsystem baseline: `config_load_total{source,result}`, `config_reload_total{result}`,
   `config_compile_seconds`, `config_watch_reconnects_total`, `config_snapshot_age_seconds`,
   `config_degraded`.

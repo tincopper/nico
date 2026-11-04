@@ -15,9 +15,12 @@ These specs encode **Rust best practices** applied to that architecture: ownersh
 typed errors over `anyhow`, explicit bounds and deadlines, snapshots over locks, and a toolchain
 that enforces what review would otherwise have to.
 
-> **Status**: no product code exists yet. These files define the target conventions that
-> `trellis-implement` / `trellis-check` must follow once implementation starts. Architecture
-> rationale is in `.trellis/tasks/11-03-unified-gateway-analysis/design.md`.
+> **Status**: the stage-0 skeleton exists — `gateway-core`, `gateway-config`,
+> `gateway-server` — with 127 tests and a green baseline. `gateway-http`, `gateway-ai` and
+> `gateway-plugins` do not exist yet. These files are the binding conventions for new code.
+> Architecture rationale is in `.trellis/tasks/11-03-unified-gateway-analysis/design.md`;
+> the empirically verified Pingora behaviour that constrains `gateway-http` is in
+> `.trellis/tasks/11-03-phase0-tech-verification/research/phase0-capability-report.md` §6.
 
 ---
 
@@ -28,6 +31,8 @@ Before writing backend code in a task:
 - [ ] Read the relevant guide(s) below and the task's `prd.md` + `design.md`.
 - [ ] Confirm the crate and module the code belongs to (see `directory-structure.md` dependency
       rules). If it does not fit an existing crate, that is a design question first.
+- [ ] If the change touches an HTTP data plane or the Pingora integration, read the verified
+      constraints in the phase-0 capability report §6 before designing hooks or flushing.
 - [ ] Confirm the change does not create a dependency from `gateway-core` to a protocol crate.
 - [ ] Identify the error type this code returns and how it maps to `ErrorCategory`.
 - [ ] Identify resource bounds (size, time, channel capacity) for anything touching I/O.

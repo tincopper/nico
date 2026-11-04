@@ -12,7 +12,7 @@ Three distinct storage roles, never conflated:
 
 | Role | Implementation | Authority |
 |---|---|---|
-| **Config store** | etcd (production, phase 1), local file (dev/test) | Single authoritative source per process |
+| **Config store** | local file (phase 1); etcd and Nacos are later milestones behind `ConfigSource` | Single authoritative source per process |
 | **Last-known-good cache** | Local file (`cache_path`) | Fallback only, never a source of truth |
 | **Runtime state** | In-memory `ArcSwap<RuntimeSnapshot>` + `SharedServices` | Derived; rebuilt from the config store |
 
@@ -30,8 +30,13 @@ Rules:
 
 ## Client and Version Pinning
 
-- `etcd-client` (etcd v3 via tonic/prost) is the phase-1 candidate. The exact version is pinned in
-  `Cargo.lock` and documented in the task's `research/`.
+- The phase-1 source is the local file source (`gateway-config::local`), already implemented and
+  covered by tests for atomic rename, symlink swap, half-write, deletion/recreation and SIGHUP.
+  The LKG cache is written after every successful publish and read only when
+  `allow_bootstrap_cache: true`.
+- `etcd-client` (etcd v3 via tonic/prost) is the **etcd milestone** candidate, not a phase-1
+  dependency. The exact version is pinned in `Cargo.lock` only when that milestone starts; the
+  re-verification checklist lives in the phase-0 capability report §8.
 - Before adopting a version, verify by compilation: Watch RPC fields (`created`, `canceled`,
   `compact_revision`, `events`, `fragment`), Auth, TLS, and endpoint failover behavior.
 - Run `cargo tree -d` and check for a second `tonic`/`hyper`/TLS stack conflicting with Pingora's.

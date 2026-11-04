@@ -71,6 +71,10 @@ pub enum ConfigSourceError {
 }
 ```
 
+Every layer's public error type also exposes `fn category(&self) -> ErrorCategory` when the caller
+must classify the failure (`DocumentError`, `ConfigSourceError`, `CacheError` in the stage-0 code).
+Mapping lives in one place per layer, so the edge maps a category instead of matching every variant.
+
 Requirements for every public error enum:
 
 - `#[derive(Debug)]` plus `std::error::Error` (via `thiserror`).
