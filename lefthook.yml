@@ -1,0 +1,34 @@
+# Git hook orchestration.
+#
+# Lefthook only decides *when* a gate runs and how failures are reported; the checks
+# themselves live in scripts/gates/. Install once per clone:
+#
+#   brew install lefthook   # or: go install github.com/evilmartians/lefthook@latest
+#   lefthook install
+#
+# Manual run:
+#
+#   lefthook run pre-commit
+#   lefthook run pre-push
+#
+# Emergency bypass (must be mentioned in the commit/PR):
+#
+#   SKIP_GATEWAY_HOOKS=1 lefthook run pre-commit   # or: git commit --no-verify
+min_version: 2.0.0
+colors: true
+
+pre-commit:
+  # A merge or rebase rewrites the tree; gating mid-replay produces false failures.
+  skip:
+    - merge
+    - rebase
+  jobs:
+    - name: rust-gate
+      # Only run when a Rust-relevant path is staged; documentation-only commits skip free.
+      glob: "*.{rs,toml,lock}"
+      run: scripts/gates/pre-commit.sh
+
+pre-push:
+  jobs:
+    - name: rust-baseline
+      run: scripts/gates/pre-push.sh

@@ -72,6 +72,37 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
 Plus the dependency-boundary and feature-matrix checks from `directory-structure.md`.
 
+### Local gates: lefthook
+
+The baseline is wired into versioned git hooks, orchestrated by [lefthook](https://lefthook.dev)
+(`lefthook.yml`). The checks themselves stay in `scripts/gates/` because lefthook cannot compute
+which cargo packages a staged file belongs to.
+
+```bash
+brew install lefthook        # or: go install github.com/evilmartians/lefthook@latest
+lefthook install             # writes .git/hooks/{pre-commit,pre-push}
+```
+
+- `pre-commit` (fast, `scripts/gates/pre-commit.sh`): runs only when a `*.rs` / `*.toml` / `*.lock`
+  path is staged. rustfmt check, `cargo check --workspace --all-targets`, tests for the changed
+  crates **and their reverse dependencies**, the 500-line file budget for staged files, and a
+  warning when `src/` changed without a test change.
+- `pre-push` (full, `scripts/gates/pre-push.sh`): fmt, `clippy -D warnings`,
+  `cargo test --workspace`, `cargo doc` with `RUSTDOCFLAGS="-D warnings"`, and `cargo deny check`
+  when installed.
+- Manual invocation: `lefthook run pre-commit` / `lefthook run pre-push`.
+- Skips: `merge` and `rebase` for pre-commit (a replay would produce false failures).
+
+Rules:
+
+- A red hook is a real failure; fix it instead of bypassing. `SKIP_GATEWAY_HOOKS=1` exists for tool
+  outages and must be mentioned in the commit or PR; `git commit --no-verify` bypasses lefthook
+  itself and is reserved for the same cases.
+- Do not set `core.hooksPath` while lefthook manages hooks — it silently disables them.
+- Hooks read the **working tree**, so stage everything the commit should contain first.
+- Keep the fast path under a minute on an incremental build; a slow gate gets bypassed and stops
+  protecting anything.
+
 ---
 
 ## Rust Rules of Thumb (quick reference)
