@@ -116,6 +116,12 @@ Do **not** add `provider/mod.rs` when `provider.rs` already exists; `mod.rs` fil
 in directories that already use them. Avoid deep nesting: three module levels below `src/` is the
 practical ceiling before a submodule should become its own crate or be flattened.
 
+Each module owns **one** business boundary or **one** data structure, and each `.rs` file stays
+within the 300–500 line budget (hard cap 500, see `quality-guidelines.md`). When a file approaches
+the cap, keep the parent as the entry point and move cohesive groups into `foo.rs` + `foo/`
+submodules. Name modules after the capability (`debounce`, `publish`, `cache`), never after a layer
+(`utils`, `helpers`, `types`, `common`).
+
 ### Where new code goes
 
 | Kind of code | Location |
@@ -218,4 +224,7 @@ cargo check --all-features
 
 # Duplicate / conflicting heavy deps
 cargo tree -d
+
+# File budget: every .rs file must be <= 500 lines (prints violations)
+find crates -name '*.rs' | xargs wc -l | awk '$1 > 500 && $NF != "total" {print}'
 ```

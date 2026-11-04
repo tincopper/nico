@@ -13,7 +13,8 @@
 Quality is enforced by the toolchain, not by review prose. Every rule below that can be a lint is
 a lint, so review can focus on design.
 
-Baseline commands — all must pass before a task is reported done:
+Baseline commands — all must pass before a task is reported done (they are also wired into the
+versioned lefthook gates, see `index.md`):
 
 ```bash
 cargo +nightly fmt --all --check          # nightly: group_imports/imports_granularity are nightly-only
@@ -37,6 +38,79 @@ cargo check --features ai
 cargo check --features ai,builtin-plugins,config-etcd
 cargo check --all-features
 ```
+
+---
+
+## Design Principles and File Budget
+
+Structure is derived from invariants, not chosen from a pattern catalogue. Before adding a module,
+a trait or a configuration knob, be able to state three things: which concrete coupling it removes,
+who the **second** real consumer is, and what breaks if it is deleted. If any answer is missing, do
+not add the abstraction.
+
+### Reason from invariants first
+
+- Write down the invariants and failure modes before the structure: who may mutate the value, what
+  must happen when the dependency is down, which resource bound applies, where cancellation lands.
+- Let the type system carry the invariant. An illegal state that only a comment forbids is a defect
+  waiting to happen (`ResponseCommitted`, `ParseLimits`, private fields + constructors).
+- Optimize for the reader who must change the code under time pressure: explicit data flow, few
+  moving parts, one obvious place to look.
+
+### High cohesion: one boundary per module
+
+- A file or module owns **one** business boundary or **one** data structure, including that
+  structure's validation and invariants.
+- If describing the module needs "and" ("parses config **and** publishes snapshots"), split it.
+- Export the minimum API that boundary needs. Everything else is private or `pub(crate)`.
+- A module that re-exports unrelated types, or that keeps growing utility functions, is a sign the
+  boundary was never named.
+
+### Low coupling: dependencies point at owners
+
+- Dependency direction is fixed by `directory-structure.md`; cycles are never allowed.
+- Pass data, not handles: values, immutable snapshots and `Arc<Snapshot>` cross boundaries; mutable
+  borrows, callbacks into the caller, and half-constructed structs do not.
+- Communicate through the seams this spec already defines (a domain trait, an event enum, the
+  published snapshot). Do not add a side channel because it is convenient at the call site.
+- Each module's failure semantics must be describable without reading its caller: typed error,
+  `ErrorCategory`, and the state the caller keeps on failure (last-known-good, degraded, not-ready).
+
+### Extensibility at existing seams
+
+- Extend with an `enum` when the set is closed, with a domain trait when it is open. Do not build a
+  registry, factory or lifecycle manager until the second real implementation exists.
+- Prefer configuration-driven variation over new code branches; features gate capability, never
+  default behaviour.
+- New extension points are added where the domain already owns the vocabulary (HTTP filter in
+  `gateway-http`, provider in `gateway-ai`), not in a central "plugins" catch-all.
+
+### File budget: 300–500 lines, hard cap 500
+
+- Target **300–500** lines per `.rs` file; **500 is a hard cap**, including an inline
+  `#[cfg(test)]` module. At ~400 lines, plan the split before adding more.
+- Split along responsibility, in this order of preference:
+  1. data model vs its parsing/validation (`config.rs` + `config/` for validators);
+  2. pure decision logic vs I/O (policy computation vs filesystem/network effects);
+  3. state machine/lifecycle vs side effects;
+  4. tests by scenario (`tests/<scenario>.rs`).
+- Exceeding the cap after a split means the boundary is wrong: re-cut by business capability or data
+  structure, not by technical layer. `types.rs`, `utils.rs`, `helpers.rs` and `common.rs` are signs
+  of a split that dodged the naming decision.
+- Files already above the cap are refactor backlog: do **not** keep adding lines to them. When they
+  must change, split first and keep the split commit separate from the behaviour change.
+- Check (must print nothing for new work):
+
+```bash
+find crates -name '*.rs' | xargs wc -l | awk '$1 > 500 && $NF != "total" {print}'
+```
+
+### Module layout for large logic
+
+Prefer the directory form to keep one boundary per file while giving the reader a single entry
+point: `reload.rs` declares `mod debounce; mod publish;` and `reload/{debounce,publish}.rs` hold the
+submodules. The parent module keeps the public contract; children stay `pub(crate)` unless they own
+their own public API.
 
 ---
 
@@ -454,6 +528,10 @@ Tests are the first place a reader looks to understand behavior — they are liv
 - [ ] Does the change respect the dependency direction (`gateway-core` untouched by protocol
       crates)? Run the `cargo tree` checks from `directory-structure.md`.
 - [ ] Is any new abstraction backed by **two real consumers**? If not, inline it.
+- [ ] Does the change keep one business boundary (or one data structure) per module, and is the new
+      module named after that boundary rather than a technical layer?
+- [ ] Are all touched `.rs` files within the 300–500 line budget (hard cap 500), and did an
+      oversized file get split instead of extended?
 - [ ] Any new `.clone()`, `String`, `collect()`, or `Box<dyn Trait>` field on the request path?
       Justify or remove.
 - [ ] Any `expect`/`unreachable!` without a local invariant comment and `#[expect(...)]`?
@@ -487,6 +565,9 @@ Tests are the first place a reader looks to understand behavior — they are liv
 | Using `sleep` to test debounce or timeout | `tokio::time::pause()` + `advance` |
 | Snapshotting a whole config object with digests and timestamps | Snapshot the subtree and redact the unstable fields |
 | Putting a long "what/how" comment block above a function | Split the function; put usage in `///` |
+| Growing a module past 500 lines "because it is already big" | Split by boundary first; keep the split commit separate from behaviour changes |
+| Adding `utils.rs` / `common.rs` / `types.rs` | Name the capability; a layer-named module hides the real boundary |
+| Passing a handle or a callback across a module boundary to avoid a parameter | Pass data or call through the owning seam; handles couple lifetimes |
 | Adding a feature that changes behavior of the default build | Features add capability; behavior is config |
 | "It compiles, ship it" for an `unsafe` block | `unsafe` needs a dedicated task, `// SAFETY:`, and Miri |
 | Optimizing without a profile | Measure first; ignore <5% wins |
