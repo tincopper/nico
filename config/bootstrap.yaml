@@ -1,0 +1,19 @@
+# Local-only bootstrap: where the gateway reads its configuration from, and how far to trust it.
+#
+# This file is read before any configuration source exists, so it must never be served by a config
+# source. It selects exactly one authoritative source; the last-known-good cache is not a peer.
+config_source:
+  type: local
+  path: ./config/resources.yaml
+  max_bytes: 1048576
+  # notify | signal | notify+signal
+  watch: notify+signal
+
+# Debounce change events, but never postpone a publish past max_wait_ms while changes keep coming.
+debounce_ms: 200
+max_wait_ms: 1000
+
+# Last-known-good cache written after a successful publish (temp file + fsync + atomic rename).
+cache_dir: ./.tmp/cache
+# Only start from the cache when explicitly allowed; the snapshot is then marked stale.
+allow_bootstrap_cache: false

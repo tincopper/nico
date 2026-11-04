@@ -1,0 +1,72 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+# Pinned versions: see .trellis/tasks/11-03-phase0-tech-verification/design.md section 2.
+arc-swap = "=1.9.3"
+async-trait = "=0.1.92"
+bytes = "=1.12.1"
+futures-core = "=0.3.31"
+notify = "=8.2.1"
+proptest = "1"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_norway = "=0.9.42"
+sha2 = "=0.10.9"
+tempfile = "=3.27.0"
+thiserror = "=2.0.21"
+tokio = { version = "=1.54.1", default-features = false }
+tokio-util = "=0.7.20"
+tracing = "=0.1.44"
+tracing-subscriber = "=0.3.23"
+
+gateway-core = { version = "0.0.0", path = "crates/gateway-core" }
+gateway-config = { version = "0.0.0", path = "crates/gateway-config" }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+unreachable_pub = "warn"
+nonstandard_style = { level = "deny", priority = -1 }
+future_incompatible = { level = "warn", priority = -1 }
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+bare_urls = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = 10 }
+# Performance and correctness lints worth calling out explicitly.
+redundant_clone = { level = "deny", priority = 9 }
+large_enum_variant = { level = "deny", priority = 9 }
+clone_on_copy = { level = "deny", priority = 9 }
+needless_borrow = { level = "deny", priority = 9 }
+needless_collect = { level = "deny", priority = 9 }
+manual_ok_or = { level = "deny", priority = 9 }
+map_unwrap_or = { level = "deny", priority = 9 }
+await_holding_lock = { level = "deny", priority = 9 }
+# Panic-free policy (restriction lints are not in `all`, so they must be named).
+unwrap_used = { level = "deny", priority = 8 }
+expect_used = { level = "deny", priority = 8 }
+panic = { level = "deny", priority = 8 }
+unreachable = { level = "deny", priority = 8 }
+todo = { level = "deny", priority = 8 }
+unimplemented = { level = "deny", priority = 8 }
+dbg_macro = { level = "deny", priority = 8 }
+print_stdout = { level = "deny", priority = 8 }
+print_stderr = { level = "deny", priority = 8 }
+# Documentation lints, because public APIs are documented here.
+missing_errors_doc = { level = "warn", priority = 7 }
+missing_panics_doc = { level = "warn", priority = 7 }
+missing_safety_doc = { level = "warn", priority = 7 }
+empty_docs = { level = "deny", priority = 7 }
+# Strict groups: allowed at bootstrap, flipped to "warn" once the tree is clean.
+pedantic = { level = "allow", priority = 3 }
+nursery = { level = "allow", priority = 3 }

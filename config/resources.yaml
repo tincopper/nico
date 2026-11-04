@@ -1,0 +1,10 @@
+# Gateway resources document served by the local configuration source.
+#
+# This phase defines only the document envelope and global limits; routes, upstreams and providers
+# arrive with the routing schema, so they are rejected as unknown fields today.
+apiVersion: gateway/v1
+limits:
+  # 1..=8388608 bytes; the default bootstrap document stays within 1 MiB.
+  max_request_body_bytes: 1048576
+  # 1..=600000 milliseconds.
+  request_timeout_ms: 30000

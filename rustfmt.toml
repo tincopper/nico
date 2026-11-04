@@ -1,0 +1,6 @@
+# `group_imports` and `imports_granularity` are nightly-only options, so the formatting gate is
+# `cargo +nightly fmt --all --check` (see .trellis/spec/backend/quality-guidelines.md).
+reorder_imports = true
+imports_granularity = "Crate"
+group_imports = "StdExternalCrate"
+edition = "2024"

@@ -1,4 +1,7 @@
-.neeko/                                                                   
+.neeko/
 .DS_Store
 target/
-node_modules/ 
+node_modules/
+poc/target/
+.tmp/
+poc/.tmp/

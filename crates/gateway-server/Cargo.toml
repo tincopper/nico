@@ -1,0 +1,28 @@
+[package]
+name = "gateway-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Gateway binary: bootstrap, configuration pipeline and (later) data planes"
+
+[dependencies]
+gateway-config.workspace = true
+gateway-core.workspace = true
+serde.workspace = true
+serde_norway.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[dev-dependencies]
+async-trait.workspace = true
+futures-core.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util", "time"] }
+
+[lints]
+workspace = true
