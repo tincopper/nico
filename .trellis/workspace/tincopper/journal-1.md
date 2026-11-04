@@ -201,3 +201,47 @@ Built gateway-http end to end (routing, one-shot destination decision, streaming
 - 1.3 gateway-plugins: JWT / API key / rate limit as HttpFilter implementations; they get a budget-bounded chain and a typed rejection vocabulary, no response assembly
 - 1.4 gateway-ai: resolve provider base_url into a Destination and inject credentials; needs the TLS provider task first, otherwise every https provider is refused by design
 - Follow-ups recorded in research/review-fixes.md: resolution cache (DNS is per request), a fully stalled upload still ends as 504 (bounded but imprecise), reload.rs 886-line backlog
+
+
+## Session 5: Workspace renamed to the product name (nico-*)
+<!-- trellis-session: v=2 fp=a8d248186d5325cd -->
+
+**Date**: 2026-11-04
+**Task**: Workspace renamed to the product name (nico-*)
+**Branch**: `main`
+
+### Summary
+
+The product is nico, but every identifier was prefixed with the category word gateway. Renamed the four crates to nico-core/nico-config/nico-http/nico-server, made the binary nico (package keeps the role name), and rewrote every living reference: imports, manifests, Cargo.lock, the spec naming table and tree, the dependency graph, CONTRIBUTING, active task documents and the PoC notes. Archived records and the journal keep the old names on purpose.
+
+### Main Changes
+
+- crates/gateway-* -> crates/nico-* (git recorded 96 renames); package nico-server keeps the role name while its only binary is nico, so the dependency graph reads nico-server -> nico-http -> nico-core and a role suffix is never doubled
+- spec: naming table is nico-<domain>, the directory tree and dependency graph follow, and the one-binary rule names the product (nico) separately from the crate that builds it
+- planned crates renamed in the plans rather than left as bait: nico-ai, nico-plugins, nico-config-etcd, nico-config-nacos
+- SKIP_GATEWAY_HOOKS -> SKIP_NICO_HOOKS in both gate scripts and every doc that quotes the bypass; the test harness thread is nico-test-server
+- pre-commit file budget: a pure rename is compared against the path it came from, so moving an oversized file reports a warning instead of failing as a new oversized file; the budget rule in the spec states the rename case
+- not touched: archived task records and the journal (history), task directory slugs (they are record identifiers), and the domain word gateway in prose (it describes what the product does)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a7faee3` | refactor!: rename the workspace to the product name (nico-*) |
+
+### Testing
+
+- [OK] Acceptance scan: no gateway-(core|config|http|server|ai|plugins) or gateway_* identifier remains in crates/, Cargo.toml, scripts/, CONTRIBUTING.md, .trellis/spec/, the active 11-03/11-04 task docs or poc/
+- [OK] cargo metadata: packages nico-core/nico-config/nico-http/nico-server, exactly one bin named nico; cargo run -p nico-server -- --help prints usage: nico --bootstrap <path>
+- [OK] Five baseline gates green after the rename (fmt, clippy -D warnings, 353 tests, deny, doc); feature matrix, dependency boundaries and the 500-line budget unchanged
+- [OK] lefthook pre-commit ran on the commit: fmt, check --all-targets, tests for changed crates plus reverse dependencies, budget warnings only for the three pre-existing oversized files
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 1.3 nico-plugins: JWT / API key / rate limit on the budget-bounded HttpFilter seam
+- 1.4 nico-ai: resolve provider base_url into a Destination and inject credentials; the TLS provider task has to land first or every https provider is refused by design
+- Refactor backlog recorded earlier still stands: reload.rs 886 lines, local.rs 862, cache.rs 554
