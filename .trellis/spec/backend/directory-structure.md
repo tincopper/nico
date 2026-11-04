@@ -41,8 +41,7 @@ nico/
     │       ├── main.rs         # thin: parse args, call lib::run, map error to exit code
     │       ├── lib.rs          # //! doc + pub fn run(...); makes wiring integration-testable
     │       ├── bootstrap.rs
-    │       ├── reload.rs        # watch loop + debounce + single-flight + publish
-    │       └── reload.rs
+    │       ├── reload.rs       # watch loop + debounce + single-flight + publish
     │   └── tests/              # integration tests reach the wiring through lib.rs
     ├── gateway-core/           # small kernel shared by every data plane
     │   └── src/

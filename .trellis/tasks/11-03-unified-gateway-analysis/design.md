@@ -37,8 +37,7 @@ nico/
     │   └── src/
     │       ├── main.rs
     │       ├── bootstrap.rs
-    │       ├── config_watch.rs # 订阅源、去抖、single-flight、发布
-    │       └── reload.rs
+    │       └── reload.rs       # 订阅源、去抖、single-flight、编译与发布
     │
     ├── gateway-core/           # 真正跨数据面复用的小核心
     │   └── src/
