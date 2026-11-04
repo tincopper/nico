@@ -137,7 +137,7 @@ the reload pipeline, and `ServerConf` has no `Clone` (construct once, then repla
 | Hash | Message |
 |------|---------|
 | `4bfb513` | feat(config)!: route schema, four-stage validation and parse-time bounds |
-| (pending) | chore(task): archive route-schema and plan the HTTP data plane |
+| `477b782` | feat(gateway-http): Pingora HTTP data plane — carried the route-schema archive and the 1.2 planning artifacts |
 
 ### Testing
 
@@ -155,3 +155,49 @@ the reload pipeline, and `ServerConf` has no `Clone` (construct once, then repla
 - 1.2 implement steps 1-6 (crate skeleton → error/route/upstream/context/limits/filter), stopping at review gate A: pure logic unit-tested, no Pingora runtime needed
 - Decisions to revisit: `CompiledRoute` deliberately not built in 1.2 (linear scan over typed routes, evidence-first); `h2c` proven by unit assertion plus a documented `curl --http2-prior-knowledge` run, since an H2 test client would add a dependency the PRD excludes
 - `serve()` stays as the pipeline seam; production composes through `run()` → Pingora, gate B checks the two do not fork their logic
+
+
+## Session 4: 1.2 HTTP data plane: Pingora hooks, destination seam, deadline ownership
+<!-- trellis-session: v=2 fp=16db08fea30f78ec -->
+
+**Date**: 2026-11-04
+**Task**: 1.2 HTTP data plane: Pingora hooks, destination seam, deadline ownership
+**Branch**: `main`
+
+### Summary
+
+Built gateway-http end to end (routing, one-shot destination decision, streaming passthrough, one error mapping, one structured log record) and re-assembled the process in gateway-server around Pingora's runtime and a single shutdown token. Ran an independent spec review of the result, then fixed five structural findings; one review claim (unbounded slow upload) was disproven by a test and replaced with the real defect: a caller that stopped sending was answered 504 upstream_timeout, now 408 request_timeout.
+
+### Main Changes
+
+- gateway-http: new crate, 13 modules each one boundary (context/error/filter/limits/proxy{-,failure,forward,record}/route/service/settings/upstream), docs-as-contract with five invariants
+- Routing reads headers only and ranks host before prefix, then longest prefix, then document order; proven by an end-to-end test that the upstream sees the head before the first body byte
+- One destination decision per request: a filter that owns the target kind records HttpContext::set_destination, otherwise the document upstream is used; provider targets with no front-end are refused (502 provider_unavailable), never guessed
+- Deadline owned by HttpContext (expired/deadline_error) and enforced at all five blocking points, including filter stages via timeout_at and the request body stream; a stalled caller is now a 408 client fault
+- gateway-server: server.rs assembles Pingora Server + reload background service + HTTP service + one token; server/shutdown.rs owns signals and RunArgs, so gateway-http stays a library that cannot hijack the process
+- bootstrap: optional http section (listen, h2c, two drain windows, threads) with HttpSettings::resolve as the only owner of defaults and ranges
+- TLS refused while no provider is compiled (noop_tls is a pass-through stub); upstream names resolve on Tokio's blocking pool; Connection tokens above 16 are a 400 instead of a half-removal; x-request-id must be printable ASCII
+- spec: pingora-guidelines.md with verified 0.9.1 contracts, shutdown ownership in gateway-server, 408 for an unfinished body, 499/Cancelled as an outcome not a variant; deny.toml exceptions name their dependency chain
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `477b782` | feat(gateway-http): Pingora HTTP data plane |
+
+### Testing
+
+- [OK] Five baseline gates green: fmt, clippy -D warnings, 353 tests (121 gateway-http, 52 gateway-server, 7 HTTP scenario binaries, doctests), cargo deny, doc with -D warnings
+- [OK] Feature matrix and dependency direction clean: gateway-core tree has no pingora/gateway-http; gateway-http imports no gateway-ai/plugins and no tokio signal
+- [OK] File budget: every new file <= 460 lines (hooks.rs split into hooks/record); the three over-cap files are untouched backlog
+- [OK] Pre-commit lefthook gate passed on the work commit (fmt, check --all-targets, changed-crate tests + reverse deps)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 1.3 gateway-plugins: JWT / API key / rate limit as HttpFilter implementations; they get a budget-bounded chain and a typed rejection vocabulary, no response assembly
+- 1.4 gateway-ai: resolve provider base_url into a Destination and inject credentials; needs the TLS provider task first, otherwise every https provider is refused by design
+- Follow-ups recorded in research/review-fixes.md: resolution cache (DNS is per request), a fully stalled upload still ends as 504 (bounded but imprecise), reload.rs 886-line backlog
