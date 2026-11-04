@@ -155,6 +155,7 @@ Phase 3: Finish  → verify, update spec, commit, and wrap up
 ### Request Triage
 
 - Simple conversation or small task: ask only whether this turn should create a Trellis task. If the user says no, skip Trellis for this session.
+- Record-only or mechanical work (task slug/directory renames, journal or index edits, typo and wording fixes, dependency bumps that change no code): skip the question and the task, do it inline. See `AGENTS.md` → Task Rules.
 - Complex task: ask whether you may create a Trellis task and enter planning. If the user says no, do not do broad inline implementation; explain, clarify scope, or suggest a smaller split.
 - User approval to create a task is not approval to start implementation. Planning still happens first.
 

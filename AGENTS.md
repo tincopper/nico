@@ -20,6 +20,15 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
 
 <!-- TRELLIS:END -->
 
+## Task Rules
+
+- **Do not create a Trellis task for record-only or mechanical work**: task-directory or slug
+  renames, journal/index edits, typo and wording fixes, dependency bumps that change no code.
+  Do it inline, verify it, and leave the commit for the user to request.
+- Create a task when the change touches code, a binding spec contract, or observable behaviour:
+  those need a PRD (plus `design.md` / `implement.md` when complex) before implementation starts.
+- When the class of a change is genuinely ambiguous, ask once — not once per instance.
+
 ## Documentation Rules
 
 - Design and planning documents must describe only the current final design. Do not add sections such as "corrections to the previous version", "changes from the last draft", or other comparisons against superseded designs.
