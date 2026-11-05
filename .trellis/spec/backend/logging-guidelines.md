@@ -54,7 +54,7 @@ Rules:
 ### Field naming
 
 - `snake_case` fields, dotted prefixes for grouping: `http.method`, `http.route`,
-  `upstream.name`, `ai.model`, `config.generation`.
+  `upstream.name`, `llm.model`, `config.generation`.
 - `authn` is the **instance** name, not the plugin kind: a route may run two `jwt` entries, and the
   record has to say which one claimed the request. Its value can never come from the request — it is
   written by the plugin that verified the credential, from the typed `Identity` slot in the request
@@ -171,7 +171,7 @@ async move { /* work */ }.instrument(request_span).await
 - Config subsystem baseline: `config_load_total{source,result}`, `config_reload_total{result}`,
   `config_compile_seconds`, `config_watch_reconnects_total`, `config_snapshot_age_seconds`,
   `config_degraded`.
-- AI usage metrics must distinguish gateway-measured values from provider-reported token usage —
+- LLM usage metrics must distinguish gateway-measured values from provider-reported token usage —
   never present an estimate as a bill.
 
 ---

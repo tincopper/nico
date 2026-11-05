@@ -106,7 +106,7 @@ pub(super) fn peer_ip(session: &Session) -> Option<IpAddr> {
 /// Precedence is the contract:
 ///
 /// 1. a destination a filter recorded — that filter owns the target kind the route named
-///    (`nico-ai` for a provider), and this crate must not second-guess it;
+///    (`nico-llm` for a provider), and this crate must not second-guess it;
 /// 2. the document upstream the route names, if the document has it;
 /// 3. a refusal. A provider target with no filter is [`HttpError::ProviderNotConfigured`], because
 ///    this crate does not know provider semantics and guessing an address would be worse than

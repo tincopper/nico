@@ -10,7 +10,7 @@ request:
   # 1..=600000 milliseconds.
   timeout_ms: 30000
 
-# AI providers. Credentials are referenced, never written here: `env:VAR` or `file:/path`.
+# LLM providers. Credentials are referenced, never written here: `env:VAR` or `file:/path`.
 providers:
   - name: openai-primary
     kind: openai
@@ -102,7 +102,7 @@ routes:
     path_prefix: /api/
     upstream: api-backend
     plugins: [public-jwt, api-quota]
-  - id: ai-chat
+  - id: llm-chat
     path_prefix: /v1/chat/
     provider: openai-primary
     timeout_ms: 120000

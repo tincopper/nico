@@ -17,14 +17,14 @@ Layering:
 | `nico-core` | `ErrorCategory` (protocol-agnostic classification) | Says *what kind* of failure it is, never what status code to return |
 | `nico-config` | `ConfigSourceError` | Source protocol failure, mapped from etcd/Nacos/file errors |
 | `nico-http` | `HttpError` | HTTP semantics: bad request, upstream failure, timeout, response already committed |
-| `nico-ai` | `ProviderError` | Provider call failure, upstream quota, malformed provider response |
+| `nico-llm` | `ProviderError` | Provider call failure, upstream quota, malformed provider response |
 | `nico-server` | `anyhow::Result` in `main` only | Startup/reload orchestration reporting |
 
 Errors wrap, they do not flatten. A layered crate nests the error of a crate it is **allowed** to
 depend on (see the dependency direction in `directory-structure.md`) instead of copying its fields:
 
 ```rust
-// nico-ai may depend on nico-http, so it can nest HttpError.
+// nico-llm may depend on nico-http, so it can nest HttpError.
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
     #[error("provider transport failed: {0}")]
@@ -227,8 +227,8 @@ Retry only when **all** of the following hold, and encode the check in one place
 3. No response bytes were committed to the client (`HttpError::ResponseCommitted` was not reached).
 4. The retry budget for this request has not been exhausted.
 
-AI fallback additionally requires model-capability compatibility and duplicate-billing
-awareness — see the AI design notes. Never fall back after the first streamed byte.
+LLM fallback additionally requires model-capability compatibility and duplicate-billing
+awareness — see the LLM design notes. Never fall back after the first streamed byte.
 
 ### Error categories in the kernel
 

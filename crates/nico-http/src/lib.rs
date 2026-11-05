@@ -27,7 +27,7 @@
 //! # Boundaries
 //!
 //! The crate depends on `nico-core` and `pingora`, and on nothing else in the workspace. It must
-//! never import `nico-ai` or `nico-plugins`: those depend on this crate, and AI/provider
+//! never import `nico-llm` or `nico-plugins`: those depend on this crate, and LLM/provider
 //! semantics reach the data plane the other way round — a filter that owns a provider target
 //! resolves it and records a [`Destination`] in the [`HttpContext`], so provider configuration stays
 //! in the crate that understands it while TLS policy, budgets and header rewriting stay here.

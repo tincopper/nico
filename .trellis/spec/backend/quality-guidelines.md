@@ -34,8 +34,8 @@ Per-feature matrix (features must be additive and independent):
 
 ```bash
 cargo check --no-default-features
-cargo check --features ai
-cargo check --features ai,builtin-plugins,config-etcd
+cargo check --features llm
+cargo check --features llm,builtin-plugins,config-etcd
 cargo check --all-features
 ```
 
@@ -83,7 +83,7 @@ not add the abstraction.
 - Prefer configuration-driven variation over new code branches; features gate capability, never
   default behaviour.
 - New extension points are added where the domain already owns the vocabulary (the `Plugin` contract
-  in `nico-http`, a provider in `nico-ai`), not in a central "plugins" catch-all.
+  in `nico-http`, a provider in `nico-llm`), not in a central "plugins" catch-all.
 
 ### File budget: 300–500 lines, hard cap 500
 
@@ -539,7 +539,7 @@ Tests are the first place a reader looks to understand behavior — they are liv
 |---|---|
 | `nico-config` | digest dedup, out-of-order/regressed revisions, watch disconnect, compaction/gap → `ResyncRequired`, oversized document, invalid UTF-8/YAML, unknown fields rejected, compile failure keeps LKG, subsequent fix publishes, debounce + single-flight, in-flight requests unaffected during outage |
 | `nico-http` | route matching, plugin ordering, response commit state, retry legality, deadline propagation, SSE/WebSocket streaming boundaries, backpressure and slow client |
-| `nico-ai` | SSE chunk-splitting across event/line/UTF-8/JSON boundaries, provider error mapping, usage accounting separation (measured vs reported), no fallback after first byte |
+| `nico-llm` | SSE chunk-splitting across event/line/UTF-8/JSON boundaries, provider error mapping, usage accounting separation (measured vs reported), no fallback after first byte |
 | `nico-core` | error category mapping, deadline/cancellation semantics |
 
 ### Property, snapshot, and integration testing

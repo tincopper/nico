@@ -1,4 +1,4 @@
-//! AI providers a route can forward to.
+//! LLM providers a route can forward to.
 //!
 //! A [`Provider`] names a vendor endpoint and the *reference* to the credential used to call it.
 //! The credential itself never appears in the document, and this module never resolves it: reading
@@ -18,7 +18,7 @@ pub enum ProviderKind {
     OpenAi,
 }
 
-/// An AI provider endpoint referenced by a [`Route`](super::Route).
+/// An LLM provider endpoint referenced by a [`Route`](super::Route).
 ///
 /// Fields are private and there is no public constructor: a `Provider` only exists inside a
 /// [`Document`](super::Document) that has passed reference and semantic validation.

@@ -55,10 +55,10 @@ nico/
     │       ├── upstream.rs     # peer 选择、连接与重试约束
     │       └── stream.rs       # HTTP body/stream 辅助
     │
-    ├── nico-ai/             # AI 领域插件与 Provider 模块
+    ├── nico-llm/            # LLM 领域插件与 Provider 模块
     │   └── src/
     │       ├── lib.rs
-    │       ├── filter.rs       # AI 请求元数据、模型路由
+    │       ├── filter.rs       # LLM 请求元数据、模型路由
     │       ├── model.rs
     │       ├── provider/
     │       │   ├── mod.rs      # Provider trait
@@ -94,7 +94,7 @@ nico/
 
 ### 不为每个 Provider 单独建 crate
 
-`openai`、`anthropic` 初期只是 `nico-ai::provider` 下的模块。只有以下情况才拆成独立 crate：
+`openai`、`anthropic` 初期只是 `nico-llm::provider` 下的模块。只有以下情况才拆成独立 crate：
 
 - 依赖很重或需要独立 feature。
 - 需要被其他 Workspace 复用。
@@ -107,7 +107,7 @@ nico/
 nico-server
    ├──> nico-core
    ├──> nico-http ─────────> nico-core + pingora
-   ├──> nico-ai ───────────> nico-http + nico-core
+   ├──> nico-llm ───────────> nico-http + nico-core
    ├──> nico-config ───────> nico-core
    ├──> nico-config-etcd ──> nico-config        (feature: config-etcd)
    ├──> nico-config-nacos ─> nico-config        (feature: config-nacos)
@@ -121,23 +121,24 @@ nico-server
 - 通用配置版本、generation、secret reference。
 - trace/peer/tenant/deadline/cancellation 等公共元数据。
 - 公共错误类别，避免映射为某种协议响应。
-- 必要的无业务工具，不包含 HTTP route、AI model 或 Pingora 类型。
+- 必要的无业务工具，不包含 HTTP route、LLM model 或 Pingora 类型。
 
-**依赖约束**：`nico-core` 不得依赖 `nico-http`、`nico-ai`、`nico-plugins` 或 Pingora。
+**依赖约束**：`nico-core` 不得依赖 `nico-http`、`nico-llm`、`nico-plugins` 或 Pingora。
 
 ### `nico-http`
 
 - 拥有 Pingora `ProxyHttp` 适配与原生 HTTP Session 生命周期。
 - 定义 HTTP 专属 `HttpFilter`、路由、CompiledRoute 和 upstream 接口。
 - 处理 request/response headers、body、stream、commit、cancel 和 upstream 错误。
-- 不 import `nico-ai`；AI 通过 HTTP 扩展点接入。
+- 不 import `nico-llm`；LLM 通过 HTTP 扩展点接入。
 
-### `nico-ai`
+### `nico-llm`
 
-- 定义 `Provider`、模型映射、AI 请求元数据和 usage 类型。
-- 实现 AI HTTP Filter 与 Provider Stream Adapter。
+- 定义 `Provider`、模型映射、LLM 请求元数据和 usage 类型。
+- 实现 LLM HTTP Filter 与 Provider Stream Adapter。
 - OpenAI/Anthropic 是模块，不进入 `nico-core`。
-- 可以依赖 `nico-http`，因为当前 AI API 就是 HTTP 领域能力。
+- 可以依赖 `nico-http`，因为当前 LLM API 就是 HTTP 领域能力。
+- AI 是产品口径，不是 crate 名：LLM Provider/SSE 在 `nico-llm`，未来的 MCP 在 `nico-mcp`，两者平级；不设 `nico-ai` 大类 crate。
 
 ### `nico-plugins`
 
@@ -150,7 +151,7 @@ nico-server
 - 定义 `ConfigSource` trait、`Revision`、`ConfigVersion` 和配置源错误。
 - 提供 `local` 文件实现、last-known-good 缓存和测试用 `FakeConfigSource`。
 - 只依赖 `nico-core`、`serde`、`bytes`、`tokio-util`、`async-trait` 等轻量库。
-- **不依赖** Pingora、HTTP、AI、etcd 或 Nacos 客户端。
+- **不依赖** Pingora、HTTP、LLM、etcd 或 Nacos 客户端。
 - 配置源只加载和订阅字节文档，不解析路由、不修改运行时快照。
 
 ### `nico-config-etcd` / `nico-config-nacos`
@@ -174,8 +175,8 @@ nico-server
 |---|---|---|
 | `HttpFilter` | `nico-http` | HTTP 请求/响应阶段扩展 |
 | `Upstream` | `nico-http` | 上游选择与调用约束 |
-| `Provider` | `nico-ai` | AI 请求/响应语义适配 |
-| `ProviderStream` | `nico-ai` | 每个响应流独立的转换状态 |
+| `Provider` | `nico-llm` | LLM 请求/响应语义适配 |
+| `ProviderStream` | `nico-llm` | 每个响应流独立的转换状态 |
 | `ConfigSource` | `nico-config` | local / etcd 的加载与订阅；Nacos 保留后续实现位 |
 
 不要在 `nico-core` 中提前定义 `ProtocolPlugin`、`PolicyPlugin`、`ConnectorPlugin`、`ExporterPlugin` 等一组没有多个真实消费者的 trait。
@@ -185,7 +186,7 @@ nico-server
 - `nico-server` 知道所有具体实现，并在启动时构造它们。
 - 配置加载阶段可以用 `match plugin_type` 或 `HashMap<&str, Builder>` 将 YAML 类型名映射到构建函数。
 - 字符串映射只允许出现在**配置编译阶段**；请求阶段使用已构建的 `Arc<dyn HttpFilter>`、`Arc<dyn Provider>` 或 enum。
-- 新增 Provider 时修改 `nico-ai` 和 server 注册点即可，Kernel/HTTP 路由算法不变。静态组合不要求“新增实现完全零注册代码”。
+- 新增 Provider 时修改 `nico-llm` 和 server 注册点即可，Kernel/HTTP 路由算法不变。静态组合不要求“新增实现完全零注册代码”。
 
 ### 4.3 Trait object 用在哪里
 
@@ -211,7 +212,7 @@ nico-server
 
 - 已编译的 host/path/method 匹配信息。
 - 按固定阶段排序的 HTTP Filter 引用。
-- 上游或 AI Provider 引用。
+- 上游或 LLM Provider 引用。
 - body/timeout/retry 等资源限制。
 - 配置 generation。
 
@@ -221,10 +222,10 @@ HTTP 热路径只做：`RouteTable::match → &CompiledRoute → 依次调用 Fi
 
 - `nico-core::RequestMeta`：trace、peer、tenant、deadline、cancellation。
 - `nico-http::HttpContext`：HTTP Session 所需状态、上游状态和 response commit。
-- `nico-ai::AiRequestState`：逻辑/物理模型、Provider、streaming、usage。
-- `nico-ai::ProviderStream`：每个上游流独立的增量解析状态。
+- `nico-llm::AiRequestState`：逻辑/物理模型、Provider、streaming、usage。
+- `nico-llm::ProviderStream`：每个上游流独立的增量解析状态。
 
-AI 状态由 AI Filter 与请求本地状态关联，不放进 `nico-core`。如使用 `http::Extensions` 等类型化扩展存储，应限定在明确的请求边界，不能演变成字符串键值或无约束对象袋；普通请求不应创建 AI 状态。
+LLM 状态由 LLM Filter 与请求本地状态关联，不放进 `nico-core`。如使用 `http::Extensions` 等类型化扩展存储，应限定在明确的请求边界，不能演变成字符串键值或无约束对象袋；普通请求不应创建 LLM 状态。
 
 ## 6. 配置与热重载保持简单
 
@@ -439,7 +440,7 @@ etcd 里程碑使用固定版本 etcd 容器做集成测试，验证认证、TLS
 - 用 `tokio_util::sync::CancellationToken` 或 Pingora 对应机制传播取消。
 - 用明确 timeout/deadline 限制整个上游调用，不只限制单次 read。
 - 不用无界 `tokio::mpsc` 把 Filter 串成 actor 系统；优先直接调用和背压。
-- `thiserror` 用于库错误分类，`anyhow` 只考虑用于 binary 启动边界；错误最终由 HTTP/AI 层映射为协议响应。
+- `thiserror` 用于库错误分类，`anyhow` 只考虑用于 binary 启动边界；错误最终由 HTTP/LLM 层映射为协议响应。
 - 使用 `tracing` span 关联 request、provider call 和 retry；不自建通用观测插件框架。
 
 ## 9. Cargo Feature 与部署角色
@@ -447,7 +448,7 @@ etcd 里程碑使用固定版本 etcd 容器做集成测试，验证认证、TLS
 Feature 用于**编译期依赖裁剪**，配置用于**运行时行为**：
 
 - `default`：HTTP + 内置策略 + local 配置源。
-- `ai`：加入 `nico-ai`。
+- `llm`：加入 `nico-llm`。
 - `builtin-plugins`：加入 JWT/API Key/Rate Limit。
 - `config-etcd`：加入 `nico-config-etcd`，etcd 里程碑部署启用。
 - `config-nacos`：后续里程碑启用，第一期不创建实现 crate。
@@ -458,16 +459,16 @@ Cargo feature 只决定哪些配置源实现被编入；`bootstrap.config_source
 建议产物：
 
 - 开发：单个 all-in-one binary。
-- 生产：同一 Workspace 构建 traffic 与 ai 两种 feature/role 组合，独立部署。
+- 生产：同一 Workspace 构建 traffic 与 llm 两种 feature/role 组合，独立部署。
 - 未来 MQTT/QUIC：可新增 binary target 或独立 crate，不强迫经过 Pingora HTTP Filter。
 
 Feature 是 additive 的，不能依赖“启用 A 后悄悄改变 B 的非 feature 行为”来做复杂互斥；角色与路由合法性仍需启动时校验。
 
 ## 10. 四个扩展示例
 
-### 新增 AI Provider
+### 新增 LLM Provider
 
-1. 在 `nico-ai::provider` 新增模块和强类型 Config。
+1. 在 `nico-llm::provider` 新增模块和强类型 Config。
 2. 实现 `Provider` 与 `ProviderStream`。
 3. 在 server 的配置 builder 注册类型名。
 4. 不修改 `nico-core` 和普通 HTTP Filter。
@@ -477,7 +478,7 @@ Feature 是 additive 的，不能依赖“启用 A 后悄悄改变 B 的非 feat
 1. 在 `nico-plugins` 新增模块。
 2. 实现 `nico-http::HttpFilter`。
 3. 在 server 注册 builder，由路由引用。
-4. 不修改 AI Provider 和 upstream 实现。
+4. 不修改 LLM Provider 和 upstream 实现。
 
 ### 新增 MQTT 数据面
 
@@ -490,7 +491,7 @@ Feature 是 additive 的，不能依赖“启用 A 后悄悄改变 B 的非 feat
 1. 在独立 crate 中实现 `nico-config::ConfigSource`。
 2. 将客户端协议错误映射为 `ConfigSourceError`，将版本映射为来源内 `Revision`。
 3. 在 `nico-server::bootstrap` 的 `match source_type` 中注册。
-4. 不修改 reload 管线、路由编译和 HTTP/AI 代码。
+4. 不修改 reload 管线、路由编译和 HTTP/LLM 代码。
 
 ## 11. 动态插件是后续里程碑，不属于第一期内核
 
@@ -517,8 +518,8 @@ Feature 是 additive 的，不能依赖“启用 A 后悄悄改变 B 的非 feat
 ### 阶段 1：静态组合 MVP（local 先行）
 
 - HTTP 路由、JWT/API Key/Rate Limit、upstream、普通 API；`nico-http` 首次落地 Pingora 集成。
-- AI Filter、OpenAI Provider、SSE 透传。
-- 普通与 AI 路由共享 HTTP/Core，但使用不同 CompiledRoute。
+- LLM Filter、OpenAI Provider、SSE 透传。
+- 普通与 LLM 路由共享 HTTP/Core，但使用不同 CompiledRoute。
 - 配置来源使用 **local 文件**（`ConfigSource` 唯一实现）；etcd 作为后续里程碑接入，不改契约与管线。
 - **路由不依赖 body**：provider/upstream 由 vhost、path 与路由级 `provider` 字段决定；不实现"读请求 body 再选上游"。
   依据：Pingora 过滤器读完 body 不会重放，上游会挂起（阶段 0 实证）。
@@ -531,7 +532,7 @@ Feature 是 additive 的，不能依赖“启用 A 后悄悄改变 B 的非 feat
 
 - Anthropic Provider/Stream、usage、限额、熔断和安全重试。
 - SharedServices 与配置 generation 的继承/drain 规则。
-- traffic/ai 两种部署形态。
+- traffic/llm 两种部署形态。
 
 ### 阶段 3：按真实需求扩展
 
@@ -540,9 +541,9 @@ Feature 是 additive 的，不能依赖“启用 A 后悄悄改变 B 的非 feat
 
 ### 架构验收
 
-- `nico-core` 的依赖树没有 Pingora、HTTP、AI 或具体插件。
-- 新增 Provider 只需修改 AI 模块与 server 注册点。
-- 普通 API 路由没有 AI 状态初始化和模型分支。
+- `nico-core` 的依赖树没有 Pingora、HTTP、LLM 或具体插件。
+- 新增 Provider 只需修改 LLM 模块与 server 注册点。
+- 普通 API 路由没有 LLM 状态初始化和模型分支。
 - 热路径没有插件名字符串查找、通用事件总线或 JSON 中转。
 - 一次 reload 只构建一次路由链；失败不影响旧快照。
 - 配置源乱序/重复/断线/gap 不会发布错误快照；配置中心故障期间请求继续使用 LKG。
@@ -562,7 +563,7 @@ Feature 是 additive 的，不能依赖“启用 A 后悄悄改变 B 的非 feat
 
 第三方动态插件、`quick` 的准确含义、第一期 SLA 和 Provider 清单仍是独立后续决策，不影响这套 Rust 原生结构。
 
-HTTP/AI 正确性与协议边界继续沿用：
+HTTP/LLM 正确性与协议边界继续沿用：
 
 - `research/http-ai-implementation-review.md`
 - `research/protocol-runtime-summary.md`

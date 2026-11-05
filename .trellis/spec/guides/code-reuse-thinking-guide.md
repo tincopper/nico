@@ -54,7 +54,7 @@ concept":
 | ---------------------------------------------------------- | ---------------- |
 | Protocol-agnostic (deadline, cancellation, error category)  | `nico-core`   |
 | HTTP-specific (route match, header handling, upstream)      | `nico-http`   |
-| AI-specific (model mapping, usage, SSE)                     | `nico-ai`     |
+| LLM-specific (model mapping, usage, SSE)                    | `nico-llm`     |
 | Config loading/subscription                                 | `nico-config` |
 | Built-in policy implementations                             | `nico-plugins`|
 
@@ -82,7 +82,7 @@ dependency edge, the function is probably in the wrong crate.
 **Bad**: Creating a new `Provider` implementation that is 80% identical to an existing one.
 
 **Good**: Extend the existing implementation with a config knob, or extract the shared
-request/response shaping into a private helper inside `nico-ai`.
+request/response shaping into a private helper inside `nico-llm`.
 
 ### Pattern 3: Repeated Constants
 

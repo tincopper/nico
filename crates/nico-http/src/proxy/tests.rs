@@ -108,7 +108,7 @@ fn a_destination_recorded_by_a_filter_wins_over_the_document() {
     let (mut ctx, _now) = begin(ROUTE, "/api/items");
     let chosen = Destination::new(nico_core::Scheme::Http, "10.0.0.9", 9000);
 
-    // This is the seam `nico-ai` uses: it resolves the provider target the route named.
+    // This is the seam `nico-llm` uses: it resolves the provider target the route named.
     ctx.set_destination(chosen.clone());
 
     assert_eq!(

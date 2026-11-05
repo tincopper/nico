@@ -7,7 +7,7 @@
 ## Overview
 
 The backend is a Rust Cargo Workspace: a small protocol-agnostic kernel (`nico-core`), one HTTP
-data plane on Pingora (`nico-http`), one AI data plane (`nico-ai`), config sources
+data plane on Pingora (`nico-http`), one LLM data plane (`nico-llm`), config sources
 (`nico-config*`), built-in policies (`nico-plugins`), and a single binary (`nico`, built by `nico-server`)
 that wires them together.
 
@@ -16,7 +16,7 @@ typed errors over `anyhow`, explicit bounds and deadlines, snapshots over locks,
 that enforces what review would otherwise have to.
 
 > **Status**: `nico-core`, `nico-config`, `nico-http` and `nico-server` exist with a
-> green baseline. `nico-ai` and `nico-plugins` do not exist yet. These files are the binding
+> green baseline. `nico-plugins` is built; `nico-llm` does not exist yet. These files are the binding
 > conventions for new code.
 > Architecture rationale is in `.trellis/tasks/11-03-unified-gateway-analysis/design.md`;
 > the empirically verified Pingora behaviour that constrains `nico-http` is in

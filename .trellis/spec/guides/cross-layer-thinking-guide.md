@@ -21,7 +21,7 @@ Common cross-layer bugs in this project:
 - A stream parser reports usage that does not match the bytes actually delivered.
 
 > "Layer" here means **crate boundary or process boundary** — `nico-core` / `nico-http` /
-> `nico-ai` / `nico-config` / `nico-plugins` / `nico-server`, plus the edges to the
+> `nico-llm` / `nico-config` / `nico-plugins` / `nico-server`, plus the edges to the
 > client, the upstream, and the config store. It is not the generic "API / service / database"
 > stack.
 
@@ -39,7 +39,7 @@ ConfigSource (Bytes + Revision)
   → RuntimeSnapshot (ArcSwap)
   → nico-http (CompiledRoute + HttpContext)
   → nico-plugins (Plugin chain)
-  → nico-ai (Provider + ProviderStream)
+  → nico-llm (Provider + ProviderStream)
   → client (response bytes / SSE events)
 ```
 
@@ -59,8 +59,8 @@ For each arrow, ask:
 | `nico-server` ↔ `RuntimeSnapshot`  | Partially validated config, lost generation, two snapshots in one request            |
 | `RuntimeSnapshot` ↔ `nico-http`    | `CompiledRoute` missing resource limits, unstable plugin ordering                    |
 | `nico-http` ↔ `nico-plugins`    | A plugin wants typed HTTP state but receives untyped metadata                        |
-| `nico-http` ↔ `nico-ai`         | AI state leaking into `nico-core`, or created for non-AI requests                 |
-| `nico-ai` ↔ `Provider`             | Request semantics (model mapping) vs response semantics (stream, usage) conflated    |
+| `nico-http` ↔ `nico-llm`         | LLM state leaking into `nico-core`, or created for non-LLM requests               |
+| `nico-llm` ↔ `Provider`             | Request semantics (model mapping) vs response semantics (stream, usage) conflated    |
 | `ProviderStream` ↔ client             | Lost incremental events, writes after cancel, usage not matching delivered bytes     |
 | request ↔ request (state)             | Shared mutable state between two in-flight streams                                   |
 

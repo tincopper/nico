@@ -20,7 +20,7 @@
 ### R1：微内核统一机制，插件承载协议与业务
 
 - 微内核只提供稳定机制：插件注册与依赖、配置编译与快照、执行图、生命周期、取消/deadline、错误与观测。
-- Pingora、HTTP、AI Provider、JWT、限流、MQTT 等均不得成为协议无关内核的强制依赖。
+- Pingora、HTTP、LLM Provider、JWT、限流、MQTT 等均不得成为协议无关内核的强制依赖。
 - 明确连接、流、消息、请求/响应、数据报等不同语义，不能以单一双向字节流替代全部协议模型。
 - 区分透明转发、协议终止、消息感知代理和协议转换四种“支持”等级。
 - 统一控制面、配置快照、策略决策、指标与审计；允许 HTTP、MQTT、QUIC 等使用独立数据面或进程角色。
@@ -28,7 +28,7 @@
 ### R2：明确 HTTP 与 AI 网关的 MVP 边界
 
 - HTTP 数据面优先覆盖 HTTP/HTTPS、HTTP/1.1、HTTP/2、SSE、WebSocket，以及 gRPC 的 HTTP/2 透明代理能力。
-- AI 数据面优先覆盖 OpenAI 兼容 API 和至少一种异构 provider 的请求/响应适配，并支持 SSE 流式转发。
+- LLM 数据面优先覆盖 OpenAI 兼容 API 和至少一种异构 provider 的请求/响应适配，并支持 SSE 流式转发。
 - gRPC 消息感知、MQTT、TCP、QUIC/HTTP3 是否进入后续阶段，应由各自独立验收标准驱动；WebRTC 当前暂缓。
 
 ### R3：大请求体处理必须有正确性和资源上限
@@ -55,7 +55,7 @@
 
 - 区分连接失败、响应前失败、响应已提交、流式中途失败等阶段。
 - 只有请求可重放、操作允许重试且未向客户端提交响应时，才允许自动重试或 fallback。
-- AI fallback 必须考虑模型能力兼容、重复计费、幂等、限流、重试预算和熔断。
+- LLM fallback 必须考虑模型能力兼容、重复计费、幂等、限流、重试预算和熔断。
 - 不假设所有 Pingora 连接都在整个进程或所有 worker 间共享同一个全局池。
 
 ### R7：部署形态与资源隔离
@@ -68,13 +68,13 @@
 
 - 覆盖认证鉴权、租户隔离、限流、请求大小限制、超时、TLS/SNI、secret 管理和审计。
 - 统一 request/connection/trace 标识的关联方式，但保留各协议原生语义。
-- AI 可观测性区分网关指标、provider 返回的 token usage 和本地估算，避免把估算当精确账单。
+- LLM 可观测性区分网关指标、provider 返回的 token usage 和本地估算，避免把估算当精确账单。
 
 ### R9：Rust 原生插件契约与组合
 
 - 插件首先是实现领域 trait 的 Rust crate 或 module，不引入 Java 式 Plugin Container、通用 SPI 层或 Manifest 生命周期框架。
-- trait 定义在领域拥有者 crate 中，例如 `HttpFilter` 属于 HTTP crate、`Provider` 属于 AI crate；不集中放入万能 `nico-spi`。
-- 优先 module，只有需要独立编译、依赖隔离或复用时才拆 crate；Provider 初期作为 AI crate 内部模块。
+- trait 定义在领域拥有者 crate 中，例如 `HttpFilter` 属于 HTTP crate、`Provider` 属于 LLM crate；不集中放入万能 `nico-spi`。
+- 优先 module，只有需要独立编译、依赖隔离或复用时才拆 crate；Provider 初期作为 LLM crate 内部模块。
 - 启动时由 `nico-server` 显式注册具体实现；配置加载时可按类型名调用 builder，热路径只持有已构建的 trait object 或 enum。
 - 配置使用 `serde` 反序列化为各插件的类型化 Config；路由发布前编译为不可变调用链，热路径不按字符串发现插件。
 - 闭合集合并需要极限性能时优先 enum/泛型；开放扩展点使用少量 `Arc<dyn Trait>`，不追求全系统静态分发或全系统动态分发。
@@ -95,7 +95,7 @@
 
 ### R11：Cargo 交付、故障与可选动态扩展
 
-- 第一阶段默认静态链接和显式组合，Cargo feature 用于裁剪 AI、MQTT、WASM 等可选能力，运行时配置用于路由和策略。
+- 第一阶段默认静态链接和显式组合，Cargo feature 用于裁剪 LLM、MQTT、WASM 等可选能力，运行时配置用于路由和策略。
 - 配置热重载使用简单 reload 流程与 `ArcSwap` 快照，不建设通用 Plugin Lifecycle Manager；二进制变化走滚动升级。
 - 不把 Rust 动态库的 unstable ABI 作为默认插件机制；第三方动态插件需求出现时再独立评估 WASM 或进程隔离。
 - 原生插件与宿主同一故障域；是否同进程是部署选择，高风险协议可独立 binary/process。
@@ -110,7 +110,7 @@
 - [x] 明确第一期只接 etcd，Nacos 推迟；etcd 的 revision/compaction/watch 重连/认证 TLS 纳入第一阶段验收。
 - [x] 核查 etcd Watch 包含式 revision、compaction、fragment、默认 value 上限，以及 etcd-client 候选版本的 API/依赖风险。
 - [x] 给出原生静态组合、WASM、进程隔离和 Rust 动态库的选型与故障边界。
-- [x] 用普通 API 与 AI 两条链路证明同一 Workspace 可通过不同插件组合运行。
+- [x] 用普通 API 与 LLM 两条链路证明同一 Workspace 可通过不同插件组合运行。
 - [x] 消除通用 SPI 容器、Manifest 框架、Lifecycle Manager 和 Provider 微 crate 等 Java 式过度设计。
 - [x] 给出原方案的逐项评审，明确指出成立条件、错误假设和修正方向。
 - [x] 给出协议支持矩阵，至少包含传输、代理层级、Pingora 适配程度、状态模型、建议阶段。
@@ -128,12 +128,12 @@
 - WebRTC 当前整体暂缓，不设计 SFU、媒体转发、ICE、STUN/TURN 或 DataChannel 能力。
 - 不在未定义 QUIC 目标的情况下承诺 HTTP/3、WebTransport 或 QUIC 四层代理。
 - 不承诺具体吞吐、延迟、节省 90% 内存/CPU 等数值，除非后续有可复现基准。
-- 不一蹴而就地支持全部 AI 厂商、全部 gRPC 反射/消息转换或完整 MQTT broker 能力。
+- 不一蹴而就地支持全部 LLM 厂商、全部 gRPC 反射/消息转换或完整 MQTT broker 能力。
 
 ## Open Product Decisions
 
 1. ~~插件是否必须支持第三方在不重新编译/重启主程序的情况下交付和加载尚未确定。~~ **已确认需要**：第三方以 WASM 方式交付插件是后续里程碑（见 `design.md` §11）；第一阶段仍是受信任的静态链接实现，Rust dylib 不作为方案。
 2. `quick` 是否确指 QUIC，以及目标是否是 HTTP/3 入口、QUIC 连接代理或 WebTransport，尚待确认。
-3. 第一期优先的业务 SLA、最大请求体、AI provider 列表和部署环境尚未给出；当前设计只给建议默认值和验证方法，不替用户作产品承诺。
+3. 第一期优先的业务 SLA、最大请求体、LLM provider 列表和部署环境尚未给出；当前设计只给建议默认值和验证方法，不替用户作产品承诺。
 4. etcd 已确认作为第一期配置中心，Nacos 推迟。仍需确认 etcd 中采用“一个集群一份完整文档”还是多 key；当前推荐单 key 完整文档，以降低多 key 一致性风险。
 5. 启动时配置中心不可用是否允许用 last-known-good 缓存启动；当前建议默认不允许，只有显式配置才降级为 stale 启动。

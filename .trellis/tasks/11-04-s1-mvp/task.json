@@ -22,7 +22,7 @@
     "11-04-s1-1-route-schema",
     "11-04-s1-2-http-data-plane",
     "11-04-s1-3-nico-plugins",
-    "11-04-s1-4-nico-ai-passthrough"
+    "11-04-s1-4-nico-llm-passthrough"
   ],
   "parent": null,
   "relatedFiles": [],

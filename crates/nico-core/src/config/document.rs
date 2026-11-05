@@ -80,7 +80,7 @@ impl Document {
     ///   - id: api-public-v1
     ///     path_prefix: /api/
     ///     upstream: api-backend
-    ///   - id: ai-chat
+    ///   - id: llm-chat
     ///     path_prefix: /v1/chat/
     ///     provider: openai-primary
     /// ";

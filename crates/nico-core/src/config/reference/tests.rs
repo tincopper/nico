@@ -70,7 +70,7 @@ mod targets {
                 "  - id: api-public-v1\n",
                 "    path_prefix: /api/\n",
                 "    upstream: api-backend\n",
-                "  - id: ai-chat\n",
+                "  - id: llm-chat\n",
                 "    path_prefix: /v1/chat/\n",
                 "    provider: openai-primary\n",
             ),
@@ -122,7 +122,7 @@ mod references {
             PROVIDER,
             NO_ENTRIES,
             concat!(
-                "  - id: ai-chat\n",
+                "  - id: llm-chat\n",
                 "    path_prefix: /v1/chat/\n",
                 "    provider: missing-provider\n",
             ),

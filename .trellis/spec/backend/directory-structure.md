@@ -13,7 +13,7 @@ The backend is **one Cargo Workspace** at the repository root. The layout follow
    separate team, or compile isolation that clearly pays for itself.
 2. **Dependency direction is enforced, not suggested** — `nico-core` never depends on a protocol
    crate or on Pingora; `nico-server` is the only crate that knows every concrete implementation.
-3. **One binary target** — `nico` (built by the `nico-server` crate). Deployment roles (traffic / AI) are selected by Cargo
+3. **One binary target** — `nico` (built by the `nico-server` crate). Deployment roles (traffic / LLM) are selected by Cargo
    features plus runtime config, not by adding more binaries.
 
 > **Status**: `nico-core`, `nico-config`, `nico-http`, `nico-plugins` and `nico-server` exist as
@@ -85,7 +85,7 @@ nico/
     │       ├── settings.rs     # HttpSettings: bootstrap `http` defaults and ranges
     │       ├── state.rs        # HttpState/HttpStateHandle: snapshot + global/per-route chains + the two framing sets, one store
     │       └── upstream.rs     # crate-private: Destination → HttpPeer
-    ├── nico-ai/             # AI domain traits, providers, stream adapters
+    ├── nico-llm/            # LLM domain traits, providers, stream adapters
     │   └── src/
     │       ├── lib.rs
     │       ├── filter.rs
@@ -163,7 +163,7 @@ submodules. Name modules after the capability (`debounce`, `publish`, `cache`), 
 |---|---|
 | HTTP/Pingora lifecycle, route matching, the `Plugin` contract, upstream TLS policy | `nico-http` |
 | Signals, runtime ownership, shutdown token, drain wiring | `nico-server` |
-| AI provider semantics, model mapping, SSE translation | `nico-ai` |
+| LLM provider semantics, model mapping, SSE translation | `nico-llm` |
 | Config source protocol (etcd/Nacos clients) | `nico-config-*` (own crate, own feature) |
 | Built-in HTTP policy (auth, rate limit) | `nico-plugins` |
 | Wiring, feature selection, reload pipeline, shutdown | `nico-server` |
@@ -172,13 +172,17 @@ submodules. Name modules after the capability (`debounce`, `publish`, `cache`), 
 If you cannot name the second real consumer of an abstraction, it does **not** belong in
 `nico-core`. One implementation behind a trait is a warning sign, not a design.
 
+Crate names state the capability, not the product. The product is an AI gateway, but there is no
+`nico-ai`: LLM provider/stream semantics live in `nico-llm`, and a future MCP data plane becomes
+`nico-mcp`. One protocol per crate keeps either from growing into the other's home.
+
 ### Dependency rules
 
 ```text
 nico-server
    ├──> nico-core
    ├──> nico-http ──────────> nico-core + pingora + tokio (time/net/rt; never signals)
-   ├──> nico-ai ────────────> nico-http + nico-core
+   ├──> nico-llm ────────────> nico-http + nico-core
    ├──> nico-config ────────> nico-core
    ├──> nico-config-etcd ───> nico-config     (feature: config-etcd)
    ├──> nico-config-nacos ──> nico-config     (feature: config-nacos)
@@ -187,12 +191,12 @@ nico-server
 
 Hard rules:
 
-- `nico-core` must not depend on `nico-http`, `nico-ai`, `nico-plugins`, `pingora`,
+- `nico-core` must not depend on `nico-http`, `nico-llm`, `nico-plugins`, `pingora`,
   `hyper`, or any config-center client. It carries no network client and no policy cryptography:
   plugin credentials, signatures and caller-address hashes live in the crate that uses them; its one
   `sha2` use is `ConfigDigest`, a digest of the document bytes. That keeps adding a built-in policy
   from growing the kernel's dependency tree.
-- `nico-http` must not import `nico-ai`. AI plugs in through HTTP extension points: a plugin
+- `nico-http` must not import `nico-llm`. LLM capability plugs in through HTTP extension points: a plugin
   resolves a provider target and records a `Destination`, and this crate owns only how to reach it.
   For the same reason it must not import `nico-plugins`: a policy implements `Plugin` and reaches the
   request through `PluginContext` — a value type it never sees a framework type in — so the dependency
@@ -239,7 +243,7 @@ groups. This is enforced by `rustfmt.toml` (`group_imports = "StdExternalCrate"`
 | Function | `snake_case`, verb first | `build_snapshot`, `publish` |
 | Constructor | `new` / `with_config`; `try_new` when fallible | `RouteTable::try_new` |
 | Error enum | `<Domain>Error` with `thiserror` | `ConfigSourceError` |
-| Feature | lowercase, domain-scoped | `ai`, `config-etcd` |
+| Feature | lowercase, domain-scoped | `llm`, `config-etcd` |
 | Async spawn / channel bound | explicit, no `unbounded` in the name | `config_event_channel(capacity)` |
 
 Avoid framework-flavored names (`PluginManager`, `AbstractFactory`, `BaseHandler`, `*ServiceImpl`)
@@ -249,11 +253,11 @@ unless the type really manages several lifecycles or algorithms.
 
 ## Examples
 
-- Adding an AI provider: new module in `crates/nico-ai/src/provider/`, strong-typed config,
+- Adding an LLM provider: new module in `crates/nico-llm/src/provider/`, strong-typed config,
   registration in `nico-server` bootstrap. No changes to `nico-core` or `nico-http`.
 - Adding an auth plugin: add `<kind>.rs` for the `Plugin` implementation and `<kind>/` with
   `{config,factory,json,tests}.rs` for its config, factory, helpers and tests, registered by
-  `builtin_registry()`. No changes to `nico-ai`, and none to `nico-core` or `nico-http`.
+  `builtin_registry()`. No changes to `nico-llm`, and none to `nico-core` or `nico-http`.
 - Adding a config center: new `nico-config-*` crate implementing
   `nico_config::ConfigSource`, feature-gated, registered in `bootstrap.rs`. No changes to the
   reload pipeline.
@@ -292,9 +296,9 @@ last known good generation keeps serving.
 
 ```bash
 # Dependency boundary checks (must produce no output)
-cargo tree -p nico-core --prefix none | grep -E 'pingora|nico-http|nico-ai|etcd-client|nacos'
-cargo tree -p nico-config --prefix none | grep -E 'pingora|nico-http|nico-ai|etcd-client'
-cargo tree -p nico-http --prefix none | grep -E 'nico-ai'
+cargo tree -p nico-core --prefix none | grep -E 'pingora|nico-http|nico-llm|etcd-client|nacos'
+cargo tree -p nico-config --prefix none | grep -E 'pingora|nico-http|nico-llm|etcd-client'
+cargo tree -p nico-http --prefix none | grep -E 'nico-llm'
 
 # Feature matrix must build (the workspace currently defines no features)
 cargo check --no-default-features

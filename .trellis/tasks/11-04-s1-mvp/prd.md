@@ -25,14 +25,14 @@
 | `1.1 route-schema` | `routes` / `upstreams` / `providers` 配置模型、四段校验、文档边界 | 最先，其它三个都依赖它 |
 | `1.2 http-data-plane` | `nico-http`：Pingora 接入、路由匹配、upstream、流式 body、SSE、h2c、graceful、1xx | 依赖 `1.1` |
 | `1.3 nico-plugins` | JWT / API Key / Rate Limit 内置 HttpFilter | 依赖 `1.2` |
-| `1.4 nico-ai-passthrough` | `nico-ai`：AI Filter、OpenAI Provider、按路由级 provider 选上游、SSE 透传 | 依赖 `1.2`（可与 `1.3` 并行） |
+| `1.4 nico-llm-passthrough` | `nico-llm`：LLM Filter、OpenAI Provider、按路由级 provider 选上游、SSE 透传 | 依赖 `1.2`（可与 `1.3` 并行） |
 
 子任务之间的顺序写在各子任务 `prd.md` 的 "Dependencies" 段，不靠树位置隐含。
 
 ## Cross-child Acceptance Criteria
 
 - [ ] 五个基线命令全绿：`cargo +nightly fmt --all -- --check`、`cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`、`cargo test --workspace --all-features --locked`、`cargo deny check`、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`。
-- [ ] 依赖方向不变：`nico-core` 的依赖树无 `pingora` / `nico-http` / `nico-ai` / `nico-config`；`nico-http` 不 import `nico-ai`。
+- [ ] 依赖方向不变：`nico-core` 的依赖树无 `pingora` / `nico-http` / `nico-llm` / `nico-config`；`nico-http` 不 import `nico-llm`。
 - [ ] 一次 HTTP 请求的完整链路可跑通：local 配置 → 快照发布 → 路由匹配 → 上游转发 → 响应流式返回。
 - [ ] 路由选择不读取请求 body（用"上游在 body 到达前已建立连接"的测试证明）。
 - [ ] 配置热重载期间在途请求继续使用旧 generation；非法配置保留 LKG 且不中断服务。

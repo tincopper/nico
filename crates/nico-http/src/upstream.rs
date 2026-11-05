@@ -5,7 +5,7 @@
 //! of its own and the pure steps stay testable without a resolver or a socket:
 //!
 //! - [`Destination`] is the **seam**: whoever understood a route's target (this crate for a document
-//!   `upstream`, `nico-ai` for a provider's `base_url`) hands over scheme, host and port, and the
+//!   `upstream`, `nico-llm` for a provider's `base_url`) hands over scheme, host and port, and the
 //!   data plane owns everything about *reaching* it — budget, TLS policy, `Host` rewriting. It is not
 //!   `nico_core::Upstream`: that type is a document entry a filter may not construct, while a
 //!   destination is a per-request decision that any target owner may produce.
@@ -51,7 +51,7 @@ pub(crate) const TLS_BACKEND_ENABLED: bool = false;
 /// This is the data plane's only input for reaching a peer, and it is deliberately constructible
 /// outside this crate: a filter that owns a target kind this crate does not understand (a provider
 /// named by a route) resolves it and stores the destination in the [`HttpContext`], so provider
-/// semantics stay in `nico-ai` while TLS policy, budgets and header rewriting stay here.
+/// semantics stay in `nico-llm` while TLS policy, budgets and header rewriting stay here.
 ///
 /// The caller that resolves a target is also the one that validates it — a provider whose
 /// `base_url` yields an empty host fails when the peer is connected, exactly like an unreachable

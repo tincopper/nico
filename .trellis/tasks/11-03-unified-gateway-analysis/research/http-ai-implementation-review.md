@@ -249,7 +249,7 @@ WebSocket 与 gRPC 的透明代理可在第一阶段验证，但“消息内容�
 - `nico-server`：启动、角色选择、信号与生命周期。
 - `nico-core`：配置、快照、公共元数据、策略和错误模型；不依赖 Pingora HTTP Session。
 - `nico-http`：Pingora 接入和 HTTP 专属 hooks。
-- `nico-ai`：provider/model 领域、AI 请求与 SSE 适配。
+- `nico-llm`：provider/model 领域、AI 请求与 SSE 适配。
 - `nico-policy` 或少量插件 crate：鉴权、限流、安全策略。
 - 后续独立的 `nico-l4`、`nico-mqtt`、`nico-quic` 等。
 

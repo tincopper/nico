@@ -10,7 +10,7 @@
 pub enum ErrorCategory {
     /// The caller is at fault: malformed input, failed authentication or authorization.
     Client,
-    /// A dependency failed: upstream peer, AI provider, configuration source.
+    /// A dependency failed: upstream peer, LLM provider, configuration source.
     Upstream,
     /// A resource or rate limit was reached.
     Limit,
