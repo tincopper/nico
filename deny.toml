@@ -6,8 +6,8 @@
 [advisories]
 version = 2
 yanked = "warn"
-# Both entries arrive with pingora 0.9.1's *non-optional* dependencies, and both are
-# `unmaintained` advisories rather than vulnerabilities. Re-check both on every pingora upgrade:
+# The entries below arrive with pingora 0.9.1's *non-optional* dependencies, and every one is an
+# `unmaintained` advisory rather than a vulnerability. Re-check them all on every pingora upgrade:
 # if upstream either drops the crate or ships a fix, delete the ignore instead of widening it.
 ignore = [
     # derivative 2.2.0 <- pingora-core. A derive helper used by pingora's own internals; no
@@ -16,6 +16,12 @@ ignore = [
     # unsafe-libyaml 0.2.11 <- pingora-core -> serde_yaml. Reachable only from ServerConf's
     # load_yaml/to_yaml helpers; we build ServerConf programmatically and never hand it YAML.
     "RUSTSEC-2024-0449",
+    # pin-utils 0.1.1 <- pingora-core -> futures-util. The crate is unmaintained (its repository was
+    # archived), not vulnerable, and the advisory offers no upgrade: futures-util depends on it and
+    # futures-util is a non-optional dependency of pingora-core, so it cannot be compiled out. It is
+    # a macro-only helper (`pin_mut!`, `unsafe_pinned!`); nothing of ours is written against it.
+    # Re-check on every pingora upgrade: drop this entry as soon as futures-util stops depending on it.
+    "RUSTSEC-2026-0441",
 ]
 
 [licenses]

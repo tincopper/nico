@@ -385,7 +385,10 @@ routes: []
 
         assert_eq!(document.providers().len(), 1);
         assert_eq!(document.upstreams().len(), 1);
-        assert_eq!(document.routes().len(), 2);
+        // Two plugin entries plus the buffered upload guard the example documents.
+        assert_eq!(document.plugins().len(), 3);
+        // The API, the provider route, and the buffered upload route.
+        assert_eq!(document.routes().len(), 3);
     }
 
     #[test]

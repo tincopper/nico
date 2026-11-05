@@ -133,21 +133,41 @@
 
 ## 7. `nico-server`：装配与示例
 
-- [ ] `server.rs`：构造 `PluginRegistry` 并注册三个内置工厂（这是"编译期装载"的唯一入口），把 registry 交给
-      `PluginRuntime`。
-- [ ] reload 发布 `PublishedChains`（与快照同一函数、无 await 间隔）。
-- [ ] `config/resources.yaml`：全局插件 + 路由插件 + `buffers_body` 示例，注释写明整块模式的内存/延迟代价。
-- [ ] 测试：编译失败保 LKG；`state.current()` 与快照同代；全局插件在未匹配路由的请求上也会执行。
+- [x] `server.rs`：`serve_with(bootstrap, source, shutdown, PluginRegistry)` 是唯一的装配点，`serve` 就是
+      `serve_with(..., builtin_registry())`；registry 交给 `PluginRuntime::with_registry`。注册表成为参数的两个理由写在
+      doc 上：装载是组装决策（WASM 宿主将来加一个工厂），以及测试要观察阶段。`lib.rs` 的 pipeline seam 仍用
+      `PluginRuntime::new()`（它等于 `with_registry(builtin_registry())`），注释说明两个入口装载同一组 kind。
+- [x] reload 发布 `PublishedChains`（与快照同一函数、无 await 间隔）。
+- [x] `config/resources.yaml`：全局插件 + 路由插件 + `buffers_body` 示例，注释写明整块模式的内存/延迟代价。
+- [x] 测试：编译失败保 LKG；`state.current()` 与快照同代；全局插件在未匹配路由的请求上也会执行。
+
+> 落地：装配缝是 `nico_server::server::serve_with`；测试挂具 `RunningServer::start` 委托给
+> `start_with_registry`，后者把 registry 交给 `serve_with`（`start` 传 `builtin_registry()`）。`plugins_config.rs` 覆盖
+> LKG、`publication.rs` 覆盖 `state.current()` 与快照同代（全局链 / 每路由链 / 整块集合都从一次 `current()` 读出），
+> `plugins_global.rs` 覆盖"全局插件在 404 上执行"。`config/resources.yaml` 新增 `buffers_body: true` 的 `upload-guard`
+> 与引用它的 `/upload/` 路由，`/api/` 行为不变；`nico-core` 的"随包文档可解析"用例随之更新为 3 个插件条目、3 条路由。
 
 ## 8. 集成测试（`crates/nico-server/tests/`）
 
-- [ ] `plugins_global.rs`：全局插件在 404（无路由匹配）时也执行并可拒绝；全局先于路由插件的顺序断言。
-- [ ] `plugins_buffered.rs`：`buffers_body` 路由——客户端分块上传，插件看到整份并改写，上游收到改写后的字节
+- [x] `plugins_global.rs`：全局插件在 404（无路由匹配）时也执行并可拒绝；全局先于路由插件的顺序断言。
+- [x] `plugins_buffered.rs`：`buffers_body` 路由——客户端分块上传，插件看到整份并改写，上游收到改写后的字节
       （上游在客户端传完前收不到 body，用 mock 的观察时间戳断言）。
-- [ ] `plugins_respond.rs`：`Outcome::Respond` 合成响应（mock 插件）；状态/头/体经清洗；`content-length` 重算。
-- [ ] `plugins_auth.rs` / `plugins_limit.rs` / `plugins_custom_response.rs`：现有场景按新接口调整，断言不变。
-- [ ] `plugins_streaming.rs`：SSE 路由 + `on_response_body` 插件逐块观察（不整块）；字节一致或按插件改写后的字节断言。
-- [ ] 每个文件只起一个 server，≤ 500 行。
+- [x] `plugins_respond.rs`：`Outcome::Respond` 合成响应（mock 插件）；状态/头/体经清洗；`content-length` 重算。
+- [x] `plugins_auth.rs` / `plugins_limit.rs` / `plugins_custom_response.rs`：现有场景按新接口调整，断言不变。
+- [x] `plugins_streaming.rs`：SSE 路由 + `on_response_body` 插件逐块观察（不整块）；字节一致或按插件改写后的字节断言。
+- [x] 每个文件只起一个 server，≤ 500 行。
+
+> 落地：四个新目标各一个 `#[tokio::test]`、一个 server、一个文档，等待全部由事件驱动（`wait_for_status`、
+> `MockUpstream::wait_for_request`、`MockRecorder::wait_for`）。`tests/support/http/mock.rs` 是只在测试注册表里的
+> `mock` kind（`tag` / `respond` / `rewrite_body` / `append_response` 四个 action，配置用 `deny_unknown_fields` 解析），
+> `resources.rs` 增加 `global_plugins` 与对应 builder。门 C 跑过：`cargo test -p nico-server --test plugins_global
+> --test plugins_buffered --test plugins_respond --test plugins_streaming`（4 passed）、
+> `cargo test --workspace --all-features`（683 passed）、clippy `-D warnings` 干净、`cargo +nightly fmt --all --check`
+> 干净、`RUSTDOCFLAGS="-D warnings" cargo doc` 干净、文件预算只命中既有的 `nico-config/src/cache.rs`。
+>
+> 独立评审补两处：`plugins_respond.rs` 的 fixture 现在真的让插件写出 `www-authenticate`/`retry-after`，
+> 否则“清洗掉拒绝专用头”只是在断言两个从未出现过的头；`request_body_filter` 与响应方向对称，同样跳过
+> 零字节 body task（请求侧保留 `Some(empty)`，因为那里 `None` 表示 body 结束）。
 
 ## 9. spec 与门禁
 
@@ -158,7 +178,8 @@
 - [x] `directory-structure.md`：`nico-http/plugin*`、`nico-plugins` 新模块树、可见性（只导出 `Plugin`/`PluginContext`/`Outcome`/`PluginInfo`/`PluginError`）。
 - [x] 五条基线全绿；依赖边界成立（`nico-core` 不含网络客户端依赖，也不承载策略密码学；`sha2` 仅用于
       `ConfigDigest` 的文档摘要；`nico-plugins` 不含 pingora）；文件预算成立（所有 `.rs` ≤ 500 行）。
-- [ ] feature 矩阵、§7 server 装配与 §8 集成测试待验证。
+- [x] feature 矩阵：本仓库没有任何 crate 声明 feature（`cargo metadata` 的五个 crate feature 集全为空），
+      矩阵只有“默认 = 全量”一行，`--all-features` 与默认构建等价；§7 server 装配与 §8 集成测试已由门 C 覆盖。
 
 ## 评审门
 

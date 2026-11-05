@@ -59,6 +59,12 @@ pub const USAGE: &str = "usage: nico --bootstrap <path>";
 /// `bootstrap.allow_bootstrap_cache()` is set, so passing `true` never changes the running
 /// behaviour of a healthy process.
 ///
+/// The plugin runtime is built from `PluginRuntime::new()`, which is `with_registry(builtin_registry())`:
+/// one constructor, so this seam loads the same kinds the assembled process does and a document that
+/// compiles here cannot be refused there for a missing kind. It takes no registry parameter because it
+/// publishes into a handle nothing serves from — a kind a test registers would have no request to
+/// observe. [`server::serve_with`] is the seam that carries one.
+///
 /// # Errors
 /// Returns [`ReloadError::NotReady`] when no snapshot could be published and no cache fallback was
 /// allowed or usable, and [`ReloadError::GenerationOverflow`] when the generation counter is

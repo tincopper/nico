@@ -71,6 +71,14 @@ pub(super) async fn request_body_filter(
         return Ok(());
     }
 
+    if chunk.is_empty() {
+        // A zero-byte body task, which the framework produces while a chunked body's terminator is
+        // still being parsed. There is nothing to rewrite, and a plugin that appended to it would put
+        // bytes in the upstream request the client never sent. Leaving `Some(empty)` is not
+        // `None`: on this side `None` means "the body ended here", which it did not.
+        return Ok(());
+    }
+
     let mut current = chunk.to_vec();
     current = run_request_body_stages(session, ctx, current, end_of_stream).await?;
     *body = Some(Bytes::from(current));
@@ -168,6 +176,13 @@ fn response_body_stages(
         // chunk a plugin could replace.
         return Ok(());
     };
+    if chunk.is_empty() {
+        // A zero-byte body task, which the framework produces while a chunked body's terminator is
+        // still being parsed. There are no bytes to rewrite, and a plugin that appended to this
+        // chunk would put bytes on the wire the origin never sent. `body` is already `None`, so this
+        // call forwards nothing.
+        return Ok(());
+    }
     if ctx.route_chain().is_none() && ctx.global().is_none() {
         *body = Some(chunk);
         return Ok(());

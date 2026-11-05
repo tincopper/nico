@@ -172,6 +172,8 @@ host functions 由宿主同步驱动并在内部受请求预算约束。guest �
 ### 4.1 默认：逐块（A）
 
 - 每个块调用一次 `on_request_body`，`request_body()` 返回当前块，`set_request_body` 替换它；超预算 → 408。
+- `body_complete()` 反映框架的结束标记：长度已知的最后一数据块为 `true`；chunked 流的终止段是空块、不作为块交付，
+  所以它的数据块一律 `false`。要在 chunked 上传结束时做整体处理，只能声明 `buffers_body`。
 - 开销：每块 × 每插件一次跨边界调用（WASM 更贵，文档明示"控制链长"）。
 
 ### 4.2 声明式整块（B，仅请求侧）
@@ -189,7 +191,8 @@ host functions 由宿主同步驱动并在内部受请求预算约束。guest �
 ### 4.3 响应体永远逐块
 
 - `on_response_body` 每块一次，可替换/丢弃；**不允许**整块（SSE 可能无限长）。该阶段是同步的，插件不得阻塞，
-  也不得在这里改响应头（头已发出）。
+  也不得在这里改响应头（头已发出）。chunked 响应的终止段同样不作为块交付，所以 `body_complete()` 不能用来
+  判断事件流结束。
 - 帧化：全局链或路由链声明 `RESPONSE_BODY` 时，`upstream_response_filter` 移除上游 `content-length`，让 Pingora 走 chunked
   （`proxy_h1.rs:938-953` 在既无 TE 又无 CL 时补 chunked），否则插件改变块大小会与 CL 不一致。
 

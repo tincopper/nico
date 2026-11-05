@@ -36,9 +36,10 @@ upstreams:
 # newline left by `echo secret > file` is part of the key, so write the value exactly. An empty or
 # unreadable credential rejects the whole document and the previously published one keeps serving.
 #
-# Two entry kinds are shown below. `public-jwt` authenticates a bearer token, so a local run needs
+# Three entry kinds are shown below. `public-jwt` authenticates a bearer token, so a local run needs
 # `JWT_SECRET` in its environment: a document whose credential cannot be read is refused as a whole
 # and the previously published one keeps serving, which is why this file cannot be run without it.
+# The buffered entry below adds `UPLOAD_KEY` for the same reason.
 #
 # An entry is an INSTANCE, not a kind alias: two routes that need different parameters need two
 # entries of the same kind, each referenced by name. Sharing one entry across routes shares its
@@ -66,11 +67,31 @@ plugins:
       burst: 20
       per_second: 5
       max_keys: 10000
+  # `buffers_body: true` is the one request-side mode a document can ask for: the data plane holds
+  # every chunk back, calls `on_request_body` once with the whole body, and forwards what the plugin
+  # returned. A body of unknown length can only be rewritten that way, and only a request can be
+  # buffered at all — a response may be an endless stream.
+  #
+  # Two costs, both real: the upstream receives nothing until the client's last byte arrives, so its
+  # latency includes the upload; and memory is `request.max_body_bytes` x the number of buffered
+  # uploads in flight, because each one holds its body whole. That is why the mode is opt-in per
+  # instance and why the route below is the only one that uses it.
+  - name: upload-guard
+    kind: api_key
+    buffers_body: true
+    config:
+      header: x-upload-key
+      keys:
+        - name: uploader
+          secret_ref: env:UPLOAD_KEY
 
 # Use sites for the global scope: names declared above, in the order they should run within a phase.
-# Empty by default, because declaring a plugin is not a decision to run it for every request. A
-# subject-keyed rate limit belongs on a route instead: before routing there is no route id and no
-# identity, so a global limit can only be keyed by a hash of the client address.
+# Empty by default, because declaring a plugin is not a decision to run it for every request. The
+# shape is a list of instance names — `global_plugins: [public-jwt]` would authenticate every request
+# before routing — and an entry listed here runs on requests that match no route at all, which is the
+# reason an edge policy belongs here. A subject-keyed rate limit belongs on a route instead: before
+# routing there is no route id and no identity, so a global limit can only be keyed by a hash of the
+# client address.
 global_plugins: []
 
 # Every route names exactly one target: an `upstream` or a `provider`. `timeout_ms` and
@@ -85,3 +106,11 @@ routes:
     path_prefix: /v1/chat/
     provider: openai-primary
     timeout_ms: 120000
+  # A buffered route: `buffers_body` on any plugin in the chain puts this route, and only this route,
+  # into whole-body mode. The bound stays the document's or tighter — a route can tighten a budget,
+  # never widen it — so it is written here only to state the value the memory arithmetic uses.
+  - id: upload
+    path_prefix: /upload/
+    upstream: api-backend
+    max_body_bytes: 1048576
+    plugins: [upload-guard]

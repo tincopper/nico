@@ -106,8 +106,10 @@ pub trait Plugin: Send + Sync {
     /// Runs once per request-body chunk, or once for the whole body when the document declared
     /// `buffers_body` and the route is therefore buffered.
     ///
-    /// `ctx.body_complete()` distinguishes the two: it is `true` only for the last chunk of a
-    /// streamed body, and always `true` in the buffered mode.
+    /// `ctx.body_complete()` reports the framework's end marker: always `true` in the buffered mode,
+    /// and `true` on the last chunk of a length-delimited stream. A chunked body ends with an empty
+    /// terminator that is not delivered as a chunk, so its data chunks all report `false` — a plugin
+    /// that must see the end of a chunked upload has to ask for `buffers_body`.
     ///
     /// # Errors
     /// As [`Plugin::on_request`].
@@ -127,7 +129,9 @@ pub trait Plugin: Send + Sync {
     /// Runs once per response-body chunk.
     ///
     /// The response is always streamed: an event stream may never end, so no document can declare
-    /// that a plugin needs the whole body. `ctx.body_complete()` reports the last chunk.
+    /// that a plugin needs the whole body. `ctx.body_complete()` reports the framework's end marker;
+    /// a chunked stream ends with an empty terminator that is not delivered as a chunk, so a plugin
+    /// must not rely on it to detect the end of an event stream.
     ///
     /// This stage is **synchronous**, unlike the other four: the framework hook that delivers a
     /// downstream body chunk cannot await, so a plugin may not either. Nothing here may block either
@@ -386,7 +390,9 @@ pub trait PluginContext: Send {
 
     /// Reports whether the chunk just delivered ends the body.
     ///
-    /// Always `true` in the buffered request mode, `true` on the last chunk of a streamed body.
+    /// Always `true` in the buffered request mode, and on the last chunk of a length-delimited body.
+    /// A chunked body's terminator is empty and is not delivered as a chunk, so its data chunks all
+    /// report `false`.
     ///
     /// # Errors
     /// [`PluginError::PhaseViolation`] outside a body stage.

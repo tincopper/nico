@@ -9,9 +9,12 @@
 //!   out), plus the [`resources::Route`] and [`resources::Plugin`] entries a scenario varies;
 //! - [`TestSource`](source::TestSource), a configuration source the test publishes into, so a
 //!   document can be in service before the first request or only after one;
-//! - [`RunningServer`], which runs the **production** assembly (`nico_server::server::serve`) on
-//!   its own thread and stops it through the same shutdown token the binary uses;
-//! - [`MockUpstream`](upstream::MockUpstream) and [`Client`](client::Client), the two wire peers.
+//! - [`RunningServer`], which runs the **production** assembly (`nico_server::server::serve_with`, the
+//!   function `serve` itself delegates to) on its own thread and stops it through the same shutdown
+//!   token the binary uses;
+//! - [`MockUpstream`](upstream::MockUpstream) and [`Client`](client::Client), the two wire peers;
+//! - [`mock`], a plugin kind only a test registers, so a scenario can make the driver prove what it
+//!   called and in which order.
 //!
 //! One server per test binary. `Server::run` owns the calling thread and installs the runtimes it
 //! later tears down, so a test binary starts exactly one and every scenario in the file talks to it.
@@ -32,6 +35,7 @@
 
 pub(crate) mod client;
 pub(crate) mod log;
+pub(crate) mod mock;
 pub(crate) mod source;
 pub(crate) mod upstream;
 
@@ -126,10 +130,22 @@ pub(crate) struct RunningServer {
 }
 
 impl RunningServer {
-    /// Starts the production assembly on its own thread and waits until it accepts connections.
+    /// Starts the production assembly with every plugin kind this build implements.
     ///
     /// `directory` must already contain a bootstrap file created by [`write_bootstrap`].
     pub(crate) async fn start(directory: &Path, source: Arc<dyn ConfigSource>) -> Self {
+        Self::start_with_registry(directory, source, nico_plugins::builtin_registry()).await
+    }
+
+    /// Starts the production assembly with `plugins` as the set of kinds it can load.
+    ///
+    /// The scenario files that assert on the plugin driver register [`mock`](mock) here, so the
+    /// production registry stays exactly what a deployment gets; everything else uses [`Self::start`].
+    pub(crate) async fn start_with_registry(
+        directory: &Path,
+        source: Arc<dyn ConfigSource>,
+        plugins: nico_http::PluginRegistry,
+    ) -> Self {
         let bootstrap = BootstrapConfig::load(directory.join("bootstrap.yaml"))
             .expect("the bootstrap fixture loads");
         let address: SocketAddr = bootstrap
@@ -141,7 +157,7 @@ impl RunningServer {
         let token = shutdown.clone();
         let thread = std::thread::Builder::new()
             .name("nico-test-server".to_owned())
-            .spawn(move || server::serve(&bootstrap, source, token))
+            .spawn(move || server::serve_with(&bootstrap, source, token, plugins))
             .expect("the server thread starts");
 
         let server = Self {

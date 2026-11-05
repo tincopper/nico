@@ -88,6 +88,11 @@ impl HttpContext {
 
 // nico-server — process assembly owns signals, runtime and shutdown
 pub fn serve(bootstrap: &BootstrapConfig, source: Arc<dyn ConfigSource>, shutdown: CancellationToken) -> ExitCode;
+// The assembly seam `serve` delegates to. The registry is an assembly input, not a config knob: which
+// kinds exist is decided by whoever links the process (a WASM host adds one factory), and a test
+// registers a recording kind here. It is kept for the process, so factory state (token buckets)
+// survives a reload.
+pub fn serve_with(bootstrap: &BootstrapConfig, source: Arc<dyn ConfigSource>, shutdown: CancellationToken, plugins: PluginRegistry) -> ExitCode;
 // src/server/shutdown.rs, pub(super)
 fn run_args(shutdown: CancellationToken) -> RunArgs;
 struct CancelWatch; // impl ShutdownSignalWatch
@@ -125,7 +130,10 @@ prevents a plugin from changing `content-length` or `transfer-encoding`; `Plugin
 writes to either header. A synthesized response is cleaned by `plugin/response.rs` and written by
 `proxy/failure.rs::write_synthetic`. A buffered route holds each chunk back as `Some(Bytes::new())`
 with `end_of_stream == false` until the stream ends, then delivers the whole body once and forces the
-upstream request head to `transfer-encoding: chunked`.
+upstream request head to `transfer-encoding: chunked`. Both body hooks can also be called with a
+zero-byte buffer while a chunked body's terminator or trailers are still being parsed; the driver
+then skips the stage instead of handing a plugin a buffer with no bytes, and keeps the request-side
+`Some(empty)` (there `None` means end-of-body, so dropping it would truncate the upload).
 
 ## 4. Validation & Error Matrix
 
@@ -194,6 +202,10 @@ ones the data plane owns. The one exception to both is the informational respons
 | a configured 4xx/JSON or 4xx/HTML refusal keeps the stable headers | `nico-server/tests/plugins_custom_response.rs` |
 | a document whose credential cannot be read keeps the published generation serving | `nico-server/tests/plugins_config.rs` |
 | publishing one generation writes the snapshot *and* its chains in one step | `nico-server/tests/publication.rs` |
+| a global plugin runs on a request that matches no route, and before the route scope | `nico-server/tests/plugins_global.rs` |
+| a buffered route withholds the body until the upload ends, then forwards the rewritten whole | `nico-server/tests/plugins_buffered.rs` |
+| a synthesized response is cleaned and written without choosing a peer | `nico-server/tests/plugins_respond.rs` |
+| a response-body plugin sees one chunk per upstream write, never the whole stream | `nico-server/tests/plugins_streaming.rs` |
 
 One server per integration-test binary: `Server::run` owns the calling thread and installs a global
 runtime. A second server in the same binary tests Pingora's globals, not this crate.
@@ -251,3 +263,4 @@ let service = ProxyServiceBuilder::new(&conf, app)
 | without a TLS provider, `noop_tls::connect` returns a **pass-through** stream: `tls: true` would not encrypt | `pingora-core/src/protocols/tls/noop_tls/mod.rs` |
 | `ServerConf` has no downstream read/idle timeout, so a stalled request body can only be bounded by our own deadline check in `request_body_filter` | `pingora-core/src/server/configuration/mod.rs` (field list) |
 | an upstream `read_timeout` is **per read**, so a peer dribbling bytes is bounded by the deadline check in `upstream_response_body_filter`, not by the timeout | `pingora-proxy/src/lib.rs` read loop |
+| `read_response_task` turns a zero-length body slice into `Some(Bytes::new())` — while a chunked body's terminating CRLF or trailers are still unread, the parser yields `BufRef::new(0, 0)` — so both body hooks can be called with an empty buffer and `end_of_stream == false`; the driver skips the stage (a plugin appending to nothing would put bytes on the wire the origin never sent) and keeps the request-side `Some(empty)`, because `None` there means end-of-body | `pingora-core/src/protocols/http/v1/body.rs:720,793`; `client.rs:498,837` |

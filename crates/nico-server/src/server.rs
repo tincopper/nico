@@ -9,10 +9,11 @@
 //! 3. one [`CancellationToken`], which is the only shutdown source: the signal watcher cancels it,
 //!    Pingora drains on it, and the pipeline stops watching its source because of it.
 //!
-//! [`serve`] is the single production assembly point. [`crate::serve`] remains the pipeline seam a
-//! test drives without a socket, and both create the pipeline with the same [`Reloader`] arguments.
-//! Signals, runtime and shutdown live here rather than in `nico-http`, so the data-plane crate
-//! stays a library that cannot hijack the process it is linked into.
+//! [`serve_with`] is the single production assembly point, and [`serve`] is it with the built-in
+//! plugin kinds. [`crate::serve`] remains the pipeline seam a test drives without a socket, and both
+//! create the pipeline with the same [`Reloader`] arguments. Signals, runtime and shutdown live here
+//! rather than in `nico-http`, so the data-plane crate stays a library that cannot hijack the process
+//! it is linked into.
 
 use std::{
     process::ExitCode,
@@ -22,8 +23,8 @@ use std::{
 use async_trait::async_trait;
 use nico_config::{CacheStore, ConfigSource};
 use nico_core::SnapshotHandle;
-use nico_http::{HttpStateHandle, server_conf, service as http_service};
-use nico_plugins::PluginRuntime;
+use nico_http::{HttpStateHandle, PluginRegistry, server_conf, service as http_service};
+use nico_plugins::{PluginRuntime, builtin_registry};
 use pingora::{
     server::{Server, ShutdownWatch},
     services::background::{BackgroundService, background_service},
@@ -40,14 +41,44 @@ mod shutdown;
 
 /// Runs the gateway until shutdown and returns the process exit code.
 ///
-/// The exit code reports one thing: whether a configuration snapshot ever reached service. A
-/// pipeline that gave up before its first publish is logged where it happens and then stops the
-/// process — serving `503 not_ready` forever is not a state an operator asked for. Pingora drains
-/// first, and only then does this function turn the recorded failure into [`FAILURE_EXIT_CODE`].
+/// This is [`serve_with`] with every kind this build implements, which is what a deployment wants:
+/// the built-in set is the whole of "a compiled-in policy is installed" (see [`builtin_registry`]).
+/// A test that needs a kind of its own calls `serve_with` instead.
 pub fn serve(
     bootstrap: &BootstrapConfig,
     source: Arc<dyn ConfigSource>,
     shutdown: CancellationToken,
+) -> ExitCode {
+    serve_with(bootstrap, source, shutdown, builtin_registry())
+}
+
+/// Runs the gateway with `plugins` as the complete set of document `kind`s it can load.
+///
+/// The registry is a parameter for two reasons, and neither is a configuration knob:
+///
+/// - **Which kinds exist is an assembly decision.** A built-in kind arrives through
+///   [`builtin_registry`] because it is compiled into this binary; a WASM host will arrive by adding
+///   one factory to the same registry. Neither changes the document model, the chains or the phases,
+///   so the process — not a library — is the right place to decide the set.
+/// - **A test has to observe the stages.** A scenario that asserts "the global chain ran before
+///   routing" needs a plugin that records what it was called with, and that plugin must never be
+///   reachable from a deployment. Passing the registry in is what lets the integration tests drive
+///   the production assembly with a kind only they register.
+///
+/// The set is taken by value and kept for the process: the registry holds the factories, and a factory
+/// may hold state that must survive a reload (a token-bucket table), so it is built once here rather
+/// than once per generation. A document that names a kind this registry does not answer to is
+/// refused at publication and the last known good generation keeps serving.
+///
+/// The exit code reports one thing: whether a configuration snapshot ever reached service. A pipeline
+/// that gave up before its first publish is logged where it happens and then stops the process —
+/// serving `503 not_ready` forever is not a state an operator asked for. Pingora drains first, and
+/// only then does this function turn the recorded failure into [`FAILURE_EXIT_CODE`].
+pub fn serve_with(
+    bootstrap: &BootstrapConfig,
+    source: Arc<dyn ConfigSource>,
+    shutdown: CancellationToken,
+    plugins: PluginRegistry,
 ) -> ExitCode {
     let settings = bootstrap.http();
     // The request path reads `state` and nothing else: the pipeline publishes a snapshot and the plan
@@ -55,7 +86,7 @@ pub fn serve(
     let state = HttpStateHandle::new();
     // One plugin runtime for the process: the bucket tables inside it are runtime state, so a reload
     // that republishes the same quota must keep them rather than hand every caller a fresh one.
-    let runtime = Arc::new(PluginRuntime::new());
+    let runtime = Arc::new(PluginRuntime::with_registry(plugins));
     let failure = Arc::new(Mutex::new(None));
 
     let mut server = match Server::new(None) {
