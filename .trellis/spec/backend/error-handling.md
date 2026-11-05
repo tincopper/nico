@@ -307,6 +307,15 @@ must never quote the credential, and a test asserts that the error's `Display` d
 The pair is one code per **decision this layer makes** ("is there a credential" versus "may this
 credential in"), not one per reason a credential can fail.
 
+### LLM provider errors (`nico-llm`)
+
+A provider adapter turns a provider status/body into a `CanonicalError` (category, stable code,
+retryable, safe message); a client codec encodes that value in the client protocol's error envelope.
+The provider body, headers and credential never reach the client or the request record. A capability
+the `(client protocol, provider)` pair does not support is refused at publication when it is
+configuration, and at request time as a typed client error when it depends on the body — never
+silently dropped.
+
 ### What a plugin may and may not change
 
 The refusal of one plugin instance is configurable — status, content type and body — and the boundary

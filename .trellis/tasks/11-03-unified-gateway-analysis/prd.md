@@ -28,7 +28,8 @@
 ### R2：明确 HTTP 与 AI 网关的 MVP 边界
 
 - HTTP 数据面优先覆盖 HTTP/HTTPS、HTTP/1.1、HTTP/2、SSE、WebSocket，以及 gRPC 的 HTTP/2 透明代理能力。
-- LLM 数据面优先覆盖 OpenAI 兼容 API 和至少一种异构 provider 的请求/响应适配，并支持 SSE 流式转发。
+- LLM 数据面采用 canonical 模型 + 客户端协议 codec（OpenAI Chat/Responses、Anthropic、Gemini）+ provider adapter（OpenAI/Anthropic/Gemini）：先冻结形状，再写逻辑；核心不得出现厂商 switch。
+- 1.4a 先交付 canonical 与 OpenAI，1.4b 补齐协议矩阵；SSE 逐块转换，不整块缓冲。
 - gRPC 消息感知、MQTT、TCP、QUIC/HTTP3 是否进入后续阶段，应由各自独立验收标准驱动；WebRTC 当前暂缓。
 
 ### R3：大请求体处理必须有正确性和资源上限

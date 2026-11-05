@@ -83,20 +83,21 @@ nico/
     │       ├── route.rs        # match_route(header, routes)
     │       ├── service.rs      # ServerConf derivation + ProxyServiceBuilder + listener
     │       ├── settings.rs     # HttpSettings: bootstrap `http` defaults and ranges
-    │       ├── state.rs        # HttpState/HttpStateHandle: snapshot + global/per-route chains + the two framing sets, one store
+    │       ├── state.rs        # HttpState/HttpStateHandle: snapshot + chains + llm routes + the two framing sets, one store
     │       └── upstream.rs     # crate-private: Destination → HttpPeer
-    ├── nico-llm/            # LLM domain traits, providers, stream adapters
+    ├── nico-llm/            # canonical LLM model + client codecs + provider adapters
     │   └── src/
     │       ├── lib.rs
-    │       ├── filter.rs
-    │       ├── model.rs
-    │       ├── provider.rs      # Provider trait + registry of built-in providers
-    │       ├── provider/
-    │       │   ├── openai.rs
-    │       │   └── anthropic.rs
-    │       └── stream/
-    │           ├── sse.rs
-    │           └── anthropic.rs
+    │       ├── schema.rs        # canonical shape root; schema/ split by data boundary
+    │       ├── schema/          # request/conversation/tool/response/stream/usage/error/model
+    │       ├── protocol.rs      # ClientCodec trait + registry
+    │       ├── protocol/        # openai_chat, openai_responses, anthropic, gemini
+    │       ├── provider.rs      # Provider/ProviderStream traits + registry
+    │       ├── provider/        # openai, anthropic, gemini: wire ↔ canonical
+    │       ├── stream/
+    │       │   └── sse.rs       # shared SSE framing, no vendor semantics
+    │       ├── filter.rs        # route exchange: decode → endpoint/encode → response/stream
+    │       └── model.rs         # logical ↔ physical model mapping
     ├── nico-config/         # ConfigSource trait, local source, LKG cache, fakes
     │   └── src/
     │       ├── lib.rs
@@ -163,7 +164,7 @@ submodules. Name modules after the capability (`debounce`, `publish`, `cache`), 
 |---|---|
 | HTTP/Pingora lifecycle, route matching, the `Plugin` contract, upstream TLS policy | `nico-http` |
 | Signals, runtime ownership, shutdown token, drain wiring | `nico-server` |
-| LLM provider semantics, model mapping, SSE translation | `nico-llm` |
+| LLM canonical schema, client protocol codecs, provider adapters, SSE translation | `nico-llm` |
 | Config source protocol (etcd/Nacos clients) | `nico-config-*` (own crate, own feature) |
 | Built-in HTTP policy (auth, rate limit) | `nico-plugins` |
 | Wiring, feature selection, reload pipeline, shutdown | `nico-server` |
@@ -196,8 +197,10 @@ Hard rules:
   plugin credentials, signatures and caller-address hashes live in the crate that uses them; its one
   `sha2` use is `ConfigDigest`, a digest of the document bytes. That keeps adding a built-in policy
   from growing the kernel's dependency tree.
-- `nico-http` must not import `nico-llm`. LLM capability plugs in through HTTP extension points: a plugin
-  resolves a provider target and records a `Destination`, and this crate owns only how to reach it.
+- `nico-http` must not import `nico-llm`. LLM support arrives through byte-level `LlmRoutes` and
+  `ResponseTransform` traits: `nico-llm` produces a destination, a wire request and a per-request
+  response transform; canonical types never cross into the data plane. This crate owns how to reach a
+  peer, not what a provider speaks.
   For the same reason it must not import `nico-plugins`: a policy implements `Plugin` and reaches the
   request through `PluginContext` — a value type it never sees a framework type in — so the dependency
   edge points the other way.
@@ -253,8 +256,14 @@ unless the type really manages several lifecycles or algorithms.
 
 ## Examples
 
-- Adding an LLM provider: new module in `crates/nico-llm/src/provider/`, strong-typed config,
-  registration in `nico-server` bootstrap. No changes to `nico-core` or `nico-http`.
+- Adding an LLM provider: new module in `crates/nico-llm/src/provider/`, implement `Provider` and
+  `ProviderStream` (canonical ↔ vendor wire), register in `builtin_registry()`. No changes to
+  `schema/`, `protocol/`, `nico-core` or `nico-http`.
+- Adding a client protocol: new module in `crates/nico-llm/src/protocol/`, implement `ClientCodec`
+  (client wire ↔ canonical), register in `builtin_registry()`. No changes to `provider/`.
+- A vendor name or a `match` on a provider kind is allowed only in `provider/<vendor>` and
+  `protocol/<vendor>`; `schema/`, `filter.rs` and `stream/sse.rs` must not learn vendors. The
+  canonical schema is the only vocabulary the two sides share.
 - Adding an auth plugin: add `<kind>.rs` for the `Plugin` implementation and `<kind>/` with
   `{config,factory,json,tests}.rs` for its config, factory, helpers and tests, registered by
   `builtin_registry()`. No changes to `nico-llm`, and none to `nico-core` or `nico-http`.

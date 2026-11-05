@@ -54,7 +54,7 @@ Rules:
 ### Field naming
 
 - `snake_case` fields, dotted prefixes for grouping: `http.method`, `http.route`,
-  `upstream.name`, `llm.model`, `config.generation`.
+  `upstream.name`, `llm.protocol`, `llm.provider`, `llm.model`, `config.generation`.
 - `authn` is the **instance** name, not the plugin kind: a route may run two `jwt` entries, and the
   record has to say which one claimed the request. Its value can never come from the request — it is
   written by the plugin that verified the credential, from the typed `Identity` slot in the request

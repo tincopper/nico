@@ -1,0 +1,7 @@
+{"file": ".trellis/tasks/11-04-s1-4a-nico-llm-model/prd.md", "reason": "acceptance criteria"}
+{"file": ".trellis/tasks/11-04-s1-4a-nico-llm-model/design.md", "reason": "invariants that must hold in the final code"}
+{"file": ".trellis/tasks/11-04-s1-4a-nico-llm-model/research/bifrost-protocol-model.md", "reason": "reference layering and known transport differences"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "module ownership and dependency direction"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "canonical error mapping and no provider-body leakage"}
+{"file": ".trellis/spec/backend/pingora-guidelines.md", "reason": "body buffering and streaming transform boundaries"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "llm.* fields and secret-free request records"}

@@ -55,19 +55,19 @@ nico/
     │       ├── upstream.rs     # peer 选择、连接与重试约束
     │       └── stream.rs       # HTTP body/stream 辅助
     │
-    ├── nico-llm/            # LLM 领域插件与 Provider 模块
+    ├── nico-llm/            # canonical LLM 模型 + 客户端 codec + provider adapter
     │   └── src/
     │       ├── lib.rs
-    │       ├── filter.rs       # LLM 请求元数据、模型路由
-    │       ├── model.rs
-    │       ├── provider/
-    │       │   ├── mod.rs      # Provider trait
-    │       │   ├── openai.rs
-    │       │   └── anthropic.rs
-    │       └── stream/
-    │           ├── mod.rs
-    │           ├── sse.rs
-    │           └── anthropic.rs
+    │       ├── schema.rs       # canonical 形状根；schema/ 下按数据边界拆分
+    │       ├── schema/         # request/conversation/tool/response/stream/usage/error/model
+    │       ├── protocol.rs     # ClientCodec trait + 注册表
+    │       ├── protocol/       # openai_chat, openai_responses, anthropic, gemini
+    │       ├── provider.rs     # Provider/ProviderStream trait + 注册表
+    │       ├── provider/       # openai, anthropic, gemini（wire ↔ canonical）
+    │       ├── stream/
+    │       │   └── sse.rs      # 共享 SSE framing，无厂商语义
+    │       ├── filter.rs       # 路由交换：decode → endpoint/encode → response/stream
+    │       └── model.rs        # 逻辑模型 ↔ 物理模型
     │
     ├── nico-config/         # ConfigSource trait、local 实现、测试 Fake
     │   └── src/
@@ -130,15 +130,20 @@ nico-server
 - 拥有 Pingora `ProxyHttp` 适配与原生 HTTP Session 生命周期。
 - 定义 HTTP 专属 `HttpFilter`、路由、CompiledRoute 和 upstream 接口。
 - 处理 request/response headers、body、stream、commit、cancel 和 upstream 错误。
-- 不 import `nico-llm`；LLM 通过 HTTP 扩展点接入。
+- 不 import `nico-llm`；LLM 通过字节级 `LlmRoutes`/`ResponseTransform` 缝接入：`nico-llm` 产出 destination/wire request 与 per-request 响应转换器，canonical 不跨越 crate 边界。
+- 为 AI convert 路由提供 hold-back 复用；响应头/体转换由 `ResponseTransform` 驱动，不把厂商类型带进数据面。
 
 ### `nico-llm`
 
-- 定义 `Provider`、模型映射、LLM 请求元数据和 usage 类型。
-- 实现 LLM HTTP Filter 与 Provider Stream Adapter。
-- OpenAI/Anthropic 是模块，不进入 `nico-core`。
+- `schema/` 是 canonical 形状：请求（`ChatRequest`/`Item`/`ContentPart`/`Tool`）、响应、流式 `StreamEvent`、`Usage`、`CanonicalError`、逻辑/物理模型。形状不依赖 provider、HTTP 或 Pingora。
+- `protocol/<name>` 是**客户端协议 codec**：客户端 wire ↔ canonical；`provider/<name>` 是**上游适配器**：canonical ↔ 厂商 wire。两者互不依赖，只共享 `schema/`。
+- `filter.rs` 做路由交换：decode 客户端请求 → provider endpoint/encode → 解码 provider 响应/流 → 编码客户端响应；核心不出现厂商 switch。
+- `Provider` 不拥有 HTTP/TLS/预算：连接、TLS、超时、帧化仍归 `nico-http`；`Provider` 只产出 `Endpoint`/`WireRequest` 和 per-response `ProviderStream`。
+- 请求：AI convert 路由在路由确定后有界缓冲客户端 body，canonical 可重放；非 AI 路由不读 body。响应：SSE 逐块转换，非流式响应有界缓冲。
+- `routes[].protocol`/`mode`、`request.max_response_bytes`、`providers[].model_map` 是 1.4a 的文档模型扩展；未知 protocol/provider 在发布期拒绝。
 - 可以依赖 `nico-http`，因为当前 LLM API 就是 HTTP 领域能力。
 - AI 是产品口径，不是 crate 名：LLM Provider/SSE 在 `nico-llm`，未来的 MCP 在 `nico-mcp`，两者平级；不设 `nico-ai` 大类 crate。
+- 参考 Bifrost 的两轴分层（canonical + 客户端 integration + provider adapter），但不把 OpenAI chunk 当 canonical；细节见 `11-04-s1-4a-nico-llm-model/research/bifrost-protocol-model.md`。
 
 ### `nico-plugins`
 
@@ -175,7 +180,8 @@ nico-server
 |---|---|---|
 | `HttpFilter` | `nico-http` | HTTP 请求/响应阶段扩展 |
 | `Upstream` | `nico-http` | 上游选择与调用约束 |
-| `Provider` | `nico-llm` | LLM 请求/响应语义适配 |
+| `ClientCodec` | `nico-llm` | 客户端协议 wire ↔ canonical |
+| `Provider` | `nico-llm` | canonical ↔ 上游厂商 wire；只产出 endpoint/wire request |
 | `ProviderStream` | `nico-llm` | 每个响应流独立的转换状态 |
 | `ConfigSource` | `nico-config` | local / etcd 的加载与订阅；Nacos 保留后续实现位 |
 
@@ -213,6 +219,7 @@ nico-server
 - 已编译的 host/path/method 匹配信息。
 - 按固定阶段排序的 HTTP Filter 引用。
 - 上游或 LLM Provider 引用。
+- Provider 路由的 protocol/mode 与逻辑→物理模型映射（1.4a 起）。
 - body/timeout/retry 等资源限制。
 - 配置 generation。
 
@@ -222,10 +229,10 @@ HTTP 热路径只做：`RouteTable::match → &CompiledRoute → 依次调用 Fi
 
 - `nico-core::RequestMeta`：trace、peer、tenant、deadline、cancellation。
 - `nico-http::HttpContext`：HTTP Session 所需状态、上游状态和 response commit。
-- `nico-llm::AiRequestState`：逻辑/物理模型、Provider、streaming、usage。
+- `nico-llm::LlmRequestState`：逻辑/物理模型、protocol/provider、streaming、usage。
 - `nico-llm::ProviderStream`：每个上游流独立的增量解析状态。
 
-LLM 状态由 LLM Filter 与请求本地状态关联，不放进 `nico-core`。如使用 `http::Extensions` 等类型化扩展存储，应限定在明确的请求边界，不能演变成字符串键值或无约束对象袋；普通请求不应创建 LLM 状态。
+LLM 状态由 `nico-llm` 的交换对象与请求本地状态关联，不放进 `nico-core`。如使用 `http::Extensions` 等类型化扩展存储，应限定在明确的请求边界，不能演变成字符串键值或无约束对象袋；普通请求不应创建 LLM 状态。
 
 ## 6. 配置与热重载保持简单
 
@@ -437,6 +444,8 @@ etcd 里程碑使用固定版本 etcd 容器做集成测试，验证认证、TLS
 - body/stream 使用 `Bytes`/`BytesMut` 和具体 Stream 类型，避免 `String` 复制。
 - SSE 使用 `memchr` 定位换行；不完整 remainder 由 per-stream `BytesMut` 保存。
 - `Provider` 创建每次响应独立的 `ProviderStream`，不在 Provider 单例中保存解析器。
+- `ClientCodec` 把 canonical `StreamEvent` 编回客户端协议；SSE framing 在 `stream/sse.rs`，不复制到每个 codec。
+- AI convert 路由的请求体有界缓冲在 `nico-http` 的 hold-back 机制里，canonical 是值；passthrough 路由不缓冲。
 - 用 `tokio_util::sync::CancellationToken` 或 Pingora 对应机制传播取消。
 - 用明确 timeout/deadline 限制整个上游调用，不只限制单次 read。
 - 不用无界 `tokio::mpsc` 把 Filter 串成 actor 系统；优先直接调用和背压。
@@ -469,9 +478,14 @@ Feature 是 additive 的，不能依赖“启用 A 后悄悄改变 B 的非 feat
 ### 新增 LLM Provider
 
 1. 在 `nico-llm::provider` 新增模块和强类型 Config。
-2. 实现 `Provider` 与 `ProviderStream`。
-3. 在 server 的配置 builder 注册类型名。
-4. 不修改 `nico-core` 和普通 HTTP Filter。
+2. 实现 `Provider`（canonical ↔ 厂商 wire、endpoint）与 `ProviderStream`（每响应状态）。
+3. 在 `builtin_registry()` 注册；不修改 `schema/`、`protocol/`、`nico-core` 或普通 HTTP Filter。
+
+### 新增客户端协议
+
+1. 在 `nico-llm::protocol` 新增 codec。
+2. 实现 `ClientCodec`（客户端 wire ↔ canonical）与能力声明。
+3. 在 `builtin_registry()` 注册；不修改 `provider/`、canonical 形状或数据面。
 
 ### 新增认证插件
 
@@ -518,19 +532,21 @@ Feature 是 additive 的，不能依赖“启用 A 后悄悄改变 B 的非 feat
 ### 阶段 1：静态组合 MVP（local 先行）
 
 - HTTP 路由、JWT/API Key/Rate Limit、upstream、普通 API；`nico-http` 首次落地 Pingora 集成。
-- LLM Filter、OpenAI Provider、SSE 透传。
+- LLM 数据面：canonical 模型、客户端协议 codec、provider adapter；1.4a 先冻结形状并完成 OpenAI Chat，1.4b 补 Anthropic/Responses/Gemini 的 `(protocol, provider)` 矩阵。
 - 普通与 LLM 路由共享 HTTP/Core，但使用不同 CompiledRoute。
 - 配置来源使用 **local 文件**（`ConfigSource` 唯一实现）；etcd 作为后续里程碑接入，不改契约与管线。
-- **路由不依赖 body**：provider/upstream 由 vhost、path 与路由级 `provider` 字段决定；不实现"读请求 body 再选上游"。
+- **路由选择不依赖 body**：provider/upstream 由 vhost、path 与路由级 `provider` 字段决定；不实现"读请求 body 再选上游"。
   依据：Pingora 过滤器读完 body 不会重放，上游会挂起（阶段 0 实证）。
-- "有界缓冲 + 单次重放"（按 `model` 路由）是独立的后续设计项，不进入阶段 1：它需要先定义重放语义、
-  缓冲上限、压缩 body 与超限拒绝规则，并单独验收。
+- **协议转换必须读 body**：AI convert 路由在路由确定后按 `request.max_body_bytes` 有界缓冲，canonical 可重放；
+  passthrough 路由不缓冲；非 AI 路由不读 body。按请求 body 里的 `model` 选上游仍不在阶段 1。
+- "有界缓冲 + 单次重放"（按 `model` 路由、重放原始 body）仍是独立设计项；这里的缓冲只服务协议转换，
+  canonical 本身是重放单位，不需要 Pingora 重放。
 - 阶段 1 必须按 Pingora 实测结论实现：明文 H2 显式 `h2c`、按流式状态机处理 body、显式配置 graceful 宽限期、1xx 不插入响应头、gRPC 路由显式 `ALPN::H2`。
 - Nacos 保持 `ConfigSource` 扩展位，不进入第一期验收。
 
 ### 阶段 2：Provider 与长寿命状态
 
-- Anthropic Provider/Stream、usage、限额、熔断和安全重试。
+- usage 归一化/计费、限额、熔断、安全重试与 fallback；Anthropic/Responses/Gemini 的协议转换已在 1.4b。
 - SharedServices 与配置 generation 的继承/drain 规则。
 - traffic/llm 两种部署形态。
 

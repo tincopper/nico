@@ -1,8 +1,8 @@
 {
-  "id": "s1-4-nico-llm-passthrough",
-  "name": "s1-4-nico-llm-passthrough",
-  "title": "1.4 nico-llm：OpenAI Provider 与 SSE 透传",
-  "description": "建立 nico-llm：LLM Filter、OpenAI Provider 模块、按路由级 provider 选上游、凭证引用注入、SSE 透传与任意分片安全。",
+  "id": "s1-4a-nico-llm-model",
+  "name": "s1-4a-nico-llm-model",
+  "title": "1.4a nico-llm：统一模型与 OpenAI 协议",
+  "description": "建立 nico-llm 的 canonical 数据模型、OpenAI Chat 客户端 codec 与上游 provider 适配，以及 AI 路由的有界请求缓冲和流式响应转换缝；形状先行，核心不出现厂商 switch。",
   "status": "planning",
   "dev_type": null,
   "scope": null,

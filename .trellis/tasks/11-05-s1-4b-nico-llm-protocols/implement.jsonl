@@ -1,0 +1,7 @@
+{"file": ".trellis/tasks/11-05-s1-4b-nico-llm-protocols/prd.md", "reason": "protocol matrix requirements and acceptance criteria"}
+{"file": ".trellis/tasks/11-04-s1-4a-nico-llm-model/design.md", "reason": "the canonical shapes and codec/provider contracts this task extends"}
+{"file": ".trellis/tasks/11-04-s1-4a-nico-llm-model/research/bifrost-protocol-model.md", "reason": "reference implementation and two-axis layering"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "where client codecs and provider adapters live"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "canonical error mapping per client protocol"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "llm.* fields and secret-free logging"}
+{"file": ".trellis/spec/backend/pingora-guidelines.md", "reason": "streaming and body boundaries"}

@@ -539,7 +539,7 @@ Tests are the first place a reader looks to understand behavior — they are liv
 |---|---|
 | `nico-config` | digest dedup, out-of-order/regressed revisions, watch disconnect, compaction/gap → `ResyncRequired`, oversized document, invalid UTF-8/YAML, unknown fields rejected, compile failure keeps LKG, subsequent fix publishes, debounce + single-flight, in-flight requests unaffected during outage |
 | `nico-http` | route matching, plugin ordering, response commit state, retry legality, deadline propagation, SSE/WebSocket streaming boundaries, backpressure and slow client |
-| `nico-llm` | SSE chunk-splitting across event/line/UTF-8/JSON boundaries, provider error mapping, usage accounting separation (measured vs reported), no fallback after first byte |
+| `nico-llm` | canonical round-trip and unknown-field preservation; each `(client protocol, provider)` pair in the matrix; SSE chunk-splitting across event/line/UTF-8/JSON boundaries; capability rejection instead of silent loss; no vendor switch outside `protocol/` and `provider/`; provider error mapping and no fallback after first byte |
 | `nico-core` | error category mapping, deadline/cancellation semantics |
 
 ### Property, snapshot, and integration testing

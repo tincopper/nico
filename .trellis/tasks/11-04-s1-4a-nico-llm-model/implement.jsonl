@@ -1,0 +1,9 @@
+{"file": ".trellis/tasks/11-04-s1-4a-nico-llm-model/prd.md", "reason": "requirements, scope and acceptance criteria"}
+{"file": ".trellis/tasks/11-04-s1-4a-nico-llm-model/design.md", "reason": "canonical shapes, codec/provider contracts, data-plane seams"}
+{"file": ".trellis/tasks/11-04-s1-4a-nico-llm-model/implement.md", "reason": "ordered implementation checklist and gates"}
+{"file": ".trellis/tasks/11-04-s1-4a-nico-llm-model/research/bifrost-protocol-model.md", "reason": "reference implementation for the canonical model and two-axis adapters"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "nico-llm module tree, dependency direction and the no-vendor-switch rule"}
+{"file": ".trellis/spec/backend/pingora-guidelines.md", "reason": "body hold-back, response transform and the single writer"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "canonical LLM errors and protocol mapping"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "llm.protocol/provider/model fields and secret-free logging"}
+{"file": ".trellis/tasks/11-03-unified-gateway-analysis/design.md", "reason": "architecture constraints that precede this task"}

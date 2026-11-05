@@ -17,14 +17,16 @@
 - [x] 第一版默认静态链接和显式注册；第三方动态安装仍不作为默认机制。
 - [ ] 用户评审阶段 0 报告与本文后，再收敛阶段 1 范围。
 
-## 2. 阶段 1：HTTP + AI 透传 MVP（local 配置源）
+## 2. 阶段 1：HTTP + LLM 协议转换 MVP（local 配置源）
 
 - [ ] 建 `nico-http`：Pingora `0.9.1` 接入、`HttpFilter`、`RouteTable`/`CompiledRoute`、upstream 选择。
       落地时必须按阶段 0 结论实现：明文 H2 显式 `h2c = true`；body 按流式状态机处理，跨块保存残包；
       graceful 宽限期显式配置（默认 300 s 是固定 sleep，不适用于长 SSE）；1xx 响应不插入响应头；
       gRPC 路由显式 `ALPN::H2`；不要开启响应压缩。
 - [ ] `nico-plugins`：JWT / API Key / Rate Limit，注册在 `nico-server`。
-- [ ] `nico-llm`：LLM Filter、OpenAI Provider 模块、有界 body 转发、SSE 透传。
+- [ ] `nico-llm`：canonical schema、客户端协议 codec、provider adapter、AI 路由有界 body 与流式响应转换。
+      1.4a 先冻结形状并完成 OpenAI Chat；1.4b 补 Anthropic/Responses/Gemini 的 `(protocol, provider)` 矩阵。
+      核心不按厂商 switch；转换只发生在 `protocol/` 与 `provider/`。
 - [ ] 路由 schema 扩展：在 `Document` 中加入 `routes` / `upstreams` / `providers`（路由级 `provider` 字段用于选上游），并落地
       解析 → 引用校验 → 语义校验 → 构造四段校验；同批加入文档嵌套深度与节点数上限（当前只有 `max_bytes`）。
 - [ ] 重试与 fallback：只允许"响应未提交且请求可重放"的受限重试；SSE 首字节后不得透明换源。
@@ -32,7 +34,7 @@
 - [ ] 长连接与 drain：用真实 SSE/H2 在途请求验证宽限期配置与旧 generation 回收。
 
 **评审门**：新增 upstream/provider 不改 `nico-core`；普通 API 路由无 LLM 状态；任意 body 分片不丢字节；
-reload 失败不影响旧流量；请求路径不因读取 body 而阻塞上游（阶段 0 实证的挂起问题不得复现）。
+reload 失败不影响旧流量；非 AI 路由不读 body；AI convert 路由的缓冲不得让上游挂起（请求头先发、body 在 EOS 后按 canonical 重新编码），阶段 0 实证的挂起问题不得复现。
 
 **回滚点**：一旦发现路由需要读取 body 才能决定上游，停止实现并回到设计：该能力属于"有界缓冲 + 单次重放"设计项，不在路由实现里临时打补丁。
 
