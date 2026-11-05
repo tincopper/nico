@@ -245,3 +245,47 @@ The product is nico, but every identifier was prefixed with the category word ga
 - 1.3 nico-plugins: JWT / API key / rate limit on the budget-bounded HttpFilter seam
 - 1.4 nico-ai: resolve provider base_url into a Destination and inject credentials; the TLS provider task has to land first or every https provider is refused by design
 - Refactor backlog recorded earlier still stands: reload.rs 886 lines, local.rs 862, cache.rs 554
+
+
+## Session 6: s1-3 plugins: five-stage contract, kind-owned envelope, and gate C
+<!-- trellis-session: v=2 fp=a05b9f910d8d60b0 -->
+
+**Date**: 2026-11-05
+**Task**: s1-3 plugins: five-stage contract, kind-owned envelope, and gate C
+**Branch**: `main`
+
+### Summary
+
+Rebuilt the plugin system around one Plugin interface with five stages and two loading sources. nico-core owns only the document envelope, nico-plugins owns each kind config and factory, and nico-http drives global and per-route chains from one published HttpState. The data plane now runs the global chain before routing, supports buffered request bodies, carries Outcome::Respond through the single writer, and ignores the zero-byte buffers both Pingora body hooks produce while a chunked terminator is parsed. serve_with is the explicit assembly seam, and a test-only mock kind gates the four stage scenarios end to end.
+
+### Main Changes
+
+- nico-core: limits: became request: with an unbounded u32 max_body_bytes; plugin entries are an envelope (name/kind/enabled/buffers_body/error_response/config); is_secret_ref is the shared credential vocabulary; the three kind types left the kernel
+- nico-http: Plugin/PluginContext/PluginFactory/PluginRegistry/PluginError contract; five-stage PluginChain under the request budget; HttpState publishes the snapshot with global and per-route chains, buffered routes and response rewrites in one store; framing headers are snapshotted/restored around the chain and are not writable by a plugin; on_response_body is synchronous; Respond is carried only from the request stage
+- nico-plugins: jwt, api_key and rate_limit are Plugin implementations with their own config, factory and phase(); the rate-limit bucket table moved into the factory and survives reload by name+parameters; compile resolves kinds through the registry and refuses unknown ones at publication
+- nico-server: serve_with takes the registry and serve is it with builtin_registry(); four integration targets (global, buffered, respond, streaming) drive a test-only mock kind registered nowhere in production; config/resources.yaml gained a buffered upload route and the documented local run exports UPLOAD_KEY
+- spec and task records: pingora-guidelines gained the attribution table, hold-back mechanics and the zero-byte body-buffer rule; error-handling, logging and directory-structure describe the four response paths, authn attribution and the nico-plugins tree; deny.toml records RUSTSEC-2026-0441 (pin-utils unmaintained through pingora)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a45c93e` | feat(plugins)!: five-stage plugin contract, a kind-owned envelope, and a registry |
+| `e822900` | feat(plugins): five-stage hook driver and spec alignment |
+| `4725afa` | feat(plugins): gate the five stages end to end and assemble the registry |
+
+### Testing
+
+- [OK] cargo test --workspace --all-features: 683 passed, 31 suites, 0 failed
+- [OK] clippy --all-targets --all-features -D warnings, nightly fmt --check, doc with -D warnings and cargo deny check all clean; no-default-features and all-features both build (the workspace declares no features)
+- [OK] the four new targets plus plugins_streaming ten consecutive runs; file budget only the pre-existing nico-config/src/cache.rs 554; nico-http tree has no nico-plugins or nico-ai
+- [OK] lefthook pre-commit ran the full gate on 4725afa: fmt, check --all-targets, the workspace test suite and the file-budget check passed without bypass
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 1.4 nico-ai: OpenAI provider, model mapping and SSE passthrough on the plugin-driven data plane
+- parent task 11-04-s1-mvp is now 3/4; the TLS provider still gates every https provider
