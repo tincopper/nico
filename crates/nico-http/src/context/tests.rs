@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use nico_core::{Generation, RouteTarget, Scheme};
 use pingora::http::Method;
 
-use super::HttpContext;
+use super::{HttpContext, Identity};
 use crate::{
     error::HttpError,
     test_support::{request_to, snapshot},
@@ -51,9 +51,11 @@ fn a_context_that_never_began_reports_nothing() {
     assert!(ctx.path().is_none());
     assert!(ctx.deadline().is_none());
     assert!(ctx.destination().is_none());
+    assert!(ctx.client_ip().is_none());
     assert!(ctx.body_limit().is_none());
     assert_eq!(ctx.body_bytes(), 0);
     assert!(ctx.error().is_none());
+    assert!(ctx.identity().is_none());
     assert!(!ctx.is_cancelled());
     assert_eq!(ctx.trace_id(), "");
 }
@@ -227,4 +229,106 @@ fn a_trace_id_is_replaced_rather_than_appended_to() {
     ctx.set_trace_id("second");
 
     assert_eq!(ctx.trace_id(), "second");
+}
+
+mod client_ip {
+    use std::net::IpAddr;
+
+    use super::*;
+
+    #[test]
+    fn the_peer_address_is_recorded_as_the_transport_reported_it() {
+        let (mut ctx, _now) = begin(ROUTE);
+        let address: IpAddr = "203.0.113.7"
+            .parse()
+            .expect("the fixture is an IPv4 address");
+
+        ctx.set_client_ip(address);
+
+        assert_eq!(
+            ctx.client_ip(),
+            Some(address),
+            "a policy that keys on the caller reads the connection's address, never a header"
+        );
+    }
+
+    #[test]
+    fn the_first_address_wins_so_a_filter_cannot_choose_the_bucket() {
+        let (mut ctx, _now) = begin(ROUTE);
+        let peer: IpAddr = "203.0.113.7"
+            .parse()
+            .expect("the fixture is an IPv4 address");
+        let forged: IpAddr = "198.51.100.9"
+            .parse()
+            .expect("the fixture is an IPv4 address");
+
+        // The data plane records the peer before the chain runs, so the second write can only be a
+        // policy trying to key itself on something the caller supplied.
+        ctx.set_client_ip(peer);
+        ctx.set_client_ip(forged);
+
+        assert_eq!(
+            ctx.client_ip(),
+            Some(peer),
+            "a rate-limit bucket must be keyed by the connection, not by whatever ran later"
+        );
+    }
+}
+
+mod identity {
+    use super::*;
+
+    #[test]
+    fn a_context_starts_without_an_identity() {
+        let (ctx, _now) = begin(ROUTE);
+
+        assert!(
+            ctx.identity().is_none(),
+            "not being authenticated is a fact of its own, not an empty subject"
+        );
+    }
+
+    #[test]
+    fn an_identity_records_the_subject_and_the_filter_that_claimed_it() {
+        let (mut ctx, _now) = begin(ROUTE);
+
+        ctx.set_identity(Identity::new("user-42", "public-jwt"));
+
+        let identity = ctx.identity().expect("the identity is recorded");
+        assert_eq!(identity.subject(), "user-42");
+        assert_eq!(
+            identity.source(),
+            "public-jwt",
+            "the source is what makes a subject attributable in the log"
+        );
+    }
+
+    #[test]
+    fn an_identity_source_can_be_a_configured_plugin_name() {
+        let (mut ctx, _now) = begin(ROUTE);
+        // A plugin instance name comes from the document, so it is not a `'static` string: two
+        // entries of one kind on one route must be distinguishable here, or they would share a
+        // rate-limit bucket and one `authn` value.
+        let instance = ["public", "jwt"].join("-");
+
+        ctx.set_identity(Identity::new("user-42", instance.clone()));
+
+        let identity = ctx.identity().expect("the identity is recorded");
+        assert_eq!(identity.source(), "public-jwt");
+        assert_eq!(identity.source(), instance.as_str());
+    }
+
+    #[test]
+    fn the_first_identity_wins_so_a_later_filter_cannot_change_who_is_charged() {
+        let (mut ctx, _now) = begin(ROUTE);
+
+        ctx.set_identity(Identity::new("user-42", "public-jwt"));
+        ctx.set_identity(Identity::new("someone-else", "second-filter"));
+
+        assert_eq!(
+            ctx.identity().map(Identity::subject),
+            Some("user-42"),
+            "a policy must not be able to rewrite the subject a rate limit is keyed by"
+        );
+    }
 }

@@ -6,8 +6,8 @@
 //! public constructor exists, every `Document` has passed all validation stages.
 
 use super::{
-    bounds::ParseLimits, error::DocumentError, limits::Limits, parse, provider::Provider,
-    route::Route, upstream::Upstream,
+    bounds::ParseLimits, error::DocumentError, parse, plugin::PluginSpec, provider::Provider,
+    request::RequestBounds, route::Route, upstream::Upstream,
 };
 
 /// The only `apiVersion` this build understands.
@@ -18,13 +18,15 @@ pub const API_VERSION: &str = "gateway/v1";
 /// Fields stay private and the type implements neither [`serde::Deserialize`] nor a public
 /// constructor: a `Document` can only be built by [`Document::parse`], so every instance has passed
 /// size, encoding, shape, reference and semantic validation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Document {
     api_version: String,
-    limits: Limits,
+    request: RequestBounds,
     providers: Vec<Provider>,
     upstreams: Vec<Upstream>,
     routes: Vec<Route>,
+    plugins: Vec<PluginSpec>,
+    global_plugins: Vec<String>,
 }
 
 impl Document {
@@ -43,14 +45,14 @@ impl Document {
     ///   shape bounds in [`ParseLimits::schema`].
     /// - [`DocumentError::WrongApiVersion`] when `apiVersion` is not [`API_VERSION`].
     /// - [`DocumentError::LimitOutOfRange`] when a limit is outside its accepted range.
-    /// - [`DocumentError::DuplicateId`] when a route id, an upstream name, a provider name or a
-    ///   `(host, path_prefix)` match combination repeats.
+    /// - [`DocumentError::DuplicateId`] when a route id, an upstream, provider or plugin name, a
+    ///   `(host, path_prefix)` match combination, or a plugin a route lists twice repeats.
     /// - [`DocumentError::RouteTargetMissing`] / [`DocumentError::RouteTargetAmbiguous`] when a
     ///   route does not name exactly one upstream or provider.
-    /// - [`DocumentError::ReferenceUnknown`] when a route names an upstream or provider that is not
-    ///   defined.
+    /// - [`DocumentError::ReferenceUnknown`] when a route names an upstream, provider or plugin that
+    ///   is not defined.
     /// - [`DocumentError::InvalidField`] when a name, host, path prefix, base URL, credential
-    ///   reference, upstream host or port is malformed.
+    ///   reference, upstream host, port, plugin name, plugin kind or rejection body is malformed.
     /// - [`DocumentError::TooMany`] when a collection exceeds its count bound.
     ///
     /// # Examples
@@ -60,9 +62,10 @@ impl Document {
     ///
     /// let bytes = "\
     /// apiVersion: gateway/v1
-    /// limits:
-    ///   max_request_body_bytes: 1048576
-    ///   request_timeout_ms: 30000
+    /// request:
+    ///   max_body_bytes: 1048576
+    ///   timeout_ms: 30000
+    /// plugins: []
     /// providers:
     ///   - name: openai-primary
     ///     kind: openai
@@ -83,7 +86,7 @@ impl Document {
     /// ";
     /// let document = Document::parse(bytes.as_bytes(), ParseLimits::new(1024 * 1024))
     ///     .expect("fixture is valid");
-    /// assert_eq!(document.limits().request_timeout_ms(), 30_000);
+    /// assert_eq!(document.request().timeout_ms(), 30_000);
     /// assert_eq!(document.routes().len(), 2);
     /// assert_eq!(
     ///     document.routes()[1].target(),
@@ -98,9 +101,10 @@ impl Document {
     ///
     /// let bytes = "\
     /// apiVersion: gateway/v1
-    /// limits:
-    ///   max_request_body_bytes: 1024
-    ///   request_timeout_ms: 1000
+    /// request:
+    ///   max_body_bytes: 1024
+    ///   timeout_ms: 1000
+    /// plugins: []
     /// providers: []
     /// upstreams: []
     /// routes:
@@ -126,17 +130,21 @@ impl Document {
     /// Builds a document from parts that already passed every validation stage.
     pub(super) const fn new(
         api_version: String,
-        limits: Limits,
+        request: RequestBounds,
         providers: Vec<Provider>,
         upstreams: Vec<Upstream>,
         routes: Vec<Route>,
+        plugins: Vec<PluginSpec>,
+        global_plugins: Vec<String>,
     ) -> Self {
         Self {
             api_version,
-            limits,
+            request,
             providers,
             upstreams,
             routes,
+            plugins,
+            global_plugins,
         }
     }
 
@@ -146,10 +154,10 @@ impl Document {
         &self.api_version
     }
 
-    /// Returns the validated global limits.
+    /// Returns the validated per-request bounds.
     #[must_use]
-    pub const fn limits(&self) -> Limits {
-        self.limits
+    pub const fn request(&self) -> RequestBounds {
+        self.request
     }
 
     /// Returns the configured providers, in document order.
@@ -170,6 +178,24 @@ impl Document {
     #[must_use]
     pub fn routes(&self) -> &[Route] {
         &self.routes
+    }
+
+    /// Returns the declared plugins, in document order.
+    ///
+    /// A route references these by name. Document order is not execution order: the phase a plugin
+    /// runs in is derived from its kind by the crate that implements it.
+    #[must_use]
+    pub fn plugins(&self) -> &[PluginSpec] {
+        &self.plugins
+    }
+
+    /// Returns the names of the declared plugins that run for every request, in document order.
+    ///
+    /// This is a use site, not a definition: an empty list means no plugin runs before routing, and
+    /// a declared plugin that is not listed here only runs where a route names it.
+    #[must_use]
+    pub fn global_plugins(&self) -> &[String] {
+        &self.global_plugins
     }
 }
 

@@ -167,9 +167,9 @@ mod tests {
     // Arbitrary stable bytes: the digest tests only need one fixed input.
     const VALID: &str = "\
 apiVersion: gateway/v1
-limits:
-  max_request_body_bytes: 1048576
-  request_timeout_ms: 30000
+request:
+  max_body_bytes: 1048576
+  timeout_ms: 30000
 ";
 
     mod digest {

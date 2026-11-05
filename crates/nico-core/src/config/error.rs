@@ -43,7 +43,7 @@ pub enum DocumentError {
     /// A numeric limit is outside the range this build accepts.
     #[error("limit is out of range: {field} = {value}")]
     LimitOutOfRange {
-        /// Dotted field path, for example `limits.request_timeout_ms`.
+        /// Dotted field path, for example `request.timeout_ms`.
         field: &'static str,
         /// Rejected value.
         value: u64,

@@ -20,9 +20,10 @@ use crate::{
 
 const VALID: &str = "\
 apiVersion: gateway/v1
-limits:
-  max_request_body_bytes: 1048576
-  request_timeout_ms: 30000
+request:
+  max_body_bytes: 1048576
+  timeout_ms: 30000
+plugins: []
 providers: []
 upstreams: []
 routes: []
@@ -35,14 +36,15 @@ fn parse_valid() -> Document {
 /// Builds a schema-valid document with the requested values.
 ///
 /// The literal starts each line in column 0 on purpose: a `\`-continued literal would strip
-/// the indentation that makes `max_request_body_bytes` a child of `limits`.
-fn yaml_document(api_version: &str, max_request_body_bytes: u32, timeout_ms: u32) -> String {
+/// the indentation that makes `max_body_bytes` a child of `request`.
+fn yaml_document(api_version: &str, max_body_bytes: u32, timeout_ms: u32) -> String {
     format!(
         "\
 apiVersion: {api_version}
-limits:
-  max_request_body_bytes: {max_request_body_bytes}
-  request_timeout_ms: {timeout_ms}
+request:
+  max_body_bytes: {max_body_bytes}
+  timeout_ms: {timeout_ms}
+plugins: []
 providers: []
 upstreams: []
 routes: []
@@ -52,13 +54,12 @@ routes: []
 
 mod parse {
     use super::*;
-
     #[test]
     fn parse_accepts_a_valid_document() {
         let document = parse_valid();
         assert_eq!(document.api_version(), API_VERSION);
-        assert_eq!(document.limits().max_request_body_bytes(), 1_048_576);
-        assert_eq!(document.limits().request_timeout_ms(), 30_000);
+        assert_eq!(document.request().max_body_bytes(), 1_048_576);
+        assert_eq!(document.request().timeout_ms(), 30_000);
         assert!(document.providers().is_empty());
         assert!(document.upstreams().is_empty());
         assert!(document.routes().is_empty());
@@ -68,9 +69,10 @@ mod parse {
     fn parse_exposes_routes_upstreams_and_providers() {
         let document = "\
 apiVersion: gateway/v1
-limits:
-  max_request_body_bytes: 1048576
-  request_timeout_ms: 30000
+request:
+  max_body_bytes: 1048576
+  timeout_ms: 30000
+plugins: []
 providers:
   - name: openai-primary
     kind: openai
@@ -125,9 +127,10 @@ routes:
     fn parse_rejects_an_unknown_upstream_scheme() {
         let document = "\
 apiVersion: gateway/v1
-limits:
-  max_request_body_bytes: 1024
-  request_timeout_ms: 1000
+request:
+  max_body_bytes: 1024
+  timeout_ms: 1000
+plugins: []
 providers: []
 upstreams:
   - name: api-backend
@@ -149,9 +152,10 @@ routes: []
     fn parse_rejects_an_unknown_provider_kind() {
         let document = "\
 apiVersion: gateway/v1
-limits:
-  max_request_body_bytes: 1024
-  request_timeout_ms: 1000
+request:
+  max_body_bytes: 1024
+  timeout_ms: 1000
+plugins: []
 providers:
   - name: openai-primary
     kind: anthropic
@@ -173,9 +177,10 @@ routes: []
     fn parse_defaults_an_omitted_model_allowlist_to_empty() {
         let document = "\
 apiVersion: gateway/v1
-limits:
-  max_request_body_bytes: 1048576
-  request_timeout_ms: 30000
+request:
+  max_body_bytes: 1048576
+  timeout_ms: 30000
+plugins: []
 providers:
   - name: openai-primary
     kind: openai
@@ -193,9 +198,10 @@ routes: []
     fn parse_preserves_an_explicit_model_allowlist() {
         let document = "\
 apiVersion: gateway/v1
-limits:
-  max_request_body_bytes: 1048576
-  request_timeout_ms: 30000
+request:
+  max_body_bytes: 1048576
+  timeout_ms: 30000
+plugins: []
 providers:
   - name: openai-primary
     kind: openai
@@ -230,9 +236,10 @@ routes: []
     fn parse_rejects_unknown_route_fields() {
         let document = "\
 apiVersion: gateway/v1
-limits:
-  max_request_body_bytes: 1024
-  request_timeout_ms: 1000
+request:
+  max_body_bytes: 1024
+  timeout_ms: 1000
+plugins: []
 providers: []
 upstreams: []
 routes:
@@ -253,10 +260,11 @@ routes:
     fn parse_rejects_unknown_limit_fields() {
         let document = "\
 apiVersion: gateway/v1
-limits:
-  max_request_body_bytes: 1024
-  request_timeout_ms: 1000
+request:
+  max_body_bytes: 1024
+  timeout_ms: 1000
   max_connections: 10
+plugins: []
 providers: []
 upstreams: []
 routes: []
@@ -271,7 +279,7 @@ routes: []
 
     #[test]
     fn parse_rejects_a_missing_section() {
-        for section in ["providers", "upstreams", "routes"] {
+        for section in ["providers", "upstreams", "routes", "plugins"] {
             let document = yaml_document(API_VERSION, 1024, 1000);
             let without = document
                 .lines()
@@ -322,33 +330,19 @@ routes: []
     }
 
     #[test]
-    fn parse_rejects_request_body_limit_below_one() {
+    fn parse_accepts_a_zero_request_body_limit() {
         let document = yaml_document(API_VERSION, 0, 1000);
-        match Document::parse(document.as_bytes(), ParseLimits::new(4096)) {
-            Err(DocumentError::LimitOutOfRange { field, value }) => {
-                assert_eq!(field, "limits.max_request_body_bytes");
-                assert_eq!(value, 0);
-            }
-            other => panic!("expected LimitOutOfRange, got {other:?}"),
-        }
+        let parsed = Document::parse(document.as_bytes(), ParseLimits::new(4096))
+            .expect("0 means: accept no request body");
+        assert_eq!(parsed.request().max_body_bytes(), 0);
     }
 
     #[test]
-    fn parse_rejects_request_body_limit_above_eight_mib() {
-        let document = yaml_document(API_VERSION, 8_388_609, 1000);
-        let error = Document::parse(document.as_bytes(), ParseLimits::new(4096))
-            .expect_err("limit too big");
-        assert!(
-            matches!(
-                error,
-                DocumentError::LimitOutOfRange {
-                    field: "limits.max_request_body_bytes",
-                    value: 8_388_609
-                }
-            ),
-            "expected LimitOutOfRange, got {error:?}"
-        );
-        assert_eq!(error.category(), ErrorCategory::Limit);
+    fn parse_accepts_the_largest_request_body_limit() {
+        let document = yaml_document(API_VERSION, u32::MAX, 1000);
+        let parsed = Document::parse(document.as_bytes(), ParseLimits::new(4096))
+            .expect("u32 is the only boundary of max_body_bytes");
+        assert_eq!(parsed.request().max_body_bytes(), u32::MAX);
     }
 
     #[test]
@@ -356,7 +350,7 @@ routes: []
         let document = yaml_document(API_VERSION, 1024, 600_001);
         match Document::parse(document.as_bytes(), ParseLimits::new(4096)) {
             Err(DocumentError::LimitOutOfRange { field, value }) => {
-                assert_eq!(field, "limits.request_timeout_ms");
+                assert_eq!(field, "request.timeout_ms");
                 assert_eq!(value, 600_001);
             }
             other => panic!("expected LimitOutOfRange, got {other:?}"),
@@ -373,9 +367,9 @@ routes: []
     }
 
     #[test]
-    fn parse_rejects_a_missing_limits_section() {
+    fn parse_rejects_a_missing_request_section() {
         let error = Document::parse(b"apiVersion: gateway/v1\n", ParseLimits::new(4096))
-            .expect_err("missing limits");
+            .expect_err("missing request bounds");
         assert!(
             matches!(error, DocumentError::Yaml { .. }),
             "expected Yaml error, got {error:?}"
@@ -423,3 +417,5 @@ routes: []
         );
     }
 }
+
+mod plugins;

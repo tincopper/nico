@@ -22,7 +22,8 @@ use std::{
 use async_trait::async_trait;
 use nico_config::{CacheStore, ConfigSource};
 use nico_core::SnapshotHandle;
-use nico_http::{FilterChain, server_conf, service as http_service};
+use nico_http::{HttpStateHandle, server_conf, service as http_service};
+use nico_plugins::PluginRuntime;
 use pingora::{
     server::{Server, ShutdownWatch},
     services::background::{BackgroundService, background_service},
@@ -30,7 +31,10 @@ use pingora::{
 use tokio_util::sync::CancellationToken;
 
 use self::shutdown::run_args;
-use crate::{BootstrapConfig, FAILURE_EXIT_CODE, ReloadError, ReloadLimits, Reloader};
+use crate::{
+    BootstrapConfig, FAILURE_EXIT_CODE, Publication, ReloadError, ReloadLimits, ReloadSettings,
+    Reloader,
+};
 
 mod shutdown;
 
@@ -46,7 +50,12 @@ pub fn serve(
     shutdown: CancellationToken,
 ) -> ExitCode {
     let settings = bootstrap.http();
-    let handle = SnapshotHandle::new();
+    // The request path reads `state` and nothing else: the pipeline publishes a snapshot and the plan
+    // compiled from it there, together. `SnapshotHandle` stays the configuration-state fact source.
+    let state = HttpStateHandle::new();
+    // One plugin runtime for the process: the bucket tables inside it are runtime state, so a reload
+    // that republishes the same quota must keep them rather than hand every caller a fresh one.
+    let runtime = Arc::new(PluginRuntime::new());
     let failure = Arc::new(Mutex::new(None));
 
     let mut server = match Server::new(None) {
@@ -61,14 +70,21 @@ pub fn serve(
     // neither. Every field a running server reads comes from this replacement.
     server.configuration = server_conf(settings);
 
-    let reloader = Reloader::new(
-        source,
-        Arc::clone(&handle),
+    let reload_settings = ReloadSettings::new(
         Some(CacheStore::new(bootstrap.cache_dir().to_path_buf())),
         ReloadLimits::new(bootstrap.debounce(), bootstrap.max_wait()),
         bootstrap.parse_limits(),
         bootstrap.allow_bootstrap_cache(),
         shutdown.clone(),
+    );
+    let reloader = Reloader::new(
+        source,
+        // The status handle stays inside the pipeline here: this process has no readiness endpoint
+        // yet, so nothing else reads it, but it is created through the same publication constructor
+        // production and the tests use.
+        Publication::new(SnapshotHandle::new(), Arc::clone(&state)),
+        runtime,
+        reload_settings,
     );
     server.add_service(background_service(
         "config-reload",
@@ -78,12 +94,7 @@ pub fn serve(
             shutdown: shutdown.clone(),
         },
     ));
-    server.add_service(http_service(
-        &server.configuration,
-        handle,
-        FilterChain::empty(),
-        settings,
-    ));
+    server.add_service(http_service(&server.configuration, state, settings));
 
     server.bootstrap();
     server.run(run_args(shutdown));

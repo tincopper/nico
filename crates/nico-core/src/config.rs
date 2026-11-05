@@ -4,22 +4,24 @@
 //! anchors, parsed with `deny_unknown_fields`, measured against shape bounds, and validated before
 //! it can become part of a published snapshot.
 //!
-//! The model is split by data structure: [`Document`] and [`Limits`] describe the envelope,
-//! [`Provider`], [`Upstream`] and [`Route`] describe what a route can point at, and [`ParseLimits`]
-//! carries the byte and shape bounds. The serde shape, the byte-level parser and the validation
-//! stages stay private: callers get [`Document::parse`] and nothing else. Reference validation
-//! (does the name exist, is it unique?) and semantic validation (is the field itself legal?) are
-//! separate private modules because they answer different questions.
+//! The model is split by data structure: [`Document`] and [`RequestBounds`] describe the envelope,
+//! [`Provider`], [`Upstream`], [`PluginSpec`] and [`Route`] describe what a route can point at and
+//! run, and [`ParseLimits`] carries the byte and shape bounds. The serde shape, the byte-level parser
+//! and the validation stages stay private: callers get [`Document::parse`] and nothing else.
+//! Reference validation (does the name exist, is it unique?) and semantic validation (is the field
+//! itself legal?) are separate private modules because they answer different questions.
 
 mod bounds;
 mod document;
 mod error;
-mod limits;
 mod parse;
+mod plugin;
 mod provider;
 mod raw;
 mod reference;
+mod request;
 mod route;
+mod secret_ref;
 mod semantic;
 mod upstream;
 mod validate;
@@ -30,7 +32,11 @@ mod test_support;
 pub use bounds::{Bound, BoundsError, ParseLimits, SchemaBounds};
 pub use document::{API_VERSION, Document};
 pub use error::DocumentError;
-pub use limits::Limits;
+pub use plugin::{
+    BodyValue, DEFAULT_CONTENT_TYPE, ErrorBody, ErrorResponse, PluginSpec, is_json_content_type,
+};
 pub use provider::{Provider, ProviderKind};
+pub use request::RequestBounds;
 pub use route::{Route, RouteTarget};
+pub use secret_ref::is_secret_ref;
 pub use upstream::{Scheme, Upstream};

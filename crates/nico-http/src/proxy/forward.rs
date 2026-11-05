@@ -8,10 +8,10 @@
 //! header forwarded to the next hop describes a connection the client never used, and a `Host` the
 //! upstream did not ask for breaks virtual hosting.
 
-use std::io;
+use std::{io, net::IpAddr};
 
 use nico_core::{Document, RouteTarget, Upstream};
-use pingora::http::RequestHeader;
+use pingora::{http::RequestHeader, proxy::Session};
 
 use super::failure::abort;
 use crate::{context::HttpContext, error::HttpError, upstream::Destination};
@@ -41,6 +41,19 @@ pub(super) const HOP_BY_HOP: [&str; 8] = [
 /// served with some of its connection-scoped headers still attached: half of a removal is exactly
 /// the leak the removal exists to prevent, and the bound is far above any real client.
 const MAX_CONNECTION_TOKENS: usize = 16;
+
+/// Returns the address the downstream connection arrived from, when the transport knows it.
+///
+/// Two callers read this, and both must read the *connection's* address rather than a header: the
+/// forwarding path states it in `X-Forwarded-For`, and the request context records it so a policy
+/// that keys on the caller never has to trust something the caller wrote. `None` means the transport
+/// exposes no peer address (a Unix socket, a session a test built itself).
+pub(super) fn peer_ip(session: &Session) -> Option<IpAddr> {
+    session
+        .client_addr()
+        .and_then(pingora::protocols::l4::socket::SocketAddr::as_inet)
+        .map(|address| address.ip())
+}
 
 /// Returns the destination the request goes to, without touching the clock or the network.
 ///

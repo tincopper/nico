@@ -9,9 +9,10 @@
 mod support;
 
 use support::http::{
-    Resources, Route, RunningServer,
+    RunningServer,
     client::{Request, get},
     free_port,
+    resources::{Resources, Route},
     source::TestSource,
     upstream::{MockUpstream, Reply},
     wait_for_status, write_bootstrap,

@@ -100,6 +100,14 @@ impl Response {
         self.head.status()
     }
 
+    /// Returns the value of response header `name`, when it was present.
+    ///
+    /// The scenarios that assert a rejection's headers read it from here rather than driving the
+    /// connection by hand: the headers are the subject, not the framing.
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
+        self.head.header(name)
+    }
+
     /// Returns the body bytes.
     pub(crate) fn body(&self) -> &[u8] {
         &self.body

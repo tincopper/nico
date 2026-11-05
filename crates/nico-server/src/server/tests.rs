@@ -9,6 +9,7 @@ use std::{sync::Arc, time::Duration};
 
 use nico_config::{ConfigSource, ConfigSourceError, FakeConfigSource};
 use nico_core::{ParseLimits, SnapshotHandle};
+use nico_http::HttpStateHandle;
 use tokio::sync::watch;
 
 use super::*;
@@ -30,12 +31,15 @@ async fn a_failing_pipeline_records_the_failure_and_cancels_the_token() {
     let service = ReloadService {
         reloader: Mutex::new(Some(Reloader::new(
             unusable_source(),
-            SnapshotHandle::new(),
-            None,
-            ReloadLimits::new(Duration::from_millis(10), Duration::from_millis(50)),
-            ParseLimits::new(4096),
-            false,
-            shutdown.clone(),
+            Publication::new(SnapshotHandle::new(), HttpStateHandle::new()),
+            std::sync::Arc::new(nico_plugins::PluginRuntime::new()),
+            ReloadSettings::new(
+                None,
+                ReloadLimits::new(Duration::from_millis(10), Duration::from_millis(50)),
+                ParseLimits::new(4096),
+                false,
+                shutdown.clone(),
+            ),
         ))),
         failure: Arc::clone(&failure),
         shutdown: shutdown.clone(),

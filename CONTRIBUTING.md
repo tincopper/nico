@@ -63,8 +63,11 @@ cargo deny check
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
 # run nico with the local file configuration source (the package is the binary crate, the
-# command is the product name)
-cargo run -p nico-server -- --bootstrap config/bootstrap.yaml
+# command is the product name). The example document authenticates `/api/` with an HS256 token, so
+# it needs a signing secret: a document whose credential reference cannot be read is refused as a
+# whole and the process does not reach a serving state.
+JWT_SECRET=local-development-secret \
+  cargo run -p nico-server -- --bootstrap config/bootstrap.yaml
 ```
 
 ## Code rules

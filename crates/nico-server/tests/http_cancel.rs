@@ -15,9 +15,10 @@ mod support;
 use std::time::Duration;
 
 use support::http::{
-    Resources, Route, RunningServer,
+    RunningServer,
     client::{Client, Request, get},
     free_port, log,
+    resources::{Resources, Route},
     source::TestSource,
     upstream::{MockUpstream, Reply},
     write_bootstrap,

@@ -13,7 +13,6 @@
 
 use std::{sync::Arc, time::Duration};
 
-use nico_core::SnapshotHandle;
 use pingora::{
     apps::HttpServerOptions,
     proxy::{HttpProxy, ProxyServiceBuilder},
@@ -21,7 +20,7 @@ use pingora::{
     services::listening::Service,
 };
 
-use crate::{filter::FilterChain, proxy::HttpApp, settings::HttpSettings};
+use crate::{proxy::HttpApp, settings::HttpSettings, state::HttpStateHandle};
 
 /// Builds the server configuration the data plane runs with.
 ///
@@ -50,14 +49,17 @@ pub fn server_conf(settings: &HttpSettings) -> Arc<ServerConf> {
 }
 
 /// Builds the proxy service and registers the listener the settings name.
+///
+/// `state` is the only configuration source the request path reads: the reload pipeline publishes a
+/// snapshot and the plan compiled from it together, so the data plane never pairs one generation's
+/// routes with another's policies.
 #[must_use]
 pub fn service(
     conf: &Arc<ServerConf>,
-    snapshot: Arc<SnapshotHandle>,
-    filters: FilterChain,
+    state: Arc<HttpStateHandle>,
     settings: &HttpSettings,
 ) -> Service<HttpProxy<HttpApp, ()>> {
-    let app = HttpApp::new(snapshot, filters);
+    let app = HttpApp::new(state);
     // `HttpServerOptions` is non-exhaustive, so it is defaulted first and then narrowed: `h2c` is
     // the one option this build decides, and `ProxyServiceBuilder` is the only path that can set
     // it at all (`http_proxy_service()` cannot).

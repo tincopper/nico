@@ -21,12 +21,42 @@ gateway behaviour for every request.
 pub fn server_conf(settings: &HttpSettings) -> Arc<ServerConf>;
 pub fn service(
     conf: &Arc<ServerConf>,
-    snapshot: Arc<SnapshotHandle>,
-    chain: FilterChain,
+    state: Arc<HttpStateHandle>,
     settings: &HttpSettings,
 ) -> Service<HttpProxy<HttpApp, ()>>;
 
-// nico-http, crate-private: the peer seam a filter uses for a target this crate cannot resolve
+// nico-http — the one published value the request path reads
+pub struct HttpState {
+    /* snapshot, and the plan compiled from its document: global chain, per-route chains, buffered routes */
+}
+impl HttpState {
+    pub fn snapshot(&self) -> &Arc<RuntimeSnapshot>;
+    pub fn global(&self) -> &FilterChain;
+    pub fn chains(&self) -> &RouteChains;
+    pub fn buffered(&self) -> &BufferedRoutes;
+}
+impl HttpStateHandle {
+    pub fn new() -> Arc<Self>;
+    pub fn current(&self) -> Option<Arc<HttpState>>;
+    // One atomic store, so no reader sees the snapshot with another document's plan.
+    pub fn publish(&self, snapshot: Arc<RuntimeSnapshot>, plan: PublishedChains);
+}
+// Everything one publication carries, built by the plugin compiler and stored unchanged: the chain that
+// runs before routing, the chain each route runs, and the routes whose request body is buffered whole.
+pub struct PublishedChains { /* global, routes, buffered */ }
+impl RouteChains {
+    pub fn chain_for(&self, route_id: &str) -> Option<&FilterChain>;
+}
+impl BufferedRoutes {
+    pub fn contains(&self, route_id: &str) -> bool;
+}
+// The fail-closed guard (crate-private), so the hook and its test reach the same decision.
+pub(crate) fn chain_for_route(
+    state: &HttpState,
+    route: &Route,
+) -> Result<Option<FilterChain>, HttpError>;
+
+// nico-http: the exported peer seam a filter uses for a target this crate cannot resolve
 pub struct Destination { /* scheme, host, port */ }
 impl HttpContext {
     pub fn set_destination(&mut self, destination: Destination);
@@ -42,6 +72,15 @@ struct CancelWatch; // impl ShutdownSignalWatch
 
 The shutdown bridge lives in `nico-server` on purpose: a data-plane library that installs a signal
 handler as a side effect of being linked cannot be embedded in a test.
+
+**The request path reads one publication, never two.** `HttpState` carries the snapshot and the
+plan compiled from that same document — the global chain, the per-route chains and the buffered route
+set — and `HttpStateHandle::publish` writes all of it in one
+atomic store. Reading the snapshot through `SnapshotHandle` and the chains from somewhere else would
+let a request see generation *N*'s routes with generation *N*−1's policies — and a policy set that is
+missing its authentication plugin is fail-open, not merely stale. `SnapshotHandle` remains the
+configuration-state fact source (readiness, degradation, generation for operators and tests); it is
+not part of the request path.
 
 ## 3. Contracts
 
@@ -60,6 +99,9 @@ handler as a side effect of being linked cannot be embedded in a test.
 |---|---|
 | no snapshot published yet | `503 not_ready` |
 | no route matches | `404 route_not_found` |
+| a route names plugins and the published state has no chain for it | `500 internal_error` — never forwarded: a missing chain is an authentication bypass, not "no policy" |
+| an authentication plugin refuses the request | `401` + `www-authenticate`, code `auth_missing` or `auth_invalid` (a document may override status/body, 4xx only) |
+| a rate-limit plugin refuses the request | `429 rate_limited` + `retry-after`, rounded up to whole seconds |
 | `route.target` is a provider and no filter replaced it | `502 provider_unavailable` |
 | upstream host does not resolve | `502 upstream_unreachable` |
 | `scheme: https` while no TLS provider is compiled | `502 upstream_unreachable` (refused, never plaintext) |
@@ -70,6 +112,13 @@ handler as a side effect of being linked cannot be embedded in a test.
 | other upstream-sourced Pingora error | `502 upstream_unreachable` |
 | downstream read/write failure, or shutdown mid-request | no response; log-only `http.status=499`, `error.category=Cancelled` |
 | a failure after the response was committed | no second response; the stream is cut and logged as cancelled |
+
+Every row above that answers at all is written by **one** function: `proxy::failure::write_respond`.
+A filter — including every plugin — describes a failure as `HttpError` and never touches a
+`ResponseHeader`, so the header set stays closed (`content-type`, `content-length`,
+`x-nico-error-code`, `x-nico-trace-id`, plus `www-authenticate` and `retry-after`) and `(status, code)`
+is decided in exactly one place. The one exception is the informational response, which
+`response_filter` deliberately leaves untouched.
 
 ## 5. Good / Base / Bad Cases
 
@@ -97,6 +146,12 @@ handler as a side effect of being linked cannot be embedded in a test.
 | a filter stage cannot outlive the request budget | `nico-http/src/filter/tests.rs` |
 | a cancelled token becomes a graceful termination | `nico-server/src/server/shutdown/tests.rs` |
 | `max_retries == 1`, seconds rounded up and never `0`, `threads` passthrough | `service/tests.rs` |
+| a route that names plugins and has no chain is refused, a route without plugins runs none | `nico-http/src/state/tests.rs` (`chain_for_route`) |
+| an unauthenticated request answers `401` + challenge + `x-nico-error-code`/`x-nico-trace-id`, a signed one is forwarded | `nico-server/tests/plugins_auth.rs` |
+| a bucket runs out per subject, answers `429` + `retry-after`, and leaves other routes alone | `nico-server/tests/plugins_limit.rs` |
+| a configured 4xx/JSON or 4xx/HTML refusal keeps the stable headers | `nico-server/tests/plugins_custom_response.rs` |
+| a document whose credential cannot be read keeps the published generation serving | `nico-server/tests/plugins_config.rs` |
+| publishing one generation writes the snapshot *and* its chains in one step | `nico-server/tests/publication.rs` |
 
 One server per integration-test binary: `Server::run` owns the calling thread and installs a global
 runtime. A second server in the same binary tests Pingora's globals, not this crate.

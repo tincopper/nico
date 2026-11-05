@@ -13,58 +13,124 @@
 //!   the error's [`Display`](std::fmt::Display) implementation, never in the response.
 //! - **Cancellation is not an error.** A client disconnect, a shutdown and a deadline that expires
 //!   after bytes were committed are outcomes, not responses: they produce no body and no 5xx.
+//!
+//! A policy that refuses a request with its own status and body does not get a second mapper: it
+//! supplies a compiled [`Rejection`] (see the `rejection` module), which [`HttpError::respond`] turns
+//! into the same [`Respond`] a built-in failure produces. `code` stays stable and always travels in
+//! `x-nico-error-code`, and the category is carried by the rejection instead of being guessed from
+//! the status a document may have overridden.
 
-use std::{borrow::Cow, error::Error, fmt::Write as _};
+mod rejection;
+
+use std::{borrow::Cow, error::Error, fmt::Write as _, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use nico_core::ErrorCategory;
 use pingora::http::StatusCode;
+pub use rejection::{BodyFormat, BodyTemplate, MAX_LITERAL_BYTES, Part, Rejection, RejectionError};
+
+use crate::plugin::PluginError;
 
 /// How one failure is rendered, if at all.
 ///
-/// Fields are private because the triple (`status`, `code`, `message`) is a contract: a caller may
-/// read it, never assemble a variant of its own. `code` and `message` are compile-time constants, so
-/// the only value that needs escaping when the body is built is the request's trace id.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Fields are private because the set is a contract: a caller may read it, never assemble a variant
+/// of its own. `code` and `message` are compile-time constants, so the only value that needs escaping
+/// when the body is built is the request's trace id.
+///
+/// This is no longer `Copy`: a policy rejection holds an `Arc<Rejection>` shared by every request it
+/// refuses, and cloning that `Arc` is cheaper than copying the template it points at.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Respond {
     status: StatusCode,
     code: &'static str,
     message: &'static str,
+    challenge: Option<&'static str>,
+    retry_after: Option<Duration>,
+    /// `None` for a built-in failure, whose body is the fixed envelope and whose content type is
+    /// [`Self::JSON`]; `Some` when a policy compiled its own presentation, which then owns the body
+    /// *and* the content type it is written with (a document configures both).
+    rejection: Option<Arc<Rejection>>,
 }
 
 impl Respond {
+    /// The content type of a built-in envelope.
+    const JSON: &'static str = "application/json";
+
     const fn new(status: StatusCode, code: &'static str, message: &'static str) -> Self {
         Self {
             status,
             code,
             message,
+            challenge: None,
+            retry_after: None,
+            rejection: None,
+        }
+    }
+
+    /// Builds the response a compiled rejection describes.
+    fn from_rejection(rejection: Arc<Rejection>, retry_after: Option<Duration>) -> Self {
+        Self {
+            status: rejection.status(),
+            code: rejection.code(),
+            message: rejection.message(),
+            challenge: rejection.challenge(),
+            retry_after,
+            rejection: Some(rejection),
         }
     }
 
     /// Returns the HTTP status code to send.
     #[must_use]
-    pub const fn status(self) -> StatusCode {
+    pub const fn status(&self) -> StatusCode {
         self.status
     }
 
     /// Returns the stable snake_case error code callers may match on.
     #[must_use]
-    pub const fn code(self) -> &'static str {
+    pub const fn code(&self) -> &'static str {
         self.code
     }
 
     /// Returns the caller-safe message, a fixed sentence with no internal detail.
     #[must_use]
-    pub const fn message(self) -> &'static str {
+    pub const fn message(&self) -> &'static str {
         self.message
     }
 
-    /// Renders the error body as `{"error":{"code","message","trace_id"}}`.
+    /// Returns the content type the body is written with.
     ///
-    /// `trace_id` is caller-supplied, so it is JSON-escaped; the code and message are constants and
-    /// are written verbatim.
+    /// Built-in failures answer JSON; a policy's rejection carries whatever its document configured.
     #[must_use]
-    pub fn body(self, trace_id: &str) -> Bytes {
+    pub fn content_type(&self) -> &str {
+        match &self.rejection {
+            Some(rejection) => rejection.content_type(),
+            None => Self::JSON,
+        }
+    }
+
+    /// Returns the `www-authenticate` challenge, when the rejection answers an authentication
+    /// failure.
+    #[must_use]
+    pub const fn challenge(&self) -> Option<&'static str> {
+        self.challenge
+    }
+
+    /// Returns how long the caller should wait before retrying, when the rejection is a limit.
+    #[must_use]
+    pub const fn retry_after(&self) -> Option<Duration> {
+        self.retry_after
+    }
+
+    /// Renders the error body.
+    ///
+    /// A built-in failure renders `{"error":{"code","message","trace_id"}}` with `trace_id` escaped;
+    /// a policy rejection renders the template it compiled, which escapes the variables it
+    /// substitutes for the same reason.
+    #[must_use]
+    pub fn body(&self, trace_id: &str) -> Bytes {
+        if let Some(rejection) = &self.rejection {
+            return rejection.render(trace_id);
+        }
         let mut json = String::with_capacity(96 + trace_id.len());
         json.push_str(r#"{"error":{"code":""#);
         json.push_str(self.code);
@@ -154,6 +220,22 @@ pub enum HttpError {
         #[source]
         source: Box<dyn Error + Send + Sync>,
     },
+    /// A policy refused the request and compiled how the refusal is presented.
+    ///
+    /// This is the one variant a filter builds itself: the status, the stable code, the headers and
+    /// the body all come from a [`Rejection`], compiled when the document was published. `category`
+    /// is carried by the rejection, so a document that overrides the status cannot change how the
+    /// failure is logged.
+    #[error("request rejected by policy: {detail}")]
+    Rejected {
+        /// The compiled presentation, shared by every request this policy refuses.
+        rejection: Arc<Rejection>,
+        /// Why the request was rejected, for logs only. It is a constant sentence, so it can neither
+        /// quote a credential nor repeat anything the caller sent.
+        detail: &'static str,
+        /// How long the caller should wait before retrying, when the policy knows.
+        retry_after: Option<Duration>,
+    },
     /// A response was already committed, so no error response can replace it.
     #[error("response already committed; the failure cannot be rendered as a response")]
     ResponseCommitted,
@@ -162,10 +244,11 @@ pub enum HttpError {
 impl HttpError {
     /// Returns how this failure is rendered, or `None` when a response is no longer possible.
     ///
-    /// This is the single mapping point: status, stable code and safe message are decided here and
-    /// nowhere else.
+    /// This is the single mapping point: status, stable code, headers and body are decided here and
+    /// nowhere else. A compiled [`Rejection`] is passed through, which is why a policy can present its
+    /// own refusal without a second mapping function existing.
     #[must_use]
-    pub const fn respond(&self) -> Option<Respond> {
+    pub fn respond(&self) -> Option<Respond> {
         match self {
             Self::NotReady => Some(Respond::new(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -212,6 +295,11 @@ impl HttpError {
                 "internal_error",
                 "the gateway failed to process the request",
             )),
+            Self::Rejected {
+                rejection,
+                retry_after,
+                ..
+            } => Some(Respond::from_rejection(Arc::clone(rejection), *retry_after)),
             Self::ResponseCommitted => None,
         }
     }
@@ -220,9 +308,11 @@ impl HttpError {
     ///
     /// `ResponseCommitted` is [`ErrorCategory::Internal`] because reaching it means the data plane
     /// tried to replace a response it had already sent; a plain cancellation is not an `HttpError`,
-    /// so it can never be misreported as a 5xx here.
+    /// so it can never be misreported as a 5xx here. A policy rejection reports the category its
+    /// plugin belongs to — authentication is the caller's fault, a rate limit is a limit — and never
+    /// one derived from the status code a document may have overridden.
     #[must_use]
-    pub const fn category(&self) -> ErrorCategory {
+    pub fn category(&self) -> ErrorCategory {
         match self {
             Self::RouteNotFound | Self::InvalidRequest { .. } | Self::RequestTimeout => {
                 ErrorCategory::Client
@@ -232,9 +322,75 @@ impl HttpError {
             | Self::DeadlineExceeded { .. }
             | Self::UpstreamFailed { .. }
             | Self::ProviderNotConfigured { .. } => ErrorCategory::Upstream,
+            Self::Rejected { rejection, .. } => rejection.category(),
             Self::Internal { .. } | Self::ResponseCommitted => ErrorCategory::Internal,
         }
     }
+}
+
+/// Why a plugin stage failed, kept as the cause of an internal failure.
+///
+/// A plugin that cannot do its job is this process's defect, so it is answered as
+/// [`HttpError::Internal`] with the plugin layer named in the cause. The plugin *instance* is added by
+/// the hook that ran the stage, because that is the only place that knows which one it was.
+#[derive(Debug, thiserror::Error)]
+enum PluginFault {
+    /// The plugin failed to do its own work.
+    #[error("plugin execution failed: {reason}")]
+    Execute {
+        /// The plugin's own fixed sentence.
+        reason: &'static str,
+    },
+    /// The plugin called a context method its phase does not offer.
+    #[error("plugin violated its phase contract: {reason}")]
+    PhaseViolation {
+        /// The method and the stage it belongs to.
+        reason: &'static str,
+    },
+}
+
+impl From<PluginError> for HttpError {
+    /// Converts a plugin failure into the data plane's failure vocabulary.
+    ///
+    /// This is the only conversion. A refusal keeps its compiled [`Rejection`] — status, stable code,
+    /// category and body — because a document configured that presentation, and the data plane must
+    /// not second-guess it. Everything else is a `500`: a plugin that cannot execute, or that calls a
+    /// method its phase does not offer, is a defect on this side of the connection.
+    fn from(error: PluginError) -> Self {
+        match error {
+            PluginError::Refused {
+                rejection,
+                detail,
+                retry_after,
+            } => Self::Rejected {
+                rejection,
+                detail,
+                retry_after,
+            },
+            PluginError::Execute(reason) => Self::Internal {
+                source: Box::new(PluginFault::Execute { reason }),
+            },
+            PluginError::PhaseViolation(reason) => Self::Internal {
+                source: Box::new(PluginFault::PhaseViolation { reason }),
+            },
+        }
+    }
+}
+
+/// Returns `value` escaped for use inside a JSON string.
+///
+/// This is the crate's one JSON escaper, exported for the layer that compiles a rejection body from
+/// configuration: [`Part::Literal`] in a [`BodyFormat::Json`] template must already be valid JSON
+/// syntax, and a literal built from a document (an operator's message, an object key) needs exactly
+/// this escaping. Exporting it is what keeps a second escaper from growing in the policy crate and
+/// drifting from the one the renderer uses for variables.
+#[must_use]
+pub fn escape_json_string(value: &str) -> String {
+    // Escaping only ever grows the byte length, so the input's own length is the starting capacity;
+    // the common case (an identifier or a short message) does not reallocate.
+    let mut out = String::with_capacity(value.len());
+    push_json_string(&mut out, value);
+    out
 }
 
 /// Writes `value` as a JSON string body, escaping what would otherwise break the document.

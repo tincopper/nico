@@ -63,7 +63,7 @@ impl Recorder {
 
 #[async_trait]
 impl HttpFilter for Recorder {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         self.name
     }
 
@@ -91,7 +91,7 @@ struct AddsHeader;
 
 #[async_trait]
 impl HttpFilter for AddsHeader {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "adds-header"
     }
 
@@ -139,7 +139,7 @@ struct NeverFinishes;
 
 #[async_trait]
 impl HttpFilter for NeverFinishes {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "never-finishes"
     }
 

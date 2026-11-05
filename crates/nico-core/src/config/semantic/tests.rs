@@ -9,7 +9,7 @@ use crate::{
     config::{
         bounds::ParseLimits,
         document::Document,
-        test_support::{NO_ENTRIES, PROVIDER, UPSTREAM, document},
+        test_support::{NO_ENTRIES, PROVIDER, UPSTREAM, document, document_with_plugins},
     },
     error::ErrorCategory,
 };
@@ -21,6 +21,13 @@ fn parse(document: &str) -> Result<Document, DocumentError> {
 /// Parses a document whose routes hold `routes`, with the fixture provider and upstream defined.
 fn with_routes(routes: &str) -> Result<Document, DocumentError> {
     parse(&document(PROVIDER, UPSTREAM, routes))
+}
+
+/// Parses a document whose `plugins` collection holds `plugins`, and nothing else.
+fn with_plugins(plugins: &str) -> Result<Document, DocumentError> {
+    parse(&document_with_plugins(
+        NO_ENTRIES, NO_ENTRIES, NO_ENTRIES, plugins,
+    ))
 }
 
 /// Builds a single provider entry whose base URL and credential reference are variable.
@@ -53,5 +60,6 @@ mod matches;
 mod names;
 mod numeric;
 mod paths;
+mod plugins;
 mod providers;
 mod upstreams;

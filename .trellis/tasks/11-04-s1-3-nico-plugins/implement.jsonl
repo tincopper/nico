@@ -1,0 +1,7 @@
+{"file": ".trellis/tasks/11-04-s1-3-nico-plugins/prd.md", "reason": "requirements and acceptance criteria"}
+{"file": ".trellis/tasks/11-04-s1-3-nico-plugins/design.md", "reason": "the technical design: invariants, contracts, module boundaries"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "crate boundaries and dependency direction"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "baseline gates, file budget, required patterns"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "error vocabulary, HTTP mapping and the 4xx rule"}
+{"file": ".trellis/spec/backend/pingora-guidelines.md", "reason": "the hook contract this plugs into"}
+{"file": "crates/nico-core/src/config/bounds.rs", "reason": "the operator-tunable ceiling this task extends with max_request_body_bytes"}

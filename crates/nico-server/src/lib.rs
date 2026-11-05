@@ -28,6 +28,8 @@ use std::{
 
 use nico_config::{CacheStore, ConfigSource, LocalFileSource};
 use nico_core::SnapshotHandle;
+use nico_http::HttpStateHandle;
+use nico_plugins::PluginRuntime;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
@@ -36,7 +38,7 @@ pub mod reload;
 pub mod server;
 
 pub use bootstrap::{BootstrapConfig, BootstrapError};
-pub use reload::{ReloadError, ReloadLimits, Reloader};
+pub use reload::{Publication, ReloadError, ReloadLimits, ReloadSettings, Reloader};
 
 /// Exit code used when the command line is missing or not understood.
 pub const USAGE_EXIT_CODE: u8 = 2;
@@ -67,15 +69,21 @@ pub async fn serve(
     source: Arc<dyn ConfigSource>,
     shutdown: CancellationToken,
 ) -> Result<(), ReloadError> {
-    let handle = SnapshotHandle::new();
-    let reloader = Reloader::new(
-        source,
-        handle,
+    // This seam serves no traffic, so the request-path half of the publication is discarded. It is
+    // still wired through the same constructor production uses, so the two paths cannot diverge.
+    let publication = Publication::new(SnapshotHandle::new(), HttpStateHandle::new());
+    let settings = ReloadSettings::new(
         Some(CacheStore::new(bootstrap.cache_dir().to_path_buf())),
         ReloadLimits::new(bootstrap.debounce(), bootstrap.max_wait()),
         bootstrap.parse_limits(),
         bootstrap.allow_bootstrap_cache(),
         shutdown,
+    );
+    let reloader = Reloader::new(
+        source,
+        publication,
+        Arc::new(PluginRuntime::new()),
+        settings,
     );
     reloader.run().await
 }

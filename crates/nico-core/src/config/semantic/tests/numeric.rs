@@ -62,7 +62,7 @@ fn a_route_body_bound_above_the_document_bound_is_rejected() {
         "{}    max_body_bytes: 2000000\n",
         route("api-public-v1", "/api/")
     );
-    let error = with_routes(&routes).expect_err("above limits.max_request_body_bytes");
+    let error = with_routes(&routes).expect_err("above request.max_body_bytes");
     assert!(
         matches!(
             error,
@@ -76,20 +76,10 @@ fn a_route_body_bound_above_the_document_bound_is_rejected() {
 }
 
 #[test]
-fn a_zero_route_body_bound_is_rejected() {
+fn a_zero_route_body_bound_is_accepted() {
     let routes = format!("{}    max_body_bytes: 0\n", route("api-public-v1", "/api/"));
-    let error = with_routes(&routes).expect_err("a zero bound would reject every body");
-    assert!(
-        matches!(
-            error,
-            DocumentError::LimitOutOfRange {
-                field: "routes[].max_body_bytes",
-                value: 0
-            }
-        ),
-        "expected LimitOutOfRange for routes[].max_body_bytes, got {error:?}"
-    );
-    assert_eq!(error.category(), ErrorCategory::Limit);
+    let document = with_routes(&routes).expect("0 is the tightest legal bound: no body at all");
+    assert_eq!(document.routes()[0].max_body_bytes(), Some(0));
 }
 
 #[test]

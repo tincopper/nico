@@ -14,7 +14,8 @@
 use std::{borrow::Cow, collections::HashSet};
 
 use super::{
-    error::DocumentError, limits::Limits, provider::Provider, route::Route, upstream::Upstream,
+    error::DocumentError, plugin::PluginSpec, provider::Provider, request::RequestBounds,
+    route::Route, secret_ref::is_secret_ref, upstream::Upstream,
 };
 
 /// Inclusive upper bound for a route-level or provider-level `timeout_ms`.
@@ -25,6 +26,14 @@ const MAX_NAME_BYTES: usize = 63;
 const MAX_HOST_BYTES: usize = 253;
 /// Upper bound for `routes[].path_prefix`.
 const MAX_PATH_PREFIX_BYTES: usize = 256;
+/// Upper bound for a rejection `content-type`.
+const MAX_CONTENT_TYPE_BYTES: usize = 128;
+/// Inclusive bounds of a configurable rejection status.
+///
+/// 4xx only: a rejection is the caller's fault, so a 5xx would report the caller's mistake as a
+/// gateway failure, and a 2xx would not be a rejection at all. It is shared by every entry that can
+/// configure a rejection, because "a refusal is the caller's fault" does not depend on the kind.
+const REJECTION_STATUS: std::ops::RangeInclusive<u16> = 400..=499;
 
 /// Validates every provider, then every upstream, then every route.
 ///
@@ -35,13 +44,14 @@ const MAX_PATH_PREFIX_BYTES: usize = 256;
 /// - [`DocumentError::InvalidField`] for a malformed name, host, path prefix, base URL, credential
 ///   reference, upstream host or port.
 /// - [`DocumentError::LimitOutOfRange`] for a timeout outside `1..=600_000` or a route body bound
-///   outside `1..=limits.max_request_body_bytes`.
+///   above `request.max_body_bytes`.
 /// - [`DocumentError::DuplicateId`] when two routes share the same `(host, path_prefix)` pair.
 pub(super) fn validate(
     routes: &[Route],
     upstreams: &[Upstream],
     providers: &[Provider],
-    limits: Limits,
+    plugins: &[PluginSpec],
+    request: RequestBounds,
 ) -> Result<(), DocumentError> {
     for provider in providers {
         validate_provider(provider)?;
@@ -49,7 +59,8 @@ pub(super) fn validate(
     for upstream in upstreams {
         validate_upstream(upstream)?;
     }
-    validate_routes(routes, limits)
+    plugins::validate(plugins)?;
+    validate_routes(routes, request)
 }
 
 /// Checks one provider: name, base URL, credential reference and optional timeout.
@@ -66,12 +77,10 @@ fn validate_provider(provider: &Provider) -> Result<(), DocumentError> {
     }
 
     const CREDENTIAL_REF: &str = "providers[].credential_ref";
-    if !(provider.credential_ref().starts_with("env:")
-        || provider.credential_ref().starts_with("file:"))
-    {
+    if !is_secret_ref(provider.credential_ref()) {
         return Err(invalid(
             CREDENTIAL_REF,
-            "must be an `env:` or `file:` reference",
+            "must be an `env:` or `file:` reference naming a variable or path without control characters",
         ));
     }
 
@@ -94,7 +103,7 @@ fn validate_upstream(upstream: &Upstream) -> Result<(), DocumentError> {
 }
 
 /// Checks every route and rejects a repeated `(host, path_prefix)` match combination.
-fn validate_routes(routes: &[Route], limits: Limits) -> Result<(), DocumentError> {
+fn validate_routes(routes: &[Route], request: RequestBounds) -> Result<(), DocumentError> {
     let mut matches: HashSet<(Option<&str>, &str)> = HashSet::new();
 
     for route in routes {
@@ -108,7 +117,7 @@ fn validate_routes(routes: &[Route], limits: Limits) -> Result<(), DocumentError
             validate_timeout("routes[].timeout_ms", timeout_ms)?;
         }
         if let Some(max_body_bytes) = route.max_body_bytes() {
-            validate_body_bound(limits, max_body_bytes)?;
+            validate_body_bound(request, max_body_bytes)?;
         }
 
         if !matches.insert((route.host(), route.path_prefix())) {
@@ -211,16 +220,40 @@ fn validate_timeout(field: &'static str, timeout_ms: u32) -> Result<(), Document
     Ok(())
 }
 
-/// Checks that a route body bound is at least one byte and stays within the document bound.
+/// Checks that a route body bound stays within the document bound.
 ///
-/// A bound of `0` is rejected rather than honoured: it would mean "accept no body at all", which is
-/// a misconfiguration, not a limit — a route that should reject every body has no reason to exist.
-fn validate_body_bound(limits: Limits, max_body_bytes: u32) -> Result<(), DocumentError> {
-    if max_body_bytes == 0 || max_body_bytes > limits.max_request_body_bytes() {
+/// A route may only tighten: `0` is legal (the route accepts no request body at all) and equals what
+/// the document bound means at `0`, but a route can never widen the document ceiling.
+fn validate_body_bound(request: RequestBounds, max_body_bytes: u32) -> Result<(), DocumentError> {
+    if max_body_bytes > request.max_body_bytes() {
         return Err(DocumentError::LimitOutOfRange {
             field: "routes[].max_body_bytes",
             value: u64::from(max_body_bytes),
         });
+    }
+    Ok(())
+}
+
+/// Checks a rejection content type: printable, and a `type/subtype` pair.
+///
+/// It becomes a response header, so a control character here would let a document split the header
+/// it is written into. The `;` parameter form (`application/json; charset=utf-8`) is accepted.
+fn validate_content_type(field: &'static str, value: &str) -> Result<(), DocumentError> {
+    if value.is_empty() {
+        return Err(invalid(field, "must not be empty"));
+    }
+    if value.len() > MAX_CONTENT_TYPE_BYTES {
+        return Err(invalid(
+            field,
+            format!("must be at most {MAX_CONTENT_TYPE_BYTES} bytes"),
+        ));
+    }
+    if !value
+        .bytes()
+        .all(|byte| byte.is_ascii_graphic() || byte == b' ')
+        || !value.contains('/')
+    {
+        return Err(invalid(field, "must be a `type/subtype` string"));
     }
     Ok(())
 }
@@ -240,6 +273,8 @@ fn invalid(field: &'static str, reason: impl Into<Cow<'static, str>>) -> Documen
         reason: reason.into(),
     }
 }
+
+mod plugins;
 
 #[cfg(test)]
 mod tests;

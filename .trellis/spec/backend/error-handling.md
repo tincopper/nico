@@ -282,6 +282,46 @@ Rules:
   payloads) never appears here.
 - `trace_id` is always present so a caller report can be joined to logs.
 
+### Authentication refusals
+
+A policy that refuses a caller does not get its own mapper: it returns `HttpError` carrying a
+compiled `Rejection`, and `HttpError::respond` turns it into the same `Respond` a built-in failure
+produces. Two codes are stable for the whole authentication family:
+
+| Code | Status | When |
+|---|---|---|
+| `auth_missing` | 401 + `www-authenticate` | The request presented no credential at all |
+| `auth_invalid` | 401 + `www-authenticate` | A credential was presented and is not acceptable |
+
+`auth_invalid` is deliberately **not** split further. Expired, unsigned, wrong signature, unknown
+`kid`, unknown API key and revoked key all answer it, because a caller that can tell them apart can
+enumerate which keys exist. The cause is a fixed sentence that reaches the log and nothing else; it
+must never quote the credential, and a test asserts that the error's `Display` does not contain it.
+
+The pair is one code per **decision this layer makes** ("is there a credential" versus "may this
+credential in"), not one per reason a credential can fail.
+
+### What a plugin may and may not change
+
+The refusal of one plugin instance is configurable — status, content type and body — and the boundary
+is what keeps a configuration from turning a caller's mistake into an observable incident:
+
+- **Status: 4xx only.** Authentication and a rate limit are the caller's problem. A 5xx would make
+  monitoring count user errors as gateway faults and contradict `error.category = Client`; a 2xx is
+  not a refusal.
+- **The stable code is not configurable.** It travels in the body template *and* in
+  `x-nico-error-code`, so a custom body never costs an operator the machine-readable answer.
+- **The header set is closed.** `content-type`, `content-length`, `x-nico-error-code`,
+  `x-nico-trace-id`, plus `www-authenticate` (authentication) and `retry-after` (a limit). A plugin
+  supplies a template and a status, never a header — otherwise one document could desynchronise
+  `content-length` from the body it describes.
+- **Template variables are an allowlist: `code`, `message`, `trace_id`.** Upstream names,
+  configuration paths and credentials have no spelling, so "a refusal never echoes internal detail"
+  is a property of the compiler rather than a rule a reviewer has to check.
+- **All of it is validated at publication.** Status range, content type, variable names and JSON
+  validity are checked while the document is compiled; a failure keeps the last-known-good document
+  in service.
+
 ---
 
 ## Logging Errors

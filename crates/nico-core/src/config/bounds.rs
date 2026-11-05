@@ -9,9 +9,9 @@
 //! unrepresentable. The defaults live in exactly one place, [`SchemaBounds::default`]; operators
 //! override them through the local bootstrap file, never through a second copy of the numbers.
 //!
-//! A bound is addressed by [`Bound`] rather than by a per-field method: the five fields differ only
+//! A bound is addressed by [`Bound`] rather than by a per-field method: the six fields differ only
 //! in name, so one [`SchemaBounds::get`] and one [`SchemaBounds::with`] keep the table of names in a
-//! single place, and adding a sixth bound means adding one variant instead of two dozen lines of
+//! single place, and adding a seventh bound means adding one variant instead of two dozen lines of
 //! copy-pasted accessors.
 
 use std::num::NonZeroUsize;
@@ -32,6 +32,8 @@ pub enum Bound {
     Upstreams,
     /// Maximum accepted number of providers.
     Providers,
+    /// Maximum accepted number of plugins.
+    Plugins,
     /// Maximum accepted number of YAML nodes in the whole document.
     Nodes,
     /// Maximum accepted nesting depth, where the root sits at depth `1`.
@@ -46,6 +48,7 @@ impl Bound {
             Self::Routes => "max_routes",
             Self::Upstreams => "max_upstreams",
             Self::Providers => "max_providers",
+            Self::Plugins => "max_plugins",
             Self::Nodes => "max_nodes",
             Self::Depth => "max_depth",
         }
@@ -61,6 +64,7 @@ pub struct SchemaBounds {
     max_routes: NonZeroUsize,
     max_upstreams: NonZeroUsize,
     max_providers: NonZeroUsize,
+    max_plugins: NonZeroUsize,
     max_nodes: NonZeroUsize,
     max_depth: NonZeroUsize,
 }
@@ -75,6 +79,7 @@ impl Default for SchemaBounds {
             max_routes: default_bound(1024),
             max_upstreams: default_bound(256),
             max_providers: default_bound(64),
+            max_plugins: default_bound(256),
             max_nodes: default_bound(100_000),
             max_depth: default_bound(32),
         }
@@ -89,6 +94,7 @@ impl SchemaBounds {
             Bound::Routes => self.max_routes.get(),
             Bound::Upstreams => self.max_upstreams.get(),
             Bound::Providers => self.max_providers.get(),
+            Bound::Plugins => self.max_plugins.get(),
             Bound::Nodes => self.max_nodes.get(),
             Bound::Depth => self.max_depth.get(),
         }
@@ -111,6 +117,10 @@ impl SchemaBounds {
             },
             Bound::Providers => Self {
                 max_providers: value,
+                ..self
+            },
+            Bound::Plugins => Self {
+                max_plugins: value,
                 ..self
             },
             Bound::Nodes => Self {
@@ -217,10 +227,11 @@ mod tests {
     use super::*;
 
     /// The documented defaults, keyed by the bound they belong to.
-    const DEFAULTS: [(Bound, usize); 5] = [
+    const DEFAULTS: [(Bound, usize); 6] = [
         (Bound::Routes, 1024),
         (Bound::Upstreams, 256),
         (Bound::Providers, 64),
+        (Bound::Plugins, 256),
         (Bound::Nodes, 100_000),
         (Bound::Depth, 32),
     ];

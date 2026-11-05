@@ -18,6 +18,9 @@ async-trait.workspace = true
 nico-config.workspace = true
 nico-core.workspace = true
 nico-http.workspace = true
+# The binary is the one crate that assembles concrete implementations, and the plugin compiler is one
+# of them: it is constructed here once per process and handed to the reload pipeline.
+nico-plugins.workspace = true
 # The binary is the one crate that assembles concrete implementations, so it names Pingora's server
 # directly. The `proxy` feature is already on through `nico-http`, which owns that integration.
 pingora.workspace = true
@@ -30,8 +33,12 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dev-dependencies]
+# The plugin scenarios sign a real HS256 token over a real HMAC: a hand-rolled signer in the test
+# would be a second implementation of the format under test.
+base64.workspace = true
 bytes.workspace = true
 futures-core.workspace = true
+hmac.workspace = true
 # The HTTP data-plane tests drive a real server over a hand-written client and a hand-written mock
 # upstream on loopback sockets. No HTTP library is added on purpose: the wire bytes are the subject,
 # so a crate that frames them for us would hide the behaviour under test.

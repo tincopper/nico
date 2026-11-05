@@ -1,8 +1,10 @@
 //! The HTTP data plane: one type, one hook contract, one response per failure.
 //!
-//! [`HttpApp`] is what Pingora drives. It holds exactly two things — the publication handle the
-//! reload pipeline writes and the filter chain — and no per-request state, which lives in
-//! [`HttpContext`] instead so two concurrent requests cannot observe each other.
+//! [`HttpApp`] is what Pingora drives. It holds two things — the publication handle the reload
+//! pipeline writes and the trace-id counter — and no per-request state, which lives in
+//! [`HttpContext`] instead so two concurrent requests cannot observe each other. Every filter chain is
+//! per route and travels *inside* the published value ([`crate::HttpState`]), so a request cannot see one
+//! generation's routes with another's policies.
 //!
 //! The hooks themselves live in `proxy/hooks.rs`, because the hook order is the part of this crate
 //! that a Pingora upgrade can invalidate and it is easier to re-verify in one file; the failure
@@ -33,11 +35,10 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-use nico_core::SnapshotHandle;
 use pingora::{http::RequestHeader, proxy::Session};
 
 use self::failure::write_respond;
-use crate::{context::HttpContext, error::HttpError, filter::FilterChain};
+use crate::{context::HttpContext, error::HttpError, state::HttpStateHandle};
 
 /// Largest `x-request-id` this data plane echoes back as a trace id.
 ///
@@ -47,22 +48,20 @@ const MAX_TRACE_ID_BYTES: usize = 128;
 /// The HTTP data plane.
 ///
 /// One instance serves every request of one Pingora service: it holds the publication handle the
-/// reload pipeline writes and the filter chain, and nothing per request. Per-request state lives in
-/// [`HttpContext`], so two concurrent requests cannot observe each other.
+/// reload pipeline writes and nothing per request. Per-request state lives in [`HttpContext`], so two
+/// concurrent requests cannot observe each other.
 pub struct HttpApp {
-    snapshot: Arc<SnapshotHandle>,
-    filters: FilterChain,
+    state: Arc<HttpStateHandle>,
     /// Backs the generated trace id. Shared by every worker, so ids are unique per process.
     sequence: AtomicU64,
 }
 
 impl HttpApp {
-    /// Builds the data plane over one publication handle and one filter chain.
+    /// Builds the data plane over the one publication handle it reads configuration from.
     #[must_use]
-    pub fn new(snapshot: Arc<SnapshotHandle>, filters: FilterChain) -> Self {
+    pub fn new(state: Arc<HttpStateHandle>) -> Self {
         Self {
-            snapshot,
-            filters,
+            state,
             sequence: AtomicU64::new(0),
         }
     }
@@ -80,7 +79,7 @@ impl HttpApp {
         ctx.fail(error);
         if let Some(respond) = ctx.error().and_then(HttpError::respond) {
             let trace_id = ctx.trace_id();
-            if let Err(error) = write_respond(session, respond, trace_id).await {
+            if let Err(error) = write_respond(session, &respond, trace_id).await {
                 tracing::debug!(error = %error, "the error response could not be written");
             }
         }

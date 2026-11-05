@@ -13,16 +13,29 @@ publish = false
 # Pinned versions: see .trellis/tasks/11-03-phase0-tech-verification/design.md section 2.
 arc-swap = "=1.9.3"
 async-trait = "=0.1.92"
+# JWT segments are base64url without padding (RFC 7515), and the API-key filter decodes nothing else.
+base64 = "=0.22.1"
 bytes = "=1.12.1"
 futures-core = "=0.3.31"
+# HS256 is HMAC-SHA256; `hmac` is the MAC construction and `sha2` the hash it is built on (already a
+# dependency of nico-core's digest work). Both are needed only by `nico-plugins`.
+hmac = "=0.12.1"
+# The token-bucket table is bounded by `max_keys` and evicts least-recently-used buckets; an
+# unbounded map would let a caller grow the table one key per request.
+lru = "=0.18.5"
 notify = "=8.2.1"
 # The HTTP data plane's runtime. Pinned exactly: nico-http's hook contract is derived from
 # 0.9.1 source (see .trellis/tasks/11-04-s1-2-http-data-plane/design.md); re-verify on upgrade.
 pingora = "=0.9.1"
 proptest = "1"
 serde = { version = "=1.0.229", features = ["derive"] }
+# A plugin reads its configuration as JSON text (the contract's shape) while the document hands it
+# over as YAML: one serializer at publication turns one into the other, never the request path.
+serde_json = "=1.0.154"
 serde_norway = "=0.9.42"
 sha2 = "=0.10.9"
+# Signature and API-key comparison must not leak a matching prefix through timing.
+subtle = "=2.6.1"
 tempfile = "=3.27.0"
 thiserror = "=2.0.21"
 tokio = { version = "=1.54.1", default-features = false }
@@ -33,6 +46,7 @@ tracing-subscriber = "=0.3.23"
 nico-core = { version = "0.0.0", path = "crates/nico-core" }
 nico-config = { version = "0.0.0", path = "crates/nico-config" }
 nico-http = { version = "0.0.0", path = "crates/nico-http" }
+nico-plugins = { version = "0.0.0", path = "crates/nico-plugins" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

@@ -26,9 +26,10 @@ const DOCUMENT_MAX_BYTES: usize = 64 * 1024;
 /// A document with one route, so a `max_routes: 1` bootstrap accepts it.
 const ONE_ROUTE_A: &str = concat!(
     "apiVersion: gateway/v1\n",
-    "limits:\n",
-    "  max_request_body_bytes: 1024\n",
-    "  request_timeout_ms: 1000\n",
+    "request:\n",
+    "  max_body_bytes: 1024\n",
+    "  timeout_ms: 1000\n",
+    "plugins: []\n",
     "providers: []\n",
     "upstreams:\n",
     "  - name: api-backend\n",
@@ -45,9 +46,10 @@ const ONE_ROUTE_A: &str = concat!(
 /// [`ONE_ROUTE_A`].
 const ONE_ROUTE_B: &str = concat!(
     "apiVersion: gateway/v1\n",
-    "limits:\n",
-    "  max_request_body_bytes: 1024\n",
-    "  request_timeout_ms: 1000\n",
+    "request:\n",
+    "  max_body_bytes: 1024\n",
+    "  timeout_ms: 1000\n",
+    "plugins: []\n",
     "providers: []\n",
     "upstreams:\n",
     "  - name: api-backend\n",
@@ -63,9 +65,10 @@ const ONE_ROUTE_B: &str = concat!(
 /// A document with two routes, which a `max_routes: 1` bootstrap must reject.
 const TWO_ROUTES: &str = concat!(
     "apiVersion: gateway/v1\n",
-    "limits:\n",
-    "  max_request_body_bytes: 1024\n",
-    "  request_timeout_ms: 1000\n",
+    "request:\n",
+    "  max_body_bytes: 1024\n",
+    "  timeout_ms: 1000\n",
+    "plugins: []\n",
     "providers: []\n",
     "upstreams:\n",
     "  - name: api-backend\n",

@@ -19,8 +19,9 @@ pub mod status;
 pub mod version;
 
 pub use config::{
-    API_VERSION, Bound, BoundsError, Document, DocumentError, Limits, ParseLimits, Provider,
-    ProviderKind, Route, RouteTarget, SchemaBounds, Scheme, Upstream,
+    API_VERSION, BodyValue, Bound, BoundsError, DEFAULT_CONTENT_TYPE, Document, DocumentError,
+    ErrorBody, ErrorResponse, ParseLimits, PluginSpec, Provider, ProviderKind, RequestBounds,
+    Route, RouteTarget, SchemaBounds, Scheme, Upstream, is_json_content_type, is_secret_ref,
 };
 pub use error::ErrorCategory;
 pub use snapshot::{RuntimeSnapshot, SnapshotHandle};

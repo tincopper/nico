@@ -13,6 +13,7 @@ use std::time::Instant;
 
 use nico_core::ErrorCategory;
 use pingora::{Error, http::Method, proxy::Session};
+use tracing::Level;
 
 use super::failure::is_downstream_gone;
 use crate::context::HttpContext;
@@ -22,6 +23,21 @@ use crate::context::HttpContext;
 /// `499` is nginx's convention and the value the backend error spec assigns to `Cancelled`; it is
 /// never sent on the wire, only reported.
 const CANCELLED_STATUS: u16 = 499;
+
+/// Emits one record, adding `authn` only when a filter claimed the request.
+///
+/// `tracing` cannot add a field conditionally inside one invocation, and writing `authn = ""` would
+/// claim "authenticated by nothing" where the truth is "not authenticated" — two different facts for
+/// anyone filtering the log. The level stays a literal at each call site, so every expansion still has
+/// static callsite metadata.
+macro_rules! record {
+    ($level:expr, $ctx:expr, $message:literal, $($fields:tt)*) => {
+        match $ctx.identity() {
+            Some(identity) => tracing::event!($level, authn = %identity.source(), $($fields)* $message),
+            None => tracing::event!($level, $($fields)* $message),
+        }
+    };
+}
 
 /// Emits the request's one record, at the level the operator's action implies.
 ///
@@ -52,7 +68,10 @@ pub(super) fn emit(session: &Session, error: Option<&Error>, ctx: &HttpContext) 
     // belongs at `debug!` rather than in the error stream.
     if cancelled {
         match ctx.error() {
-            Some(failure) => tracing::debug!(
+            Some(failure) => record!(
+                Level::DEBUG,
+                ctx,
+                "request cancelled",
                 trace_id = %trace_id,
                 route_id = %route_id,
                 upstream = %upstream,
@@ -63,9 +82,11 @@ pub(super) fn emit(session: &Session, error: Option<&Error>, ctx: &HttpContext) 
                 elapsed_ms = elapsed_ms,
                 error.category = ?ErrorCategory::Cancelled,
                 error = %failure,
-                "request cancelled"
             ),
-            None => tracing::debug!(
+            None => record!(
+                Level::DEBUG,
+                ctx,
+                "request cancelled",
                 trace_id = %trace_id,
                 route_id = %route_id,
                 upstream = %upstream,
@@ -75,7 +96,6 @@ pub(super) fn emit(session: &Session, error: Option<&Error>, ctx: &HttpContext) 
                 body_bytes = body_bytes,
                 elapsed_ms = elapsed_ms,
                 error.category = ?ErrorCategory::Cancelled,
-                "request cancelled"
             ),
         }
         return;
@@ -86,7 +106,10 @@ pub(super) fn emit(session: &Session, error: Option<&Error>, ctx: &HttpContext) 
         // act on. Neither `info!` nor a per-request level above these is allowed on the request
         // path.
         match failure.category() {
-            ErrorCategory::Client | ErrorCategory::Limit => tracing::warn!(
+            ErrorCategory::Client | ErrorCategory::Limit => record!(
+                Level::WARN,
+                ctx,
+                "request rejected",
                 trace_id = %trace_id,
                 route_id = %route_id,
                 upstream = %upstream,
@@ -97,9 +120,11 @@ pub(super) fn emit(session: &Session, error: Option<&Error>, ctx: &HttpContext) 
                 elapsed_ms = elapsed_ms,
                 error.category = ?failure.category(),
                 error = %failure,
-                "request rejected"
             ),
-            _ => tracing::error!(
+            _ => record!(
+                Level::ERROR,
+                ctx,
+                "request failed",
                 trace_id = %trace_id,
                 route_id = %route_id,
                 upstream = %upstream,
@@ -110,13 +135,15 @@ pub(super) fn emit(session: &Session, error: Option<&Error>, ctx: &HttpContext) 
                 elapsed_ms = elapsed_ms,
                 error.category = ?failure.category(),
                 error = %failure,
-                "request failed"
             ),
         }
         return;
     }
 
-    tracing::debug!(
+    record!(
+        Level::DEBUG,
+        ctx,
+        "request completed",
         trace_id = %trace_id,
         route_id = %route_id,
         upstream = %upstream,
@@ -125,6 +152,5 @@ pub(super) fn emit(session: &Session, error: Option<&Error>, ctx: &HttpContext) 
         http.status = status,
         body_bytes = body_bytes,
         elapsed_ms = elapsed_ms,
-        "request completed"
     );
 }

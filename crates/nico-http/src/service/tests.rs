@@ -1,10 +1,9 @@
 use std::sync::Arc;
 
-use nico_core::SnapshotHandle;
 use pingora::{server::configuration::ServerConf, services::Service as ServiceApi};
 
 use super::{server_conf, service};
-use crate::{filter::FilterChain, settings::HttpSettings};
+use crate::{settings::HttpSettings, state::HttpStateHandle};
 
 /// Settings whose two drain windows are `grace_ms` and `shutdown_ms`.
 fn settings(grace_ms: u64, shutdown_ms: u64) -> HttpSettings {
@@ -82,12 +81,7 @@ fn the_default_thread_count_is_pingoras_own_default() {
 #[test]
 fn h2c_reaches_the_proxy_server_options() {
     let settings = settings(5_000, 30_000);
-    let service = service(
-        &conf(&settings),
-        SnapshotHandle::new(),
-        FilterChain::empty(),
-        &settings,
-    );
+    let service = service(&conf(&settings), HttpStateHandle::new(), &settings);
 
     let proxy = service
         .app_logic()
@@ -103,12 +97,7 @@ fn h2c_reaches_the_proxy_server_options() {
 #[test]
 fn h2c_stays_disabled_when_the_settings_do_not_ask_for_it() {
     let settings = HttpSettings::resolve(None, None, None, None, None).expect("defaults are valid");
-    let service = service(
-        &conf(&settings),
-        SnapshotHandle::new(),
-        FilterChain::empty(),
-        &settings,
-    );
+    let service = service(&conf(&settings), HttpStateHandle::new(), &settings);
 
     let proxy = service.app_logic().expect("the application is held");
     let options = proxy
@@ -123,12 +112,7 @@ fn h2c_stays_disabled_when_the_settings_do_not_ask_for_it() {
 fn the_configured_listener_is_registered_once() {
     let settings = HttpSettings::resolve(Some("127.0.0.1:18080"), None, None, None, None)
         .expect("the fixture address is valid");
-    let service = service(
-        &conf(&settings),
-        SnapshotHandle::new(),
-        FilterChain::empty(),
-        &settings,
-    );
+    let service = service(&conf(&settings), HttpStateHandle::new(), &settings);
 
     assert_eq!(
         ServiceApi::listen_addresses(&service),

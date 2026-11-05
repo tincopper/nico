@@ -1,14 +1,14 @@
 # Gateway resources document served by the local configuration source.
 #
-# The envelope and the global limits are fixed. `providers`, `upstreams` and `routes` are required
-# sections: each may be empty, but omitting one is a schema error rather than an implicit empty
-# list, so a truncated document never looks like a working configuration.
+# The envelope and the per-request bounds are fixed. `providers`, `upstreams`, `routes` and `plugins`
+# are required sections: each may be empty, but omitting one is a schema error rather than an
+# implicit empty list, so a truncated document never looks like a working configuration.
 apiVersion: gateway/v1
-limits:
-  # 1..=8388608 bytes; the default bootstrap document stays within 1 MiB.
-  max_request_body_bytes: 1048576
+request:
+  # Any u32: 0 means "accept no request body". The default document stays within 1 MiB.
+  max_body_bytes: 1048576
   # 1..=600000 milliseconds.
-  request_timeout_ms: 30000
+  timeout_ms: 30000
 
 # AI providers. Credentials are referenced, never written here: `env:VAR` or `file:/path`.
 providers:
@@ -24,12 +24,63 @@ upstreams:
     host: 127.0.0.1
     port: 8080
 
+# Named plugins. This block defines instances; it does not decide where they run. A route runs the
+# ones it references by name, and `global_plugins` (below) names the ones that run for every request
+# before routing. An entry is an envelope — `name`/`kind`/`enabled`/`buffers_body`/`error_response` —
+# plus a `config` the kind itself interprets. The document model does not know any kind's fields, so adding one is a change to the
+# crate that implements it, not to this schema; an unknown kind is refused when the document is
+# compiled, never skipped.
+#
+# Credentials are referenced, never written here: `env:VAR` or `file:/path`.
+# A reference is read when the document is compiled, and `file:` is read byte for byte: a trailing
+# newline left by `echo secret > file` is part of the key, so write the value exactly. An empty or
+# unreadable credential rejects the whole document and the previously published one keeps serving.
+#
+# Two entry kinds are shown below. `public-jwt` authenticates a bearer token, so a local run needs
+# `JWT_SECRET` in its environment: a document whose credential cannot be read is refused as a whole
+# and the previously published one keeps serving, which is why this file cannot be run without it.
+#
+# An entry is an INSTANCE, not a kind alias: two routes that need different parameters need two
+# entries of the same kind, each referenced by name. Sharing one entry across routes shares its
+# config and credentials; a rate limit's buckets are still per route, keyed by
+# (route_id, instance name, subject|ip). YAML anchors and aliases are rejected by the parser, so
+# duplicated parameters are generated (Helm/Kustomize), not factored with `&`/`*`.
+#
+# Not supported by design: per-route parameter overrides and per-use disabling. `enabled: false`
+# stops an instance everywhere; see the task design notes for the upgrade triggers.
+plugins:
+  - name: public-jwt
+    kind: jwt
+    config:
+      keys:
+        - kid: k1
+          secret_ref: env:JWT_SECRET
+      issuer: https://id.example
+      audience: api
+  # `enabled: false` keeps the entry declared — a route may still reference it — but stops it from
+  # being compiled or run, which is how a policy is taken out of service without editing every route.
+  - name: api-quota
+    kind: rate_limit
+    enabled: true
+    config:
+      burst: 20
+      per_second: 5
+      max_keys: 10000
+
+# Use sites for the global scope: names declared above, in the order they should run within a phase.
+# Empty by default, because declaring a plugin is not a decision to run it for every request. A
+# subject-keyed rate limit belongs on a route instead: before routing there is no route id and no
+# identity, so a global limit can only be keyed by a hash of the client address.
+global_plugins: []
+
 # Every route names exactly one target: an `upstream` or a `provider`. `timeout_ms` and
-# `max_body_bytes` are optional per-route overrides, bounded by the `limits` section above.
+# `max_body_bytes` are optional per-route overrides, bounded by the `request` section above, and
+# `plugins` lists the policies the route runs (authenticate before limit, whatever the order here).
 routes:
   - id: api-public-v1
     path_prefix: /api/
     upstream: api-backend
+    plugins: [public-jwt, api-quota]
   - id: ai-chat
     path_prefix: /v1/chat/
     provider: openai-primary

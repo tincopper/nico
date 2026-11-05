@@ -232,9 +232,10 @@ mod tests {
         format!(
             "\
 apiVersion: gateway/v1
-limits:
-  max_request_body_bytes: 1024
-  request_timeout_ms: 1000
+request:
+  max_body_bytes: 1024
+  timeout_ms: 1000
+plugins: []
 providers:
   - name: openai-primary
     kind: openai
@@ -252,7 +253,7 @@ routes: []
 
         #[test]
         fn reject_aliases_rejects_an_anchor() {
-            let text = "apiVersion: gateway/v1\nlimits: &limits\n  max_request_body_bytes: 1\n";
+            let text = "apiVersion: gateway/v1\nlimits: &limits\n  max_body_bytes: 1\n";
             let error = reject_aliases(text).expect_err("an anchor is not allowed");
             assert!(
                 matches!(error, DocumentError::AliasForbidden),

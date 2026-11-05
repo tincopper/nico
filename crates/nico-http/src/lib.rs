@@ -6,12 +6,17 @@
 //! - [route] — which route a request matches, decided from request headers only.
 //! - [filter] — the seam HTTP policy plugs into, and [error] — the single failure vocabulary that
 //!   maps to exactly one wire response.
-//! - [context] — the per-request state a policy may read, including the peer the request goes to.
+//! - [plugin] — the five-phase policy contract a built-in or WASM plugin implements, plus the
+//!   registry that turns a document's `kind` into an implementation.
+//! - [context] — the per-request state a policy may read, including its identity and the peer the
+//!   request goes to.
+//! - [state] — the one published value the request path reads: a snapshot, the global and per-route
+//!   filter chains compiled from it, and the routes whose request body is buffered whole.
 //! - [proxy] — the Pingora hook contract that ties the above together, and [mod@service] — the
 //!   process-level assembly (server configuration, listener).
 //! - [settings] — the validated bootstrap knobs this data plane is configured with.
 //!
-//! Two boundaries stay inside the crate: `limits` owns the body/time budget arithmetic, and
+//! Two boundaries stay inside the crate: `budget` owns the body/time budget arithmetic, and
 //! `upstream` owns "destination → connectable peer". Neither is part of the public contract: the
 //! only thing another crate needs from the second one is [`Destination`], the value a policy hands
 //! over when it understood a target this crate does not.
@@ -53,9 +58,10 @@
 //!
 //! let yaml = "\
 //! apiVersion: gateway/v1
-//! limits:
-//!   max_request_body_bytes: 1048576
-//!   request_timeout_ms: 30000
+//! request:
+//!   max_body_bytes: 1048576
+//!   timeout_ms: 30000
+//! plugins: []
 //! providers: []
 //! upstreams:
 //!   - name: api-backend
@@ -79,22 +85,38 @@
 pub mod context;
 pub mod error;
 pub mod filter;
+pub mod plugin;
 pub mod proxy;
 pub mod route;
 pub mod service;
 pub mod settings;
+pub mod state;
 
-pub(crate) mod limits;
+pub(crate) mod budget;
 pub(crate) mod upstream;
 
 #[cfg(test)]
 mod test_support;
 
-pub use context::HttpContext;
-pub use error::{HttpError, Respond};
+pub use context::{HttpContext, Identity};
+pub use error::{
+    BodyFormat, BodyTemplate, HttpError, MAX_LITERAL_BYTES, Part, Rejection, RejectionError,
+    Respond, escape_json_string,
+};
 pub use filter::{FilterChain, HttpFilter};
+/// The header types [`HttpFilter`] names.
+///
+/// Re-exported so a crate that implements a policy does not have to depend on the HTTP framework
+/// itself: the filter contract is this crate's, and these two types are part of it.
+pub use pingora::http::{RequestHeader, ResponseHeader};
+pub use plugin::{
+    LogLevel, Outcome, Plugin, PluginBuildError, PluginContext, PluginError, PluginFactory,
+    PluginFilter, PluginInfo, PluginPhase, PluginRegistry, PluginResult, RegistryError,
+    ResponseData, ResponseError,
+};
 pub use proxy::HttpApp;
 pub use route::match_route;
 pub use service::{server_conf, service};
 pub use settings::{HttpSettings, HttpSettingsError};
+pub use state::{BufferedRoutes, HttpState, HttpStateHandle, PublishedChains, RouteChains};
 pub use upstream::Destination;

@@ -16,9 +16,9 @@ The backend is **one Cargo Workspace** at the repository root. The layout follow
 3. **One binary target** — `nico` (built by the `nico-server` crate). Deployment roles (traffic / AI) are selected by Cargo
    features plus runtime config, not by adding more binaries.
 
-> **Status**: `nico-core`, `nico-config`, `nico-http` and `nico-server` exist as built. The
-> remaining crates below are the binding target structure. Architecture rationale lives in
-> `.trellis/tasks/11-03-unified-gateway-analysis/design.md` — do not re-derive it from this file.
+> **Status**: `nico-core`, `nico-config`, `nico-http`, `nico-plugins` and `nico-server` exist as
+> built. The remaining crates below are the binding target structure. Architecture rationale lives
+> in `.trellis/tasks/11-03-unified-gateway-analysis/design.md` — do not re-derive it from this file.
 
 ---
 
@@ -41,7 +41,8 @@ nico/
     │       ├── main.rs         # thin: parse args, call lib::run, map error to exit code
     │       ├── lib.rs          # //! doc + pub fn run(...); makes wiring integration-testable
     │       ├── bootstrap.rs
-    │       ├── reload.rs       # watch loop + debounce + single-flight + publish
+    │       ├── reload.rs       # watch loop, debounce, single flight, one publication
+    │       └── reload/         # error.rs, pacing.rs, publish.rs, startup.rs (one concern each)
     │   └── tests/              # integration tests reach the wiring through lib.rs
     ├── nico-core/           # small kernel shared by every data plane
     │   └── src/
@@ -52,8 +53,9 @@ nico/
     ├── nico-http/           # Pingora integration + HTTP domain traits
     │   └── src/
     │       ├── lib.rs          # //! + the public contract (HttpError, HttpFilter, Destination, …)
-    │       ├── context.rs      # HttpContext: snapshot, route, destination, deadline, budgets
+    │       ├── context.rs      # HttpContext: snapshot, route, identity, destination, deadline
     │       ├── error.rs        # HttpError + the single (status, code) mapping
+    │       ├── error/          # rejection.rs: compiled refusal (status, template, category)
     │       ├── filter.rs       # HttpFilter trait + FilterChain (budget-bounded stages)
     │       ├── limits.rs       # crate-private: body and time budget arithmetic
     │       ├── proxy.rs        # HttpApp + the unified rejection path
@@ -61,6 +63,7 @@ nico/
     │       ├── route.rs        # match_route(header, routes)
     │       ├── service.rs      # ServerConf derivation + ProxyServiceBuilder + listener
     │       ├── settings.rs     # HttpSettings: bootstrap `http` defaults and ranges
+    │       ├── state.rs        # HttpState/HttpStateHandle: snapshot + global/per-route chains + buffered routes, one store
     │       └── upstream.rs     # crate-private: Destination → HttpPeer
     ├── nico-ai/             # AI domain traits, providers, stream adapters
     │   └── src/
@@ -88,10 +91,24 @@ nico/
     │   └── src/lib.rs
     └── nico-plugins/        # built-in HTTP policies: JWT, API key, rate limit
         └── src/
-            ├── lib.rs
-            ├── jwt.rs
-            ├── api_key.rs
-            └── rate_limit.rs
+            ├── lib.rs       # //! + the publication-failure vocabulary (PluginError) + builtin_registry()
+            ├── spec.rs      # a document entry compiled into the parameters a plugin runs with
+            ├── rejection.rs # the compiled refusal of one instance + the built-in defaults
+            ├── compile.rs   # document → global + per-route chains, buffered routes; registry lookup
+            ├── jwt.rs       # token parsing, HS256 verification, claim rules, the `Plugin` impl
+            │   ├── config.rs # the `jwt` kind's own fields, defaults and rules
+            │   ├── factory.rs # the `jwt` PluginFactory: config → spec → credentials → plugin
+            │   ├── json.rs  # the minimal JSON reader a token payload needs
+            │   └── tests.rs
+            ├── api_key.rs   # constant-time key set, one configured header, the `Plugin` impl
+            │   ├── config.rs # the `api_key` kind's own fields and rules
+            │   ├── factory.rs # the `api_key` PluginFactory
+            │   └── tests.rs
+            └── rate_limit.rs # key derivation + the `Plugin` impl
+                ├── config.rs # the `rate_limit` kind's numbers, defaults, key source
+                ├── factory.rs # the `rate_limit` PluginFactory + the bucket tables a reload reuses
+                ├── limiter.rs # bounded token-bucket table (LRU, max_keys)
+                └── tests.rs
 ```
 
 Per-crate test helpers live in `tests/` (integration) or in a `#[cfg(test)]` module inside the
@@ -158,9 +175,16 @@ nico-server
 Hard rules:
 
 - `nico-core` must not depend on `nico-http`, `nico-ai`, `nico-plugins`, `pingora`,
-  `hyper`, or any config-center client.
+  `hyper`, or any config-center client. It also holds no cryptography: a plugin credential, a
+  signature and a hash of a caller's address all live in the crate that uses them, so adding a
+  built-in policy can never grow the kernel's dependency tree.
 - `nico-http` must not import `nico-ai`. AI plugs in through HTTP extension points: a filter
   resolves a provider target and records a `Destination`, and this crate owns only how to reach it.
+  For the same reason it must not import `nico-plugins`: a policy implements `HttpFilter` and reaches
+  the request through `HttpContext`, so the dependency edge points the other way.
+- `nico-http` re-exports the two Pingora header types its filter trait names (`RequestHeader`,
+  `ResponseHeader`). A crate that implements a policy therefore does not depend on the HTTP framework
+  itself: there is one version source for those types, and upgrading Pingora is one crate's task.
 - `nico-http` must not install signal handlers or build a runtime; that is process assembly, and
   it lives in `nico-server`.
 - Config-center clients are never in the default dependency tree; they arrive only with their
@@ -215,6 +239,32 @@ unless the type really manages several lifecycles or algorithms.
 - Adding a config center: new `nico-config-*` crate implementing
   `nico_config::ConfigSource`, feature-gated, registered in `bootstrap.rs`. No changes to the
   reload pipeline.
+
+### Where a plugin boundary sits
+
+A built-in plugin is one file for the policy and its tests, plus one shared decision surface:
+
+| Concern | Owner |
+|---|---|
+| The envelope: `name`, `kind`, `enabled`, `buffers_body`, `error_response`, name uniqueness, and the `global_plugins` / `routes[].plugins` references | `nico-core::config` (`plugin.rs`, `semantic/plugins.rs`, `reference.rs`) |
+| The kind's own `config`: field names, defaults, ranges, `env:`/`file:` references | `nico-plugins` (`<kind>/config.rs`, validated at publication) |
+| The phase the kind runs in, its refusal, and materializing its credential | `nico-plugins` |
+| Writing the response, the closed header set, `(status, code)` for everything else | `nico-http` |
+
+`kind` is a string in the document model and the kind's `config` value is opaque there, so the
+registry that answers "does this kind exist?" lives in `nico-plugins` and an unknown kind is a
+publication failure, never a silent skip. That is what lets a second source of plugins arrive without
+teaching the document model any policy: `nico-core` never learns what a phase is or what a kind's
+fields are, and `nico-http` never learns what a plugin is.
+
+`is_secret_ref` (`nico-core`) is the one vocabulary both sides share: the document model checks a
+provider's `credential_ref` with it, and a kind's `config` module checks its own `secret_ref` fields
+with it, so "a credential is a reference" has one spelling.
+
+A credential reference is materialized when the document is compiled, not per request: `env:VAR`
+reads the variable and `file:/path` reads the file **byte for byte**, so a trailing newline written
+by `echo` is part of the key. An unreadable or empty credential rejects the whole document and the
+last known good generation keeps serving.
 
 ---
 

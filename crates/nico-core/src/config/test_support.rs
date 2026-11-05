@@ -40,24 +40,56 @@ pub(super) const SECOND_UPSTREAM: &str = concat!(
     "    port: 8081\n",
 );
 
-/// Builds a complete document from the bodies of the three collections.
+/// A complete plugin entry in its envelope form: a kind, its own configuration nested under
+/// `config`, and no rejection override.
+pub(super) const PLUGIN: &str = concat!(
+    "  - name: public-jwt\n",
+    "    kind: jwt\n",
+    "    config:\n",
+    "      keys:\n",
+    "        - kid: k1\n",
+    "          secret_ref: env:JWT_SECRET\n",
+);
+
+/// A second plugin entry whose name differs from [`PLUGIN`].
+pub(super) const SECOND_PLUGIN: &str = concat!(
+    "  - name: api-quota\n",
+    "    kind: rate_limit\n",
+    "    config:\n",
+    "      burst: 100\n",
+    "      per_second: 20\n",
+);
+
+/// Builds a complete document from the bodies of the three collections, with no plugins.
 ///
 /// The bodies are spliced verbatim, so a caller controls indentation and can compose entries
 /// without depending on the layout of this file.
 pub(super) fn document(providers: &str, upstreams: &str, routes: &str) -> String {
+    document_with_plugins(providers, upstreams, routes, NO_ENTRIES)
+}
+
+/// Builds a complete document whose `plugins` collection holds `plugins`.
+pub(super) fn document_with_plugins(
+    providers: &str,
+    upstreams: &str,
+    routes: &str,
+    plugins: &str,
+) -> String {
     format!(
         concat!(
             "apiVersion: gateway/v1\n",
-            "limits:\n",
-            "  max_request_body_bytes: 1048576\n",
-            "  request_timeout_ms: 30000\n",
+            "request:\n",
+            "  max_body_bytes: 1048576\n",
+            "  timeout_ms: 30000\n",
             "providers:\n",
             "{}\n",
             "upstreams:\n",
             "{}\n",
             "routes:\n",
             "{}\n",
+            "plugins:\n",
+            "{}\n",
         ),
-        providers, upstreams, routes
+        providers, upstreams, routes, plugins
     )
 }

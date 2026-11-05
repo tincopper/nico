@@ -8,6 +8,9 @@ publish.workspace = true
 description = "Pingora HTTP data plane: routing, upstream selection and byte-stream passthrough"
 
 [dependencies]
+# The request path reads exactly one published value; `ArcSwapOption` is the same publication
+# primitive `nico-core` uses for a snapshot, so the swap is one atomic store.
+arc-swap.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 nico-core.workspace = true

@@ -17,9 +17,10 @@ use std::{net::SocketAddr, time::Duration};
 
 use sha2::{Digest, Sha256};
 use support::http::{
-    Resources, Route, RunningServer,
+    RunningServer,
     client::{Client, READ_BUDGET, Request},
     free_port,
+    resources::{Resources, Route},
     source::TestSource,
     upstream::{MockUpstream, Reply},
     write_bootstrap,

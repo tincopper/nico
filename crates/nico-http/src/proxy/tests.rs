@@ -65,9 +65,10 @@ fn provider_snapshot() -> Arc<RuntimeSnapshot> {
     let yaml = format!(
         concat!(
             "apiVersion: gateway/v1\n",
-            "limits:\n",
-            "  max_request_body_bytes: 1048576\n",
-            "  request_timeout_ms: 30000\n",
+            "request:\n",
+            "  max_body_bytes: 1048576\n",
+            "  timeout_ms: 30000\n",
+            "plugins: []\n",
             "providers:\n",
             "  - name: openai-primary\n",
             "    kind: openai\n",

@@ -29,6 +29,7 @@
 )]
 
 pub(crate) mod http;
+pub(crate) mod token;
 
 use std::{
     collections::VecDeque,
@@ -46,7 +47,10 @@ use nico_config::{
     CacheStore, ConfigEvent, ConfigSource, ConfigSourceError, ConfigVersion, ConfigWatch,
 };
 use nico_core::{ConfigStatus, ParseLimits, Revision, SnapshotHandle};
-use nico_server::{BootstrapConfig, ReloadError, ReloadLimits, Reloader};
+use nico_http::HttpStateHandle;
+use nico_server::{
+    BootstrapConfig, Publication, ReloadError, ReloadLimits, ReloadSettings, Reloader,
+};
 use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
@@ -55,9 +59,10 @@ use tokio_util::sync::CancellationToken;
 /// A valid document whose body limit is 1024 bytes.
 pub(crate) const DOC_A: &[u8] = b"\
 apiVersion: gateway/v1
-limits:
-  max_request_body_bytes: 1024
-  request_timeout_ms: 1000
+request:
+  max_body_bytes: 1024
+  timeout_ms: 1000
+plugins: []
 providers: []
 upstreams: []
 routes: []
@@ -66,9 +71,10 @@ routes: []
 /// A valid document whose body limit is 2048 bytes.
 pub(crate) const DOC_B: &[u8] = b"\
 apiVersion: gateway/v1
-limits:
-  max_request_body_bytes: 2048
-  request_timeout_ms: 2000
+request:
+  max_body_bytes: 2048
+  timeout_ms: 2000
+plugins: []
 providers: []
 upstreams: []
 routes: []
@@ -77,9 +83,10 @@ routes: []
 /// A valid document whose body limit is 4096 bytes.
 pub(crate) const DOC_C: &[u8] = b"\
 apiVersion: gateway/v1
-limits:
-  max_request_body_bytes: 4096
-  request_timeout_ms: 3000
+request:
+  max_body_bytes: 4096
+  timeout_ms: 3000
+plugins: []
 providers: []
 upstreams: []
 routes: []
@@ -295,9 +302,10 @@ allow_bootstrap_cache: {allow}
 
 // --- harness -----------------------------------------------------------------
 
-/// A running pipeline plus the handle it publishes into.
+/// A running pipeline plus the two handles it publishes into.
 pub(crate) struct Harness {
     handle: Arc<SnapshotHandle>,
+    state: Arc<HttpStateHandle>,
     shutdown: CancellationToken,
     task: JoinHandle<Result<(), ReloadError>>,
 }
@@ -345,27 +353,37 @@ impl Harness {
         allow_bootstrap_cache: bool,
     ) -> Self {
         let handle = SnapshotHandle::new();
+        let state = HttpStateHandle::new();
         let shutdown = CancellationToken::new();
         let reloader = Reloader::new(
             source,
-            Arc::clone(&handle),
-            cache,
-            reload,
-            limits,
-            allow_bootstrap_cache,
-            shutdown.clone(),
+            Publication::new(Arc::clone(&handle), Arc::clone(&state)),
+            Arc::new(nico_plugins::PluginRuntime::new()),
+            ReloadSettings::new(
+                cache,
+                reload,
+                limits,
+                allow_bootstrap_cache,
+                shutdown.clone(),
+            ),
         );
         let task = tokio::spawn(reloader.run());
         Self {
             handle,
+            state,
             shutdown,
             task,
         }
     }
 
-    /// Returns the handle the pipeline publishes into.
+    /// Returns the handle the pipeline publishes configuration status into.
     pub(crate) fn handle(&self) -> &SnapshotHandle {
         &self.handle
+    }
+
+    /// Returns the value the pipeline publishes for the request path.
+    pub(crate) fn state(&self) -> &HttpStateHandle {
+        &self.state
     }
 
     pub(crate) fn status(&self) -> ConfigStatus {
@@ -384,7 +402,7 @@ impl Harness {
     pub(crate) fn body_limit(&self) -> Option<u32> {
         self.handle
             .current()
-            .map(|snapshot| snapshot.document().limits().max_request_body_bytes())
+            .map(|snapshot| snapshot.document().request().max_body_bytes())
     }
 
     /// Returns how many routes the published document carries.

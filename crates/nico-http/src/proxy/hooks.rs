@@ -5,7 +5,7 @@
 //! | Hook | What it does | Why there |
 //! |---|---|---|
 //! | `new_ctx` | empty request context | request-local state, never global |
-//! | `request_filter` | snapshot, route, `Content-Length`, filter chain | before the body, which is never read |
+//! | `request_filter` | published state, route, `Content-Length`, filter chain | before the body, which is never read |
 //! | `upstream_peer` | target becomes a peer | route and upstream are known by now |
 //! | `upstream_request_filter` | `Host` rewrite, `X-Forwarded-*`, hop-by-hop removal | the upstream sees only legal headers |
 //! | `request_body_filter` | counts bytes, enforces the body bound and the deadline | streaming: the body is metered, never buffered |
@@ -32,10 +32,10 @@ use pingora::{
 use super::{
     HttpApp,
     failure::{abort, classify, is_downstream_gone, write_respond},
-    forward::{HOP_BY_HOP, connection_tokens, destination, forwarded_for, set_header},
+    forward::{HOP_BY_HOP, connection_tokens, destination, forwarded_for, peer_ip, set_header},
     record,
 };
-use crate::{context::HttpContext, error::HttpError, limits, route, upstream};
+use crate::{budget, context::HttpContext, error::HttpError, route, state, upstream};
 
 #[async_trait::async_trait]
 impl ProxyHttp for HttpApp {
@@ -49,6 +49,11 @@ impl ProxyHttp for HttpApp {
     ///
     /// Every rejection funnels through one writer, so the only difference between "no snapshot",
     /// "no route", "body too large" and "a filter said no" is the [`HttpError`] value.
+    ///
+    /// The published state is read **once**: the snapshot, the route and the chain that decides
+    /// whether the request may proceed all come from the same `Arc`, so a reload that lands while this
+    /// hook runs cannot pair a newer route table with an older policy set. The chain is recorded in
+    /// the context, so the response stage runs the same filters the request was admitted by.
     async fn request_filter(
         &self,
         session: &mut Session,
@@ -57,34 +62,54 @@ impl ProxyHttp for HttpApp {
         let now = Instant::now();
         let trace_id = self.trace_id(session.req_header());
         ctx.set_trace_id(&trace_id);
+        // Read before the immutable borrow of the request header ends: the peer address is a fact of
+        // the connection, so a policy that keys on the caller reads it from the context instead of
+        // from a header the caller controls.
+        let client_ip = peer_ip(session);
 
-        let Some(snapshot) = self.snapshot.current() else {
+        let Some(state) = self.state.current() else {
             return self.reject(session, ctx, HttpError::NotReady).await;
         };
 
-        let Some(route) = route::match_route(session.req_header(), snapshot.document().routes())
+        let Some(route) =
+            route::match_route(session.req_header(), state.snapshot().document().routes())
         else {
             return self.reject(session, ctx, HttpError::RouteNotFound).await;
         };
 
+        // A route without plugins has no chain: the request skips the filter stage entirely, which is
+        // the same zero-cost path an empty service-level chain used to take. Whether the route *names*
+        // plugins is read inside `chain_for_route`, because a route that names one and finds no chain
+        // must not be forwarded: a missing entry would be an authentication bypass, not "no policy".
+        let chain = state::chain_for_route(&state, route);
+
         // The immutable borrow of the request ends here: everything routing needed has been copied
         // into the context, and the filter chain below needs the header mutably.
-        let declared = limits::declared_length(session.req_header());
-        ctx.begin(&snapshot, route, session.req_header(), now);
+        let declared = budget::declared_length(session.req_header());
+        ctx.begin(state.snapshot(), route, session.req_header(), now);
+        if let Some(address) = client_ip {
+            ctx.set_client_ip(address);
+        }
 
         if let (Some(limit), Some(declared)) = (ctx.body_limit(), declared) {
-            if limits::over_limit(limit, declared) {
+            if budget::over_limit(limit, declared) {
                 return self
                     .reject(session, ctx, HttpError::BodyTooLarge { limit })
                     .await;
             }
         }
 
-        if let Err(error) = self
-            .filters
-            .run_request(ctx, session.req_header_mut())
-            .await
-        {
+        let chain = match chain {
+            Ok(Some(chain)) => chain,
+            Ok(None) => return Ok(false),
+            // Fail closed. The compiler that produced the published state is supposed to cover every
+            // route that names a plugin; if it did not, forwarding the request would run it with no
+            // policy at all — which for an authentication plugin is the one failure that must never
+            // be silent.
+            Err(error) => return self.reject(session, ctx, error).await,
+        };
+        ctx.set_chain(chain.clone());
+        if let Err(error) = chain.run_request(ctx, session.req_header_mut()).await {
             return self.reject(session, ctx, error).await;
         }
 
@@ -126,10 +151,7 @@ impl ProxyHttp for HttpApp {
         // Both reads borrow the downstream session immutably; the header below is a different
         // object, so the borrows do not overlap.
         let client_host = session.req_header().headers.get("host").cloned();
-        let client_addr = session
-            .client_addr()
-            .and_then(pingora::protocols::l4::socket::SocketAddr::as_inet)
-            .map(|address| address.ip());
+        let client_addr = peer_ip(session);
 
         // The `Connection` header nominates a second, open-ended set of headers that belong to
         // this connection only; read it before the fixed set removes it.
@@ -217,8 +239,12 @@ impl ProxyHttp for HttpApp {
             return Ok(());
         }
 
-        if let Err(error) = self.filters.run_response(ctx, response).await {
-            return Err(abort(ctx, error));
+        // The chain recorded by `request_filter`: the same generation decided that this request may
+        // proceed, so the same filters inspect the response it produced.
+        if let Some(chain) = ctx.chain().cloned() {
+            if let Err(error) = chain.run_response(ctx, response).await {
+                return Err(abort(ctx, error));
+            }
         }
 
         if ctx.expired(Instant::now()) {
@@ -319,7 +345,7 @@ impl ProxyHttp for HttpApp {
         };
 
         let status = respond.status().as_u16();
-        if let Err(error) = write_respond(session, respond, ctx.trace_id()).await {
+        if let Err(error) = write_respond(session, &respond, ctx.trace_id()).await {
             tracing::debug!(error = %error, "the error response could not be written");
         }
         FailToProxy {

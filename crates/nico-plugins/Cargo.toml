@@ -1,0 +1,45 @@
+[package]
+name = "nico-plugins"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Built-in HTTP policies: HS256 JWT, static API key and token-bucket rate limit"
+
+[dependencies]
+# A filter is an `HttpFilter`, whose async methods are declared through this macro.
+async-trait.workspace = true
+# JWT segments are base64url without padding; nothing else is decoded here.
+base64.workspace = true
+# HS256 is HMAC-SHA256 over the token's signing input.
+hmac.workspace = true
+# The rate-limit table is bounded and evicts the least recently used bucket.
+lru.workspace = true
+nico-core.workspace = true
+nico-http.workspace = true
+# A kind's own `config` value is deserialized with `deny_unknown_fields` while the document is
+# compiled; the document model hands it over as an opaque value.
+serde.workspace = true
+# The kind's configuration is checked in YAML (what the document wrote) and reported to plugins as
+# JSON text (what the contract promises), once per publication.
+serde_json.workspace = true
+serde_norway.workspace = true
+# The same hash the JWT signature uses; also derives the rate-limit key so the table stores no
+# request-owned string and no plaintext client address.
+sha2.workspace = true
+# A signature or an API key must not reveal its matching prefix through timing.
+subtle.workspace = true
+thiserror.workspace = true
+# `Instant` for the token bucket: the clock a paused test can drive, never the wall clock.
+tokio = { workspace = true, features = ["time"] }
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+# A credential reference is materialized by reading a file, so the compiler tests need a real one.
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
+
+[lints]
+workspace = true

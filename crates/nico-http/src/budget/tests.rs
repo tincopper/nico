@@ -28,7 +28,7 @@ const LOOSER_THAN_THE_DOCUMENT_TIMEOUT: &str = concat!(
 fn an_unbounded_route_uses_the_document_body_limit() {
     let document = document(UNBOUNDED);
 
-    let limit = body_limit(route(&document, "loose"), document.limits());
+    let limit = body_limit(route(&document, "loose"), document.request());
 
     assert_eq!(limit, 1_048_576);
 }
@@ -37,7 +37,7 @@ fn an_unbounded_route_uses_the_document_body_limit() {
 fn a_route_body_bound_lowers_the_document_limit() {
     let document = document(TIGHTER_THAN_DOCUMENT);
 
-    let limit = body_limit(route(&document, "tight"), document.limits());
+    let limit = body_limit(route(&document, "tight"), document.request());
 
     assert_eq!(limit, 512);
 }
@@ -86,7 +86,7 @@ fn a_body_far_above_the_limit_is_rejected() {
 fn an_unbounded_route_uses_the_document_budget() {
     let document = document(UNBOUNDED);
 
-    let budget = request_budget(route(&document, "loose"), document.limits());
+    let budget = request_budget(route(&document, "loose"), document.request());
 
     assert_eq!(budget, Duration::from_millis(30_000));
 }
@@ -95,7 +95,7 @@ fn an_unbounded_route_uses_the_document_budget() {
 fn a_route_budget_lowers_the_document_budget() {
     let document = document(TIGHTER_THAN_DOCUMENT);
 
-    let budget = request_budget(route(&document, "tight"), document.limits());
+    let budget = request_budget(route(&document, "tight"), document.request());
 
     assert_eq!(budget, Duration::from_millis(5_000));
 }
@@ -104,7 +104,7 @@ fn a_route_budget_lowers_the_document_budget() {
 fn a_route_budget_above_the_document_budget_is_clamped_to_it() {
     let document = document(LOOSER_THAN_THE_DOCUMENT_TIMEOUT);
 
-    let budget = request_budget(route(&document, "patient"), document.limits());
+    let budget = request_budget(route(&document, "patient"), document.request());
 
     assert_eq!(
         budget,

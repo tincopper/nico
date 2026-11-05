@@ -47,13 +47,18 @@ Rules:
 
 - `snake_case` fields, dotted prefixes for grouping: `http.method`, `http.route`,
   `upstream.name`, `ai.model`, `config.generation`.
+- `authn` is the **instance** name, not the plugin kind: a route may run two `jwt` entries, and the
+  record has to say which one claimed the request. Its value can never come from the request — it is
+  written by the filter that verified the credential, from the typed `Identity` slot in the request
+  context — so a caller cannot put a string of its own into the field.
 - Reserved field names, always the same spelling across crates:
 
 | Field | Type | Meaning |
 |---|---|---|
 | `trace_id` | string | Correlates logs across filters, provider calls, retries |
 | `request_id` | string | Per-request identifier surfaced to the caller |
-| `tenant` | string | Tenant / project isolation key |
+| `tenant` | string | Tenant / project isolation key; empty until a tenant model exists |
+| `authn` | string | The plugin instance that authenticated the request (the `name` the document gave it); absent when nothing did |
 | `route_id` | string | Compiled route identity |
 | `upstream` | string | Selected peer / provider name |
 | `config.generation` | u64 | Snapshot generation in use |

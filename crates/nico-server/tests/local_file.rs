@@ -19,7 +19,8 @@ use std::{path::Path, time::Duration};
 
 use nico_config::{LocalConfig, LocalFileSource, WatchMode};
 use nico_core::{ConfigStatus, ParseLimits, SnapshotHandle};
-use nico_server::{ReloadError, ReloadLimits, Reloader};
+use nico_http::HttpStateHandle;
+use nico_server::{Publication, ReloadError, ReloadLimits, ReloadSettings, Reloader};
 use tokio_util::sync::CancellationToken;
 
 use crate::support::{DOC_A, DOC_B, DOC_C, INVALID_DOC};
@@ -73,8 +74,8 @@ fn body_limit(handle: &SnapshotHandle) -> u32 {
         .current()
         .expect("a snapshot is published")
         .document()
-        .limits()
-        .max_request_body_bytes()
+        .request()
+        .max_body_bytes()
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -93,12 +94,15 @@ async fn the_local_source_drives_a_full_reload_cycle() {
     let shutdown = CancellationToken::new();
     let reloader = Reloader::new(
         std::sync::Arc::new(source),
-        std::sync::Arc::clone(&handle),
-        None,
-        ReloadLimits::new(DEBOUNCE, MAX_WAIT),
-        ParseLimits::new(4096),
-        false,
-        shutdown.clone(),
+        Publication::new(std::sync::Arc::clone(&handle), HttpStateHandle::new()),
+        std::sync::Arc::new(nico_plugins::PluginRuntime::new()),
+        ReloadSettings::new(
+            None,
+            ReloadLimits::new(DEBOUNCE, MAX_WAIT),
+            ParseLimits::new(4096),
+            false,
+            shutdown.clone(),
+        ),
     );
     let task = tokio::spawn(reloader.run());
 
@@ -171,12 +175,15 @@ async fn a_half_written_document_never_becomes_a_snapshot() {
     let shutdown = CancellationToken::new();
     let reloader = Reloader::new(
         std::sync::Arc::new(source),
-        std::sync::Arc::clone(&handle),
-        None,
-        ReloadLimits::new(DEBOUNCE, MAX_WAIT),
-        ParseLimits::new(4096),
-        false,
-        shutdown.clone(),
+        Publication::new(std::sync::Arc::clone(&handle), HttpStateHandle::new()),
+        std::sync::Arc::new(nico_plugins::PluginRuntime::new()),
+        ReloadSettings::new(
+            None,
+            ReloadLimits::new(DEBOUNCE, MAX_WAIT),
+            ParseLimits::new(4096),
+            false,
+            shutdown.clone(),
+        ),
     );
     let task = tokio::spawn(reloader.run());
     wait_for(&handle, |status| status.ready, WAIT).await;
@@ -222,12 +229,15 @@ async fn a_missing_document_prevents_the_first_publish() {
     let handle = SnapshotHandle::new();
     let reloader = Reloader::new(
         std::sync::Arc::new(source),
-        std::sync::Arc::clone(&handle),
-        None,
-        ReloadLimits::new(DEBOUNCE, MAX_WAIT),
-        ParseLimits::new(4096),
-        false,
-        CancellationToken::new(),
+        Publication::new(std::sync::Arc::clone(&handle), HttpStateHandle::new()),
+        std::sync::Arc::new(nico_plugins::PluginRuntime::new()),
+        ReloadSettings::new(
+            None,
+            ReloadLimits::new(DEBOUNCE, MAX_WAIT),
+            ParseLimits::new(4096),
+            false,
+            CancellationToken::new(),
+        ),
     );
 
     let error = reloader

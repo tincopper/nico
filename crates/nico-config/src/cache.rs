@@ -294,8 +294,8 @@ async fn sync_directory(directory: &Path) {
 mod tests {
     use super::*;
 
-    const DOC_A: &[u8] = b"apiVersion: gateway/v1\nlimits:\n  max_request_body_bytes: 1024\n";
-    const DOC_B: &[u8] = b"apiVersion: gateway/v1\nlimits:\n  max_request_body_bytes: 2048\n";
+    const DOC_A: &[u8] = b"apiVersion: gateway/v1\nrequest:\n  max_body_bytes: 1024\n";
+    const DOC_B: &[u8] = b"apiVersion: gateway/v1\nrequest:\n  max_body_bytes: 2048\n";
 
     fn meta_for(bytes: &[u8], generation: u64) -> CacheMeta {
         CacheMeta::new(

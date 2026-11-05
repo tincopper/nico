@@ -7,13 +7,13 @@
 
 use std::time::Duration;
 
-use nico_core::{Limits, Route};
+use nico_core::{RequestBounds, Route};
 use pingora::http::RequestHeader;
 
 /// Returns the request body limit: the smaller of the route override and the document limit.
 #[must_use]
-pub(crate) fn body_limit(route: &Route, limits: Limits) -> u32 {
-    let document_limit = limits.max_request_body_bytes();
+pub(crate) fn body_limit(route: &Route, request: RequestBounds) -> u32 {
+    let document_limit = request.max_body_bytes();
     route
         .max_body_bytes()
         .map_or(document_limit, |route_limit| {
@@ -46,8 +46,8 @@ pub(crate) const fn over_limit(limit: u32, received: u64) -> bool {
 
 /// Returns the whole-request budget: the smaller of the route override and the document limit.
 #[must_use]
-pub(crate) fn request_budget(route: &Route, limits: Limits) -> Duration {
-    let document_budget = limits.request_timeout_ms();
+pub(crate) fn request_budget(route: &Route, request: RequestBounds) -> Duration {
+    let document_budget = request.timeout_ms();
     let budget_ms = route.timeout_ms().map_or(document_budget, |route_budget| {
         route_budget.min(document_budget)
     });

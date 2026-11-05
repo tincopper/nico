@@ -1,9 +1,9 @@
-use std::io;
+use std::{io, sync::Arc};
 
 use nico_core::ErrorCategory;
 use pingora::http::StatusCode;
 
-use super::HttpError;
+use super::{BodyTemplate, HttpError, Rejection};
 
 /// One upstream failure whose cause names a host and a port, so a leak would be visible.
 fn upstream_failure() -> HttpError {
@@ -13,6 +13,19 @@ fn upstream_failure() -> HttpError {
             "connect refused to 10.0.0.1:8080",
         )),
     }
+}
+
+/// A rejection a policy compiled: a 429 with the built-in envelope.
+fn policy_rejection(category: ErrorCategory) -> Rejection {
+    Rejection::new(
+        StatusCode::TOO_MANY_REQUESTS,
+        "rate_limited",
+        "too many requests",
+        "application/json",
+        category,
+        BodyTemplate::error_envelope(),
+    )
+    .expect("the fixture is a valid rejection")
 }
 
 /// One failure this data plane cannot attribute to either side of the request.
@@ -84,6 +97,16 @@ fn every_failing_variant_maps_to_its_documented_status_code_and_category() {
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal_error",
             ErrorCategory::Internal,
+        ),
+        (
+            HttpError::Rejected {
+                rejection: Arc::new(policy_rejection(ErrorCategory::Limit)),
+                detail: "the bucket is empty",
+                retry_after: Some(std::time::Duration::from_millis(900)),
+            },
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            ErrorCategory::Limit,
         ),
     ];
 
@@ -165,6 +188,31 @@ fn a_trace_id_from_a_request_header_is_json_escaped() {
 }
 
 #[test]
+fn the_exported_escaper_is_the_one_the_renderer_uses() {
+    // A layer that compiles a JSON template from configuration needs exactly this escaping, and it
+    // must not grow a second escaper: the same input has to produce the same bytes here as inside a
+    // rendered body.
+    let respond = HttpError::RouteNotFound.respond().expect("renderable");
+    let value = "a\"b\\c\nd\u{1}";
+
+    let escaped = super::escape_json_string(value);
+    let body = respond.body(value);
+    let body = std::str::from_utf8(&body).expect("body is UTF-8");
+
+    assert_eq!(escaped, r#"a\"b\\c\nd\u0001"#);
+    assert!(
+        body.contains(&format!(r#""trace_id":"{escaped}""#)),
+        "one escaper, one spelling: {body}"
+    );
+}
+
+#[test]
+fn the_exported_escaper_leaves_plain_text_unchanged() {
+    assert_eq!(super::escape_json_string("auth_invalid"), "auth_invalid");
+    assert_eq!(super::escape_json_string(""), "");
+}
+
+#[test]
 fn the_body_never_repeats_an_internal_cause() {
     let respond = internal_failure().respond().expect("renderable");
 
@@ -184,5 +232,46 @@ fn a_display_message_quotes_the_limit_the_check_applied() {
     assert_eq!(
         error.to_string(),
         "request body exceeds the 1048576 byte limit"
+    );
+}
+
+#[test]
+fn a_rejection_reports_the_category_its_plugin_declared_not_the_status_it_renders() {
+    // A document may override the status; the log category must keep describing the plugin, so a rate
+    // limit configured as a 403 is still a limit and not a client error.
+    let error = HttpError::Rejected {
+        rejection: Arc::new(
+            Rejection::new(
+                StatusCode::FORBIDDEN,
+                "rate_limited",
+                "too many requests",
+                "application/json",
+                ErrorCategory::Limit,
+                BodyTemplate::error_envelope(),
+            )
+            .expect("the fixture is a valid rejection"),
+        ),
+        detail: "the bucket is empty",
+        retry_after: None,
+    };
+
+    assert_eq!(error.category(), ErrorCategory::Limit);
+    assert_eq!(
+        error.respond().map(|respond| respond.status()),
+        Some(StatusCode::FORBIDDEN)
+    );
+}
+
+#[test]
+fn a_rejection_carries_its_retry_after_to_the_writer() {
+    let error = HttpError::Rejected {
+        rejection: Arc::new(policy_rejection(ErrorCategory::Limit)),
+        detail: "the bucket is empty",
+        retry_after: Some(std::time::Duration::from_millis(900)),
+    };
+
+    assert_eq!(
+        error.respond().and_then(|respond| respond.retry_after()),
+        Some(std::time::Duration::from_millis(900))
     );
 }

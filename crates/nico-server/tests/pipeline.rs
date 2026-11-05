@@ -52,6 +52,51 @@ async fn publishes_a_new_generation_for_a_new_document() {
     harness.stop().await.expect("shutdown ends the pipeline");
 }
 
+/// Returns the generation the request path would serve, or `None` before a publish.
+fn served_generation(harness: &Harness) -> Option<u64> {
+    let state = harness.state().current()?;
+    Some(state.snapshot().generation().get())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn publishes_the_status_and_the_request_path_value_together() {
+    tokio::time::pause();
+    let source = ChannelSource::new("channel");
+    source.push_load(Ok(ConfigVersion::new(
+        Revision::comparable(1),
+        DOC_A.into(),
+    )));
+    let harness = Harness::start(Arc::clone(&source) as Arc<dyn ConfigSource>);
+
+    assert_eq!(
+        served_generation(&harness),
+        None,
+        "nothing is served before the first publish"
+    );
+
+    let status = harness.advance_until(Harness::ready).await;
+    assert_eq!(status.generation, 1);
+    assert_eq!(
+        served_generation(&harness),
+        Some(1),
+        "the request path serves the generation the status reports"
+    );
+
+    source.push_comparable(2, DOC_B).await;
+    let status = harness
+        .advance_until(|harness| harness.generation() == 2)
+        .await;
+    assert_eq!(status.generation, 2);
+    assert_eq!(
+        served_generation(&harness),
+        Some(2),
+        "a reload moves both readers, so a request cannot pair one generation's routes with \
+         another's policies"
+    );
+
+    harness.stop().await.expect("shutdown ends the pipeline");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn skips_a_document_that_is_already_in_service() {
     tokio::time::pause();
@@ -409,7 +454,7 @@ async fn an_in_flight_reader_keeps_the_snapshot_it_loaded() {
         .await;
 
     assert_eq!(in_flight.generation().get(), 1);
-    assert_eq!(in_flight.document().limits().max_request_body_bytes(), 1024);
+    assert_eq!(in_flight.document().request().max_body_bytes(), 1024);
     assert_eq!(harness.body_limit(), Some(2048));
 
     harness.stop().await.expect("shutdown ends the pipeline");

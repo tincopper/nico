@@ -39,7 +39,7 @@ const MAX_DEBOUNCE_MS: u64 = 10_000;
 /// Largest accepted `max_wait_ms`.
 const MAX_MAX_WAIT_MS: u64 = 60_000;
 
-/// Largest accepted `schema_bounds.max_routes`, `max_upstreams` and `max_providers`.
+/// Largest accepted `schema_bounds.max_routes`, `max_upstreams`, `max_providers` and `max_plugins`.
 const MAX_COLLECTION_BOUND: usize = 1_000_000;
 
 /// Largest accepted `schema_bounds.max_nodes`.
@@ -248,6 +248,7 @@ struct RawSchemaBounds {
     max_routes: Option<usize>,
     max_upstreams: Option<usize>,
     max_providers: Option<usize>,
+    max_plugins: Option<usize>,
     max_nodes: Option<usize>,
     max_depth: Option<usize>,
 }
@@ -260,6 +261,7 @@ impl RawSchemaBounds {
             (Bound::Routes, self.max_routes),
             (Bound::Upstreams, self.max_upstreams),
             (Bound::Providers, self.max_providers),
+            (Bound::Plugins, self.max_plugins),
             (Bound::Nodes, self.max_nodes),
             (Bound::Depth, self.max_depth),
         ] {
@@ -283,7 +285,9 @@ impl RawSchemaBounds {
 /// is exhaustive on purpose — a new bound must state its own limit instead of inheriting one.
 const fn maximum(bound: Bound) -> usize {
     match bound {
-        Bound::Routes | Bound::Upstreams | Bound::Providers => MAX_COLLECTION_BOUND,
+        Bound::Routes | Bound::Upstreams | Bound::Providers | Bound::Plugins => {
+            MAX_COLLECTION_BOUND
+        }
         Bound::Nodes => MAX_NODES_BOUND,
         Bound::Depth => MAX_DEPTH_BOUND,
     }

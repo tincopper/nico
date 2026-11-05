@@ -40,7 +40,11 @@ use crate::{context::HttpContext, error::HttpError};
 #[async_trait]
 pub trait HttpFilter: Send + Sync {
     /// Returns the name used in logs to attribute a decision to a filter.
-    fn name(&self) -> &'static str;
+    ///
+    /// Borrowed from the filter rather than `&'static str` because a chain element is built from a
+    /// named plugin instance: its name is the document's string, and that is what a diagnostic of a
+    /// chain must print — not the kind it happens to share with every other instance.
+    fn name(&self) -> &str;
 
     /// Inspects the request headers before an upstream is selected.
     ///
@@ -165,6 +169,19 @@ where
     match timeout_at(TokioInstant::from_std(deadline), stage).await {
         Ok(result) => result.map_err(StageError::Filter),
         Err(_elapsed) => Err(StageError::Elapsed),
+    }
+}
+
+impl std::fmt::Debug for FilterChain {
+    /// Prints the filters' names rather than their state.
+    ///
+    /// A chain is shared by every request of every generation, so its contents are what a diagnostic
+    /// needs; a filter's own fields are per-request state that lives in [`HttpContext`] instead.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_list()
+            .entries(self.filters.iter().map(|filter| filter.name()))
+            .finish()
     }
 }
 

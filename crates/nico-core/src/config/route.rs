@@ -4,6 +4,10 @@
 //! host, a path prefix, and exactly one target. The target is a [`RouteTarget`] rather than two
 //! optional fields, so "no target" and "two targets" are unrepresentable once the document is
 //! built. Prefix semantics — how `/api/` matches `/api/x` — belong to the data plane, not here.
+//!
+//! The route also names the plugins that run on its requests. It names them rather than carrying
+//! them, so one plugin entry is shared by every route that references it and a route cannot
+//! disagree with the plugin it runs.
 
 /// Where a matched route sends the request.
 ///
@@ -40,6 +44,7 @@ pub struct Route {
     pub(super) target: RouteTarget,
     pub(super) timeout_ms: Option<u32>,
     pub(super) max_body_bytes: Option<u32>,
+    pub(super) plugins: Vec<String>,
 }
 
 impl Route {
@@ -77,5 +82,15 @@ impl Route {
     #[must_use]
     pub const fn max_body_bytes(&self) -> Option<u32> {
         self.max_body_bytes
+    }
+
+    /// Returns the plugins this route runs, in document order.
+    ///
+    /// The order is the document's, not the execution order: which phase a plugin belongs to is
+    /// decided by the crate that implements it, so a filter written before an authentication plugin
+    /// does not run before it. An empty list means the route runs no plugins.
+    #[must_use]
+    pub fn plugins(&self) -> &[String] {
+        &self.plugins
     }
 }

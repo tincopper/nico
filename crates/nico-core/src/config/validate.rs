@@ -2,11 +2,13 @@
 //!
 //! [`assemble`] is the only place the stages are sequenced, and the order is part of the contract:
 //!
-//! 1. the document envelope — `apiVersion` and the `limits` ranges;
-//! 2. the typed entries — raw provider, upstream and route values become model values;
+//! 1. the document envelope — `apiVersion` and the `request` ranges;
+//! 2. the typed entries — raw provider, upstream, plugin and route values become model values, and a
+//!    rejection body is converted to the shape its content type requires;
 //! 3. reference validation ([`super::reference`]) — exactly one target per route, unique ids, every
-//!    reference resolves;
-//! 4. semantic validation ([`super::semantic`]) — names, hosts, paths, ports and value ranges;
+//!    target and plugin reference resolves;
+//! 4. semantic validation ([`super::semantic`]) — names, hosts, paths, ports, credential references
+//!    and value ranges;
 //! 5. collection count bounds from [`ParseLimits::schema`];
 //! 6. construction, which is only reachable when everything above passed.
 //!
@@ -18,10 +20,12 @@ use super::{
     bounds::{Bound, ParseLimits},
     document::{API_VERSION, Document},
     error::DocumentError,
-    limits::Limits,
+    plugin,
     provider::Provider,
     raw::RawDocument,
-    reference, semantic,
+    reference,
+    request::RequestBounds,
+    semantic,
     upstream::Upstream,
 };
 
@@ -32,27 +36,29 @@ use super::{
 /// - [`DocumentError::WrongApiVersion`] or [`DocumentError::LimitOutOfRange`] for the envelope;
 /// - [`DocumentError::DuplicateId`], [`DocumentError::RouteTargetMissing`],
 ///   [`DocumentError::RouteTargetAmbiguous`] or [`DocumentError::ReferenceUnknown`] from reference
-///   validation;
+///   validation, including a `global_plugins` name that is not declared or is listed twice;
 /// - [`DocumentError::InvalidField`] or [`DocumentError::LimitOutOfRange`] from semantic validation;
 /// - [`DocumentError::TooMany`] when a collection exceeds its count bound.
-pub(super) fn assemble(raw: RawDocument, limits: ParseLimits) -> Result<Document, DocumentError> {
+pub(super) fn assemble(
+    raw: RawDocument,
+    parse_limits: ParseLimits,
+) -> Result<Document, DocumentError> {
     let RawDocument {
         api_version,
-        limits: raw_limits,
+        request: raw_request,
         providers: raw_providers,
         upstreams: raw_upstreams,
         routes: raw_routes,
+        plugins: raw_plugins,
+        global_plugins: raw_global_plugins,
     } = raw;
 
     if api_version != API_VERSION {
         return Err(DocumentError::WrongApiVersion { found: api_version });
     }
 
-    let document_limits = Limits::new(
-        raw_limits.max_request_body_bytes,
-        raw_limits.request_timeout_ms,
-    );
-    document_limits.validate()?;
+    let request = RequestBounds::new(raw_request.max_body_bytes, raw_request.timeout_ms);
+    request.validate()?;
 
     let providers = raw_providers
         .into_iter()
@@ -74,21 +80,29 @@ pub(super) fn assemble(raw: RawDocument, limits: ParseLimits) -> Result<Document
             port: raw.port,
         })
         .collect::<Vec<_>>();
+    let plugins = raw_plugins
+        .into_iter()
+        .map(plugin::spec_from_raw)
+        .collect::<Result<Vec<_>, _>>()?;
 
-    let routes = reference::validate(raw_routes, &upstreams, &providers)?;
-    semantic::validate(&routes, &upstreams, &providers, document_limits)?;
+    let routes = reference::validate(raw_routes, &upstreams, &providers, &plugins)?;
+    let global_plugins = reference::global_plugins(raw_global_plugins, &plugins)?;
+    semantic::validate(&routes, &upstreams, &providers, &plugins, request)?;
 
-    let schema = limits.schema();
+    let schema = parse_limits.schema();
     check_count("providers", providers.len(), schema.get(Bound::Providers))?;
     check_count("upstreams", upstreams.len(), schema.get(Bound::Upstreams))?;
+    check_count("plugins", plugins.len(), schema.get(Bound::Plugins))?;
     check_count("routes", routes.len(), schema.get(Bound::Routes))?;
 
     Ok(Document::new(
         api_version,
-        document_limits,
+        request,
         providers,
         upstreams,
         routes,
+        plugins,
+        global_plugins,
     ))
 }
 
@@ -107,7 +121,8 @@ mod tests {
         config::{
             bounds::{Bound, SchemaBounds},
             test_support::{
-                NO_ENTRIES, PROVIDER, SECOND_PROVIDER, SECOND_UPSTREAM, UPSTREAM, document,
+                NO_ENTRIES, PLUGIN, PROVIDER, SECOND_PLUGIN, SECOND_PROVIDER, SECOND_UPSTREAM,
+                UPSTREAM, document, document_with_plugins,
             },
         },
         error::ErrorCategory,
@@ -202,6 +217,32 @@ mod tests {
                 ),
                 "expected TooMany for providers, got {error:?}"
             );
+        }
+
+        #[test]
+        fn plugins_beyond_the_bound_are_rejected() {
+            // The plugin collection is bounded for the same reason the others are: each entry is
+            // compiled once per publication and materializes its own credentials, so an unbounded
+            // collection would make "one compile log line and one secret read per entry" unbounded
+            // too.
+            let plugins = format!("{PLUGIN}{SECOND_PLUGIN}");
+            let document = document_with_plugins(NO_ENTRIES, UPSTREAM, NO_ENTRIES, &plugins);
+            let schema = SchemaBounds::default()
+                .with(Bound::Plugins, 1)
+                .expect("1 is a legal bound");
+            let error = parse(&document, schema).expect_err("two plugins, bound is one");
+            assert!(
+                matches!(
+                    error,
+                    DocumentError::TooMany {
+                        kind: "plugins",
+                        count: 2,
+                        limit: 1
+                    }
+                ),
+                "expected TooMany for plugins, got {error:?}"
+            );
+            assert_eq!(error.category(), ErrorCategory::Limit);
         }
 
         #[test]
