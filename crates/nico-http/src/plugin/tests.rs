@@ -127,7 +127,7 @@ async fn a_plugin_that_implements_no_phase_continues_everywhere() {
         Ok(Outcome::Continue)
     ));
     assert!(matches!(
-        plugin.on_response_body(&mut context).await,
+        plugin.on_response_body(&mut context),
         Ok(Outcome::Continue)
     ));
     plugin.on_logging(&mut context).await;

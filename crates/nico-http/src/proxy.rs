@@ -2,9 +2,9 @@
 //!
 //! [`HttpApp`] is what Pingora drives. It holds two things — the publication handle the reload
 //! pipeline writes and the trace-id counter — and no per-request state, which lives in
-//! [`HttpContext`] instead so two concurrent requests cannot observe each other. Every filter chain is
-//! per route and travels *inside* the published value ([`crate::HttpState`]), so a request cannot see one
-//! generation's routes with another's policies.
+//! [`HttpContext`] instead so two concurrent requests cannot observe each other. The plugin chains — one
+//! that runs before routing, one per route — travel *inside* the published value
+//! ([`crate::HttpState`]), so a request cannot see one generation's routes with another's policies.
 //!
 //! The hooks themselves live in `proxy/hooks.rs`, because the hook order is the part of this crate
 //! that a Pingora upgrade can invalidate and it is easier to re-verify in one file; the failure
@@ -15,12 +15,14 @@
 //! Three facts about Pingora 0.9.1 shape the whole module, and each of them would otherwise be
 //! discovered by a hang or a corrupt response:
 //!
-//! - **A filter that reads the request body never gives it back.** Phase-0 evidence: the body
+//! - **A hook that consumes a request-body chunk never gives it back.** Phase-0 evidence: the body
 //!   arrives in chunks with unstable boundaries and is not replayed, so a route decision made from
-//!   the body would leave the upstream waiting forever. Every decision here uses headers only.
+//!   the body would leave the upstream waiting forever. Every decision here uses headers only, and a
+//!   body stage hands its chunk back through the context instead of consuming it.
 //! - **`error_while_proxy` is synchronous.** It cannot write a response, so it is used only to
 //!   classify a failure; the response is written by `fail_to_proxy`, which is asynchronous and runs
-//!   exactly once for the final failure of a request.
+//!   exactly once for the final failure of a request. `upstream_response_body_filter` is synchronous
+//!   too, which is why `Plugin::on_response_body` is the one stage a plugin cannot await in.
 //! - **Informational responses reach the response hooks.** A `100 Continue` arrives as a header
 //!   task, so the first thing `response_filter` does is leave it untouched — adding a header there
 //!   would corrupt the `Expect: 100-continue` handshake.
@@ -37,8 +39,8 @@ use std::sync::{
 
 use pingora::{http::RequestHeader, proxy::Session};
 
-use self::failure::write_respond;
-use crate::{context::HttpContext, error::HttpError, state::HttpStateHandle};
+use self::failure::{write_respond, write_synthetic};
+use crate::{context::HttpContext, error::HttpError, plugin::ResponseData, state::HttpStateHandle};
 
 /// Largest `x-request-id` this data plane echoes back as a trace id.
 ///
@@ -82,6 +84,26 @@ impl HttpApp {
             if let Err(error) = write_respond(session, &respond, trace_id).await {
                 tracing::debug!(error = %error, "the error response could not be written");
             }
+        }
+        Ok(true)
+    }
+
+    /// Writes the response a plugin synthesised, and tells Pingora the request is answered.
+    ///
+    /// This is the second caller of the one writer that answers without forwarding — the first is
+    /// [`HttpApp::reject`] — and it exists so a plugin never reaches a session: the plugin produced a
+    /// [`ResponseData`], the data plane cleaned it and wrote it. A failed write means the client is
+    /// gone; the request's log line still carries the outcome, so it is recorded at `debug!` rather
+    /// than replacing the answer that caused it.
+    async fn respond(
+        &self,
+        session: &mut Session,
+        ctx: &mut HttpContext,
+        data: ResponseData,
+    ) -> pingora::Result<bool> {
+        let trace_id = ctx.trace_id();
+        if let Err(error) = write_synthetic(session, data, trace_id).await {
+            tracing::debug!(error = %error, "the synthesised response could not be written");
         }
         Ok(true)
     }

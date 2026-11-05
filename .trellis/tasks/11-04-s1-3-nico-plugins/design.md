@@ -21,11 +21,13 @@
 #[async_trait]
 pub trait Plugin: Send + Sync {
     fn name(&self) -> &str;              // 实例名（全局唯一），日志与限流键都用它
-    fn info(&self) -> PluginInfo;        // version / description / default_config(JSON 文本) / readme
+    fn info(&self) -> PluginInfo;        // version / description / default_config(JSON 文本) / readme / phases
     async fn on_request(&self, _ctx: &mut dyn PluginContext) -> PluginResult { Ok(Outcome::Continue) }
     async fn on_request_body(&self, _ctx: &mut dyn PluginContext) -> PluginResult { Ok(Outcome::Continue) }
     async fn on_response(&self, _ctx: &mut dyn PluginContext) -> PluginResult { Ok(Outcome::Continue) }
-    async fn on_response_body(&self, _ctx: &mut dyn PluginContext) -> PluginResult { Ok(Outcome::Continue) }
+    // 唯一的同步阶段：Pingora 的响应体钩子是同步的（`upstream_response_body_filter`），
+    // async fn 无法在其中 await。WASM 宿主本来也是同步投影，所以这条约束不反过来改接口。
+    fn on_response_body(&self, _ctx: &mut dyn PluginContext) -> PluginResult { Ok(Outcome::Continue) }
     async fn on_logging(&self, _ctx: &mut dyn PluginContext) {}
 }
 
@@ -53,6 +55,11 @@ pub enum PluginError {
   `From<PluginError> for HttpError` 是唯一转换点：`Refused` → `Rejected`，其余 → `Internal`。
 - `PluginInfo::default_config` 是 `&'static str`（JSON 文本），避免 `nico-http` 引入 `serde_json`。
 - 阶段有默认实现，内置插件只实现它用到的；WASM 宿主为缺省阶段导出一个返回 `Continue` 的桩。
+- `PluginInfo::phases: PluginPhases` 是**声明**，不是开关：驱动仍然调用每个阶段。它只决定一件数据面
+  无法事后推断的事——**帧化**。链上若有插件声明 `RESPONSE_BODY`，该路由的响应就不能保留上游
+  `content-length`（插件替换或丢弃块后它描述的字节已经不存在），因此发布期把它记进
+  `ResponseRewrites`，响应头阶段删掉 CL 让 Pingora 改写 chunked。少声明会让长度与实际字节脱节，
+  多声明只是多一次 chunked——两个方向的代价不同，契约里写清。
 
 ### 2.1 上下文（`PluginContext`）
 
@@ -70,7 +77,11 @@ pub enum PluginError {
 
 - **闭集**：加一个方法就是改契约（WASM 侧要同步实现），所以清单要短。
 - **阶段外调用返回 `PhaseViolation`**，不 panic、不静默无效：`set_uri` 只在 `on_request`，`request_body()` 只在
-  `on_request_body`，`status()` 只在响应阶段之后。
+  `on_request_body`，`status()` 只在响应阶段之后。请求头**读**在两个请求阶段都可用，**写**只在 `on_request`
+  —— 上游头在 `upstream_request_filter` 就发出去了，在 body 阶段写它永远不会到达对端。响应头同理只在
+  `on_response` 可写：之后客户端手里已经有那个头。
+- **帧化头不可写**：`set/append/remove_*_header` 对 `content-length` 与 `transfer-encoding` 返回 `Execute`。
+  头必须描述真正的字节，而只有数据面知道那些字节；请求侧另有快照/恢复守卫，合成响应会重算长度。
 - `client_ip_hash()` 而不是明文 IP：限流键只需要哈希，WASM 侧不该拿到 PII。
 
 ### 2.2 装载：两套来源，一个注册表
@@ -126,7 +137,7 @@ host functions 由宿主同步驱动并在内部受请求预算约束。guest �
 | `on_request` | ✅ 在**路由匹配之前** | ✅ 在路由匹配之后 | `request_filter`（`lib.rs:1189`）——全局链读快照后立刻跑，再匹配路由 |
 | `on_request_body` | ✅ | ✅ | `request_body_filter`（`proxy_h1.rs:1045`，逐块） |
 | `on_response` | ✅ | ✅（先） | `response_filter` 之前的 `upstream_response_filter`（`lib.rs:500`）——路由链先、全局链后 |
-| `on_response_body` | ✅ | ✅（先） | `upstream_response_body_filter`（`lib.rs:506`，逐块） |
+| `on_response_body` | ✅ | ✅（先） | `upstream_response_body_filter`（`lib.rs:506`，逐块、**同步**） |
 | `on_logging` | ✅（最后） | ✅（先） | `logging`（`lib.rs:533/1387`） |
 
 规则：
@@ -134,7 +145,10 @@ host functions 由宿主同步驱动并在内部受请求预算约束。guest �
 - **同作用域内阶段顺序固定**：认证类（jwt/api_key）先于限流类。书写顺序不改变它（`compile` 排序，不是运行期判断）。
 - **全局在路由之前**，所以全局阶段没有 route id、没有身份：全局限流只能按 `client_ip_hash` 键，按 subject 限流的插件必须放路由作用域。
 - 响应/日志**逆序**（路由 → 全局）：先发布者最后撤销，与中间件语义一致。
-- `on_response` 与 `on_response_body` 在 Pingora 的 `upstream_*` 阶段执行，即**早于**下游写出，因此插件仍可改状态/头/字节。
+- `on_response` 在 `upstream_response_filter` 里执行，早于下行写出，因此插件仍可改状态与头；
+  `on_response_body` 在 `upstream_response_body_filter` 里逐块执行，此时头已经发出，所以它只能改**字节**，
+  改头是 `PhaseViolation` 而不是无声失效（`response_filter` 跑在 `upstream_response_filter` 之后、字节之前，
+  它只保留 1xx 保护与预算复核）。
 
 ### 3.1 Pingora 归属表（谁负责什么）
 
@@ -147,7 +161,7 @@ host functions 由宿主同步驱动并在内部受请求预算约束。guest �
 | 连接事实（`connected_to_upstream`/`fail_to_connect`） | 数据面 | 间接（未来以 `ctx` 事实暴露，见 §11） |
 | `fail_to_proxy` / `error_while_proxy` / `logging` | 数据面（唯一写、唯一记） | ❌ |
 
-**帧化守卫（本设计新增）**：框架只"补缺"，不纠正**错误的** `content-length`（`client.rs:775-799` 按头选写入器）。
+**帧化守卫**：框架只"补缺"，不纠正**错误的** `content-length`（`client.rs:775-799` 按头选写入器）。
 所以 `request_filter` 在跑插件链**之前**快照 `content-length`/`transfer-encoding`，链后恢复——帧化是数据面的。
 
 ## 4. 请求体两种模式
@@ -162,20 +176,21 @@ host functions 由宿主同步驱动并在内部受请求预算约束。guest �
 
 ### 4.2 声明式整块（B，仅请求侧）
 
-- 配置 `buffers_body: true`；编译期标记**该路由为整块模式**（链上任一插件声明即为整块）。
+- 配置 `buffers_body: true`；编译期标记**该路由为整块模式**（全局链或路由链上任一插件声明即为整块）。
 - 机制：
   1. `upstream_request_filter`：整块路由**移除 `content-length`、写入 `transfer-encoding: chunked`**
      （Pingora 写入器 TE 优先，`client.rs:776`），于是长度不确定也不会截断。
   2. `request_body_filter`：每块返回 `Some(Bytes::new())` 扣住（h1 写出器不会把 0 字节当终止块，
-     `proxy_h1.rs:1057-1060`），同时把块累进缓冲；超过 `request.max_body_bytes` → 413（与今日上限同一处）。
+     `proxy_h1.rs:1057-1060`），同时把块累进缓冲；超过 `request.max_body_bytes` → 413（与 `request.max_body_bytes` 的拒绝路径同一处）。
   3. 流结束：调用一次 `on_request_body`（`body_complete() == true`），插件可整体改写；
      数据面把最终缓冲作为最后一块发出并 `end_of_stream = true`。
 - 代价（必须写明）：上游在客户端传完之前收不到 body（延迟 = 上传时长）；内存 = 生效 body 上限 × 并发整块请求数。
 
 ### 4.3 响应体永远逐块
 
-- `on_response_body` 每块一次，可替换/丢弃；**不允许**整块（SSE 可能无限长）。
-- 帧化：路由上有响应体插件时，`upstream_response_filter` 移除上游 `content-length`，让 Pingora 走 chunked
+- `on_response_body` 每块一次，可替换/丢弃；**不允许**整块（SSE 可能无限长）。该阶段是同步的，插件不得阻塞，
+  也不得在这里改响应头（头已发出）。
+- 帧化：全局链或路由链声明 `RESPONSE_BODY` 时，`upstream_response_filter` 移除上游 `content-length`，让 Pingora 走 chunked
   （`proxy_h1.rs:938-953` 在既无 TE 又无 CL 时补 chunked），否则插件改变块大小会与 CL 不一致。
 
 ## 5. 文档模型：定义表 + 两个使用点
@@ -350,17 +365,21 @@ routes:
 
 ## 6. 编译：文档 → 运行时计划
 
-`PluginRuntime::compile(&Document) -> Result<PluginPlan, PluginError>`（在 reload 的 validate-then-swap 里）：
+`PluginRuntime::compile(&Document) -> Result<PublishedChains, PluginError>`（在 reload 的 validate-then-swap 里）：
 
 1. 每个条目：`enabled: false` → 记一行 `disabled` 日志、跳过；否则按 `kind` 查注册表，缺失即
    `PluginError::UnknownKind`；工厂 `build(&spec)` 里反序列化 `config`、materialize 密钥、编译呈现模板，
    产出 `Arc<dyn Plugin>`。
 2. 作用域与阶段排序：全局链 = `global_plugins` 列表（认证 → 限流，列表序）与每路由链（同规则）。
    一个实例可以同时出现在两个作用域里：编译一次，两个链共享同一个 `Arc<dyn Plugin>`。
-3. **整块模式判定**：路由链上是否有 `buffers_body`；把结果记进 plan（hooks 读 plan，不在请求路径判断配置）。
+3. **整块与响应重写判定**：同时检查全局链与每条路由链。全局条目声明 `buffers_body` 时所有路由进入整块模式，
+   路由链上的同类声明只影响该路由；全局条目声明 `RESPONSE_BODY` 时所有路由都视为响应重写，路由链上的同类声明
+   只影响该路由。结果分别记入 `PublishedChains::{buffered, rewriting_responses}`（hooks 读发布值，不在请求路径
+   判断配置）。
 4. **覆盖检查**：任何 `route.plugins` 非空的路由必须有链，否则编译失败（fail-closed）。
 5. intern：引用列表相同的路由共享同一条链。
-6. `PluginPlan` 随快照一起发布：`HttpState { snapshot, global: FilterChain, routes: RouteChains, buffered: BufferedRoutes }`。
+6. `PublishedChains` 随快照一起发布：`HttpState { snapshot, policies: PublishedChains }`，其中
+   `PublishedChains { global: PluginChain, routes: RouteChains, buffered: BufferedRoutes, rewriting_responses: ResponseRewrites }`。
 
 跨 reload 状态由**工厂**持有（§2.2）：令牌桶表按 `name + 参数指纹` 复用，用 `Weak` 记录，表随最后一代引用
 消失；`PluginRuntime` 只是"注册表 + 编译"，不带运行期状态。整块模式无跨请求状态。
@@ -372,42 +391,37 @@ routes:
 | 数据面失败（404/413/502/503/504…） | `HttpError::*` 的默认映射 | `write_respond` |
 | 插件拒绝，默认呈现 | `PluginError::Refused(默认 Rejection)` | `write_respond` |
 | 插件拒绝，实例自定义呈现 | `PluginError::Refused(error_response 编译产物)` | `write_respond` |
-| 插件合成响应 | `Outcome::Respond(ResponseData)` | `write_respond`（清洗后） |
+| 插件合成响应 | `Outcome::Respond(ResponseData)` | `write_synthetic`（清洗后，与 `write_respond` 同在一个模块） |
 
-清洗规则（合成响应用）：去逐跳头；忽略插件给的 `content-length`（按实际 body 重算）；闭集之外的响应头不放行；
-1xx/204/304 不带 body；`www-authenticate`/`retry-after` 仍只由 `Rejection` 路径产生。
+清洗规则（合成响应用）：去逐跳头（含 `connection` 提名的头）；忽略插件给的 `content-length`（按实际 body 重算）；
+`www-authenticate`/`retry-after` 仍只由 `Rejection` 路径产生；其余合法 end-to-end 头按原序保留（mock 是一个真答案，
+`location`/`set-cookie` 必须能过）；1xx/204/304 不带 body。
+
+**正约束：`Respond` 只从请求阶段携带。** 合成响应意味着数据面要用它替换正在进行的转发；在响应阶段替换需要
+拦截上游 body，不在本期范围。`on_request_body`/`on_response`/`on_response_body` 返回 `Respond` 时按
+`HttpError::Internal` 处理（消息写明"a synthesised response is only carried from the request stage"），已提交后
+则 abort；`on_logging` 返回 `()`，不携带控制流。
 
 ## 8. 模块与文件预算
 
-`crates/nico-http/src/`（新增/改造，全部 ≤ 400 行）：
+单个 `.rs` 文件的硬上限是 500 行，由 pre-commit 门禁检查。行数是从代码派生的，不在设计里复述；新代码接近上限时按
+`foo.rs` + `foo/` 拆到业务边界，父文件与子模块各守一个边界。
 
-| 文件 | 拥有 |
-|---|---|
-| `plugin.rs` | `Plugin`、`Outcome`、`ResponseData`、`PluginInfo`、`PluginError`、`PluginContext` 契约 |
-| `plugin/context.rs` | 数据面侧 `PluginContext` 实现（header/body/uri/identity 的读写与阶段校验） |
-| `plugin/response.rs` | `ResponseData` 的清洗与写出（闭集头、帧化重算） |
-| `state.rs` | `HttpState{ snapshot, global, routes, buffered }`、`RouteChains`、`chain_for_route` |
-| `proxy/hooks.rs` | 五阶段驱动：全局前、路由后、body 扣留、响应逆序、日志 |
-
-`crates/nico-plugins/src/`：`compile.rs`（plan+排序+整块判定+intern+覆盖检查）、`jwt.rs`、`api_key.rs`、
-`rate_limit.rs`（各含 `Plugin` 实现），`<kind>/factory.rs`（`PluginFactory`：配置、密钥、呈现、跨 reload 状态）、
-`<kind>/config.rs`（kind 自己的字段与规则）、`rejection.rs`、`spec.rs`、`lib.rs`（`builtin_registry()`）。
-
-`crates/nico-core/src/`：根 `plugins` 集合、`buffers_body`、`Bound::MaxRequestBodyBytes`、`Limits::validate(bounds)`。
-
-## 9. 与现有实现的关系
-
-| 现有 | 处置 |
-|---|---|
-| `HttpFilter`（2 钩子）+ `FilterChain::run_request/run_response` | **替换**为 `Plugin` + 五阶段驱动（链结构复用） |
-| `HttpContext`（数据面与插件共用） | **收窄**为数据面内部；插件只见 `dyn PluginContext` |
-| `nico-core` 的 `PluginConfig::{Jwt,ApiKey,RateLimit}` 闭环 enum | **删除**：core 只留信封；三个 kind 的配置结构体搬进 `nico-plugins`，由工厂反序列化（§2.2/§5） |
-| `HttpError::Rejected` + `Rejection` + 每实例 `error_response` | **保留**，作为拒绝路径（§7 前三行） |
-| `HttpState`（快照+每路由链）、`chain_for_route` fail-closed | **保留**，加全局链与整块标记 |
-| `PluginRuntime::compile`、密钥 materialize、桶表复用、intern | **保留**，加整块判定与全局链 |
-| 401 两 code、枚举防护、`authn`、`identity`、`authn` 日志 | **保留** |
-| `HOP_BY_HOP` / `connection_tokens` / 16 上限 / 400 规则 | **删除**：框架已做且更严格（§3.1） |
-| `nico-http` re-export Pingora header 类型 | **删除**：插件不再接触它们 |
+| 范围 | 文件 | 拥有 |
+|---|---|---|
+| `crates/nico-http/src/` | `plugin.rs` | `Plugin`/`Outcome`/`PluginInfo`/`PluginContext` 契约 |
+| | `plugin/chain.rs` + `plugin/chain/tests/` | 五阶段驱动，及其按控制流 / 字节 / 共享替身分开的测试 |
+| | `plugin/context.rs` + `plugin/context/` | 数据面侧 `PluginContext` 实现；`contract.rs` 承载 trait 实现，`phase.rs`/`caller.rs` 各拥有一个判定 |
+| | `context.rs` + `context/` | 请求级事实；`identity.rs` 与 `buffer.rs` 各拥有一个数据结构 |
+| | `plugin/response.rs` | `ResponseData` 构造校验与 `clean_response` |
+| | `plugin/header.rs` / `plugin/error.rs` / `plugin/phases.rs` / `plugin/registry.rs` | 头文法、错误类型与唯一转换、阶段位集合、工厂注册表 |
+| | `state.rs` | `HttpState`/`HttpStateHandle`/`PublishedChains`/`RouteChains`/`BufferedRoutes`/`ResponseRewrites` |
+| | `proxy/hooks.rs` | 唯一 `impl ProxyHttp` 与逐方法委派 |
+| | `proxy/hooks/{request,body,response}.rs` | 请求、请求体、响应三个方向的钩子体 |
+| `crates/nico-plugins/src/` | `compile.rs` | 文档 → `PublishedChains`：注册表查找、排序、整块与响应重写判定、intern、覆盖检查 |
+| | `<kind>.rs` + `<kind>/{config,factory,json,tests}.rs` | 每个 kind 的 `Plugin` 实现、配置、工厂、JSON 辅助与测试；这是 `foo.rs` + `foo/` 的既定拆分 |
+| `crates/nico-core/src/` | `config/request.rs` | `RequestBounds { max_body_bytes, timeout_ms }` 与 `Document::request()` |
+| | `config/plugin.rs` | 根 `plugins` 的信封及使用点引用校验 |
 
 ## 10. 观测
 
@@ -425,8 +439,10 @@ routes:
 | 全局插件身份为空 | 全局限流只能按 IP 哈希键；按 subject 限流放路由作用域（文档化） |
 | 连接事实（复用/连接失败）插件看不到 | 记为缺口；未来以 `ctx` 事实（`connected/reused/failed`）暴露，非钩子 |
 | 插件出站 HTTP（WASM `host_http_request`） | WASM 里程碑；届时需 SSRF/超时/响应大小策略 |
-| kind 配置校验从 core 移到工厂 | 仍在发布期（`compile`），失败仍保 LKG；错误里带插件名与字段路径，代价是 core 不再"一眼看到"某个 kind 的字段 |
+| kind 配置由工厂校验，core 只拥有信封 | 校验仍发生在发布期（`compile`），失败仍保 LKG；错误里带插件名与字段路径；core 不解释 kind 字段，使新增 kind 不改文档模型 |
 | WASM guest 必须是同步投影 | 写进 §2.2 契约；若将来要 guest 内部异步，那是 WASM 里程碑的独立设计题，不改本任务的 trait |
+| 响应体阶段是同步的 | `on_response_body` 是唯一的同步阶段（Pingora 的 `upstream_response_body_filter` 是同步钩子），插件不得在此阻塞；预算由钩子在阶段前后复核，而不是包裹该同步调用。WASM 的同步投影与该约束一致 |
+| `Respond` 只从请求阶段携带 | 响应阶段替换需要拦截上游 body，本期不做（§7） |
 | 注册表缺工厂 = 静默放过的诱惑 | 未知 kind 直接拒绝文档（fail-closed）；`enabled: false` 才是有意的跳过 |
 | 参数复制：N 条路由要不同 `burst`/`keys` = N 个实例 = N 份 `config` | 文档写明"参数不同即另一个条目"；YAML anchor/alias 被解析阶段拒绝（`parse.rs::reject_aliases`，防锚点扩张），所以不能靠 anchor 复用，缓解手段是生成器（Helm/Kustomize）。升级到 provider+selector 的触发条件见 §5.4 |
 | 缺少"按使用点关闭" | `enabled: false` 只停实例；"全局默认开、个别路由关"需要给使用点加 `{name, disabled: true}`（仍是信封字段）。触发条件出现前不做，记在 §5.4 |
@@ -434,15 +450,18 @@ routes:
 
 ## 12. 交付边界
 
-- **`nico-core`**：`limits:` → `request:`（`RequestBounds`，字段 `max_body_bytes`/`timeout_ms`，按 nginx 的
-  "主语 + 资源"命名）、根 `plugins` 的**信封**（name/kind/enabled/buffers_body/error_response/config 原样）、
-  引用校验、删掉 `MAX_REQUEST_BODY_BYTES` 与该字段的语义范围校验；**删除三个 kind 的类型**。
-- **`nico-http`**：`plugin.rs`（`Plugin`/`PluginFactory`/`PluginRegistry`/`PluginSpec`/`Outcome`/`ResponseData`/
-  `PluginInfo`/`PluginError`/`PluginContext`）+ `plugin/{context,response}.rs`、`state.rs`、`proxy/{hooks,record}.rs`；
-  删除逐跳逻辑与 header re-export。
-- **`nico-plugins`**：每个 kind 一个目录（`jwt/`、`api_key/`、`rate_limit/`）：配置结构体 + 工厂 + `Plugin` 实现；
-  `compile.rs` 按注册表产出 `PluginPlan`。
-- **`nico-server`**：注册内置工厂（`PluginRegistry`）、发布 `PluginPlan`；`config/resources.yaml` 示例含全局插件、
+- **`nico-core`**：`request:` 块由 `RequestBounds`（字段 `max_body_bytes`/`timeout_ms`，按 nginx 的「主语 + 资源」
+  风格命名）表示，`Document::request()` 暴露它；`max_body_bytes` 只受 `u32` 表示范围约束，`timeout_ms` 受
+  `1..=600_000` 约束。根 `plugins` 是**信封**（`name`/`kind`/`enabled`/`buffers_body`/`error_response`/`config`），
+  `config/plugin.rs` 只拥有信封与引用校验；三个 kind 的配置类型由 `nico-plugins` 拥有。
+- **`nico-http`**：`plugin.rs` 拥有 `Plugin`/`PluginFactory`/`PluginRegistry`/`PluginSpec`/`Outcome`/`ResponseData`/
+  `PluginInfo`/`PluginError`/`PluginContext`，`plugin/{context,response,chain}.rs`、`state.rs`、
+  `proxy/{hooks,record}.rs` 分别拥有上下文、清洗、链驱动、发布值与代理记录。请求路径由 `Plugin` 五阶段驱动，
+  不导出 Pingora 头类型；请求方向的逐跳头与 `Connection` 提名头由框架 `HttpUpstreamRequestPolicy` 处理。合成响应
+  清洗保留一份逐跳表（`plugin/header.rs`），因为响应不经过框架的请求钩子。
+- **`nico-plugins`**：`<kind>.rs` 与 `<kind>/` 子模块构成 `foo.rs` + `foo/` 拆分，配置结构体、工厂、`Plugin`
+  实现与测试按 kind 归位；`compile.rs` 按注册表产出 `PublishedChains`。
+- **`nico-server`**：注册内置工厂（`PluginRegistry`）、发布 `PublishedChains`；`config/resources.yaml` 示例含全局插件、
   `enabled` 与 `buffers_body`。
 - **spec**：`pingora-guidelines.md`（归属表、hold-back、帧化守卫）、`error-handling.md`（四条呈现路径）、
-  `logging-guidelines.md`（`authn`、插件日志归属）、`directory-structure.md`（新模块树与可见性）。
+  `logging-guidelines.md`（`authn`、插件日志归属）、`directory-structure.md`（模块树与可见性）。

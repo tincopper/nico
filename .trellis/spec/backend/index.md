@@ -125,4 +125,4 @@ Rules:
 
 ---
 
-**Language**: All documentation is written in **English**.
+**Language**: All documents under .trellis/spec/ are written in English; task artifacts (prd/design/implement) follow their own language convention.

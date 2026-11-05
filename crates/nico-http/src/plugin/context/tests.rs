@@ -3,6 +3,8 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use super::Phase;
+
+mod headers;
 use crate::{
     plugin::{LogLevel, PluginContext, PluginError},
     test_support::PluginFixture,
@@ -88,49 +90,6 @@ fn set_uri_works_in_on_request_and_nowhere_else() {
         ),
         "an unparseable target is the plugin's mistake, not the phase's"
     );
-}
-
-#[test]
-fn request_headers_are_available_in_the_request_stages_only() {
-    for phase in REQUEST_STAGES {
-        let mut fixture = PluginFixture::started();
-        let mut state = fixture.state(phase);
-        assert_eq!(
-            header(state.request_header("host")).as_deref(),
-            Some("example.test")
-        );
-        state
-            .set_request_header("x-edge", "1")
-            .expect("a request header is writable here");
-        assert_eq!(header(state.request_header("x-edge")).as_deref(), Some("1"));
-    }
-
-    for phase in RESPONSE_STAGES {
-        let mut fixture = PluginFixture::started().responded(200);
-        let mut state = fixture.state(phase);
-        assert!(
-            matches!(
-                state.request_header("host"),
-                Err(PluginError::PhaseViolation(_))
-            ),
-            "{phase:?} must not read the request head"
-        );
-        assert!(
-            matches!(
-                state.set_request_header("x-edge", "1"),
-                Err(PluginError::PhaseViolation(_))
-            ),
-            "{phase:?} must not rewrite the request head"
-        );
-        assert!(matches!(
-            state.append_request_header("x-edge", "1"),
-            Err(PluginError::PhaseViolation(_))
-        ));
-        assert!(matches!(
-            state.remove_request_header("host"),
-            Err(PluginError::PhaseViolation(_))
-        ));
-    }
 }
 
 #[test]
@@ -473,6 +432,25 @@ fn the_stream_facts_come_from_the_headers_the_peer_sent() {
     let state = fixture.state(Phase::Response);
     assert!(state.is_sse());
     assert!(!state.is_websocket());
+}
+
+#[test]
+fn identity_cannot_be_set_once_the_response_is_written() {
+    // `authn` in the request record comes from the identity slot. A response or logging plugin that
+    // could write it would make an unauthenticated request look authenticated after the fact.
+    for phase in RESPONSE_STAGES {
+        let mut fixture = PluginFixture::started().responded(200);
+        let mut state = fixture.state(phase);
+
+        assert!(
+            matches!(
+                state.set_identity("mallory"),
+                Err(PluginError::PhaseViolation(_))
+            ),
+            "{phase:?} must be read-only for identity"
+        );
+        assert_eq!(state.identity(), None, "{phase:?} left no identity");
+    }
 }
 
 #[test]

@@ -22,14 +22,6 @@
 //! carries whatever end-to-end headers the plugin produced, cleaned of the ones the data plane owns.
 //! Collapsing them would either strip `location` from a mock or let a refusal set arbitrary headers.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "step 5b writes a synthesised response; until then nothing cleans or writes one"
-    )
-)]
-
 use std::collections::BTreeSet;
 
 use bytes::Bytes;

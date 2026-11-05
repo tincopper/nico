@@ -2,7 +2,8 @@
 //!
 //! The hooks themselves need a live `Session`, so they are exercised by the integration tests; what
 //! can be tested here is the logic they delegate to: which destination a request goes to, the
-//! deadline verdict, the classification of Pingora's own errors, and header forwarding helpers.
+//! deadline verdict, the classification of Pingora's own errors, the framing guard, and the header
+//! forwarding helpers.
 
 use std::{
     net::IpAddr,
@@ -17,7 +18,7 @@ use pingora::{Error, ErrorSource, ErrorType, http::RequestHeader};
 
 use super::{
     failure::{classify, is_downstream_gone},
-    forward::{connection_tokens, destination, forwarded_for},
+    forward::{Framing, destination, forwarded_for},
 };
 use crate::{
     context::HttpContext,
@@ -56,7 +57,8 @@ fn started(snapshot: Arc<RuntimeSnapshot>, path: &str) -> (HttpContext, Instant)
     let route = &snapshot.document().routes()[0];
     let now = Instant::now();
     let mut ctx = HttpContext::default();
-    ctx.begin(&snapshot, route, &request_to("example.test", path), now);
+    ctx.begin(&snapshot, &request_to("example.test", path), now);
+    ctx.bind_route(route);
     (ctx, now)
 }
 
@@ -326,60 +328,6 @@ fn pingora_reports_its_error_source_as_the_classifier_expects() {
     );
 }
 
-#[test]
-fn the_connection_header_nominates_the_headers_to_drop() {
-    let request = request_with(&[("connection", "X-Private, x-other")]);
-
-    assert_eq!(
-        connection_tokens(&request).expect("two tokens are in bounds"),
-        ["x-private", "x-other"]
-    );
-}
-
-#[test]
-fn a_request_without_a_connection_header_nominates_nothing() {
-    assert!(
-        connection_tokens(&request_with(&[]))
-            .expect("no header nominates nothing")
-            .is_empty()
-    );
-}
-
-#[test]
-fn empty_connection_tokens_are_ignored() {
-    let request = request_with(&[("connection", " keep-alive , , TE ")]);
-
-    assert_eq!(
-        connection_tokens(&request).expect("two tokens are in bounds"),
-        ["keep-alive", "te"]
-    );
-}
-
-#[test]
-fn a_connection_header_naming_the_maximum_is_still_served() {
-    let tokens: Vec<String> = (0..16).map(|index| format!("x-h{index}")).collect();
-    let request = request_with(&[("connection", &tokens.join(","))]);
-
-    assert_eq!(
-        connection_tokens(&request)
-            .expect("the maximum itself is in bounds")
-            .len(),
-        16
-    );
-}
-
-#[test]
-fn a_connection_header_above_the_bound_is_refused_instead_of_half_removed() {
-    let tokens: Vec<String> = (0..17).map(|index| format!("x-h{index}")).collect();
-    let request = request_with(&[("connection", &tokens.join(","))]);
-
-    let error = connection_tokens(&request)
-        .expect_err("forwarding some nominated headers would leak connection semantics");
-
-    assert!(matches!(error, HttpError::InvalidRequest { .. }));
-    assert_eq!(error.category(), ErrorCategory::Client);
-}
-
 /// Builds an otherwise empty request carrying the given headers.
 fn request_with(headers: &[(&'static str, &str)]) -> RequestHeader {
     let mut request = request_to("example.test", "/api/items");
@@ -389,4 +337,69 @@ fn request_with(headers: &[(&'static str, &str)]) -> RequestHeader {
             .expect("the fixture header is valid");
     }
     request
+}
+
+#[test]
+fn the_framing_guard_restores_the_headers_a_plugin_rewrote() {
+    let mut request = request_with(&[("content-length", "12"), ("transfer-encoding", "chunked")]);
+    let framing = Framing::snapshot(&request);
+
+    // A plugin that changes the framing must not change how the body is sent on.
+    request
+        .insert_header("content-length", "0")
+        .expect("the fixture header is valid");
+    request.remove_header("transfer-encoding");
+    framing.restore(&mut request);
+
+    assert_eq!(
+        request
+            .headers
+            .get("content-length")
+            .and_then(|value| value.to_str().ok()),
+        Some("12")
+    );
+    assert_eq!(
+        request
+            .headers
+            .get("transfer-encoding")
+            .and_then(|value| value.to_str().ok()),
+        Some("chunked"),
+        "a header the client declared is restored, not left to the plugin"
+    );
+}
+
+#[test]
+fn the_framing_guard_leaves_a_header_absent_when_the_client_declared_none() {
+    let mut request = request_with(&[]);
+    let framing = Framing::snapshot(&request);
+
+    request
+        .insert_header("content-length", "99")
+        .expect("the fixture header is valid");
+    framing.restore(&mut request);
+
+    assert!(
+        request.headers.get("content-length").is_none(),
+        "a plugin must not be able to decide the framing by adding a length"
+    );
+}
+
+#[test]
+fn the_framing_guard_restores_every_value_of_a_repeated_header() {
+    let mut request = request_with(&[("transfer-encoding", "gzip")]);
+    request
+        .append_header("transfer-encoding", "chunked")
+        .expect("the fixture header is valid");
+    let framing = Framing::snapshot(&request);
+
+    request.remove_header("transfer-encoding");
+    framing.restore(&mut request);
+
+    let values: Vec<&str> = request
+        .headers
+        .get_all("transfer-encoding")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .collect();
+    assert_eq!(values, ["gzip", "chunked"]);
 }

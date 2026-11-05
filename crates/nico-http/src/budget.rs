@@ -54,5 +54,15 @@ pub(crate) fn request_budget(route: &Route, request: RequestBounds) -> Duration 
     Duration::from_millis(u64::from(budget_ms))
 }
 
+/// Returns the document-wide budget, before any route has matched.
+///
+/// A global plugin runs before routing and still runs inside the request's remaining time, so the
+/// budget has to exist before a route does. [`request_budget`] then tightens it; a route can never
+/// widen what this returned.
+#[must_use]
+pub(crate) fn document_budget(request: RequestBounds) -> Duration {
+    Duration::from_millis(u64::from(request.timeout_ms()))
+}
+
 #[cfg(test)]
 mod tests;

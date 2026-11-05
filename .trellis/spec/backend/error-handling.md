@@ -284,9 +284,15 @@ Rules:
 
 ### Authentication refusals
 
-A policy that refuses a caller does not get its own mapper: it returns `HttpError` carrying a
-compiled `Rejection`, and `HttpError::respond` turns it into the same `Respond` a built-in failure
-produces. Two codes are stable for the whole authentication family:
+A policy that refuses a caller does not get its own mapper. A plugin returns
+`PluginError::Refused { rejection, .. }`, the one `From<PluginError> for HttpError` turns it into
+`HttpError::Rejected`, and `HttpError::respond` turns that into the same `Respond` a built-in failure
+produces. Every other `PluginError` — `Execute`, `PhaseViolation` — is an `Internal` and answers
+`500`. `HttpError::Internal` keeps a caller-safe `Display` ("internal data-plane failure") and its
+cause names the plugin layer; the instance name is carried as a `plugin` field on the one request
+record. Invariant: a `500` attributable to a plugin must let an operator identify the instance
+without putting internal detail in the response body. Two codes are stable for the whole
+authentication family:
 
 | Code | Status | When |
 |---|---|---|
@@ -306,6 +312,13 @@ credential in"), not one per reason a credential can fail.
 The refusal of one plugin instance is configurable — status, content type and body — and the boundary
 is what keeps a configuration from turning a caller's mistake into an observable incident:
 
+| Path | Input / transformation | Writer |
+|---|---|---|
+| data-plane failure | `HttpError::*` default mapping | `write_respond` |
+| plugin refusal, default presentation | `PluginError::Refused(default Rejection)` | `write_respond` |
+| plugin refusal, per-instance presentation | `PluginError::Refused(compiled error_response)` | `write_respond` |
+| synthesized answer | `Outcome::Respond(ResponseData)` → `clean_response` | `write_synthetic` |
+
 - **Status: 4xx only.** Authentication and a rate limit are the caller's problem. A 5xx would make
   monitoring count user errors as gateway faults and contradict `error.category = Client`; a 2xx is
   not a refusal.
@@ -321,6 +334,13 @@ is what keeps a configuration from turning a caller's mistake into an observable
 - **All of it is validated at publication.** Status range, content type, variable names and JSON
   validity are checked while the document is compiled; a failure keeps the last-known-good document
   in service.
+
+A **synthesized response** (`Outcome::Respond`) is not a refusal and is cleaned differently: it is an
+answer whose question was neither a failure nor a forward (a preflight, a mock, a cache hit), so it
+keeps the end-to-end headers its plugin produced and loses only the ones the data plane owns —
+hop-by-hop headers, a `content-length` the plugin supplied (recomputed from the bytes written), and the
+two refusal-only headers (`www-authenticate`, `retry-after`). A plugin cannot reach a `ResponseHeader`
+in either case: it produces data and `proxy::failure` writes it.
 
 ---
 

@@ -1,12 +1,24 @@
-//! Forwarding decisions: which peer a route means, and what the upstream must not see.
+//! Forwarding decisions: which peer a route means, and what the wire head the upstream sees may say.
 //!
 //! Two rules live here. First, a request reaches a peer only through something that understood the
-//! route's target: a filter that resolved it, or the document entry the target names. Nothing is
+//! route's target: a plugin that resolved it, or the document entry the target names. Nothing is
 //! guessed, and the decision is made once — [`destination`] is the single place that answers "where
 //! does this request go", so the hook that connects and the hook that rewrites `Host` cannot
-//! disagree. Second, the headers that describe the downstream connection stay behind: a hop-by-hop
-//! header forwarded to the next hop describes a connection the client never used, and a `Host` the
-//! upstream did not ask for breaks virtual hosting.
+//! disagree. Second, the *framing* of the request is decided by the data plane, not by a plugin.
+//!
+//! # Who strips and who frames
+//!
+//! Pingora's `HttpUpstreamRequestPolicy` (default: everything on) removes the hop-by-hop headers and
+//! the ones a `Connection` header nominates, and `finalize_h1_upstream_request_framing` adds chunked
+//! framing when the request has a body and neither a length nor a transfer coding. Both run around our
+//! hooks, so this crate no longer carries a hop-by-hop list of its own: forwarding one would require
+//! defeating the framework, which is the stricter implementation by construction.
+//!
+//! The one thing the framework cannot decide is what a *plugin* did to the headers while the request
+//! was being filtered. A plugin may rewrite headers freely, `content-length` included, and a wrong
+//! length is not corrected by the finalizer — the write path picks its writer from the header. That is
+//! why [`Framing`] snapshots the two framing headers before the chains run and restores them
+//! afterwards: framing is the data plane's.
 
 use std::{io, net::IpAddr};
 
@@ -16,31 +28,65 @@ use pingora::{http::RequestHeader, proxy::Session};
 use super::failure::abort;
 use crate::{context::HttpContext, error::HttpError, upstream::Destination};
 
-/// Headers that describe a single connection and must not be forwarded to the next one.
+/// The two request headers that decide how the request body is framed.
 ///
-/// The list is RFC 9110's hop-by-hop set plus the de-facto `proxy-*` variants. The headers a request
-/// *nominates* in its own `Connection` header are a second, open-ended set: those are read by
-/// [`connection_tokens`] before this list removes the header itself. Pingora does not strip either
-/// set on our behalf (it only reads `Connection` to decide keepalive), so forwarding one would leak
-/// the client's connection semantics to the upstream.
-pub(super) const HOP_BY_HOP: [&str; 8] = [
-    "connection",
-    "keep-alive",
-    "proxy-connection",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailer",
-    "transfer-encoding",
-];
+/// The pair is snapshotted and restored together: `content-length` and `transfer-encoding` are
+/// mutually exclusive framings, so restoring one without the other could describe a body twice.
+const FRAMING_HEADERS: [&str; 2] = ["content-length", "transfer-encoding"];
 
-/// Most `Connection` tokens one request may nominate.
+/// What the client declared about the request body's framing.
 ///
-/// Every nominated name is removed from the forwarded headers, so the work per request is bounded by
-/// this number rather than by the header's size. A request that nominates more is refused instead of
-/// served with some of its connection-scoped headers still attached: half of a removal is exactly
-/// the leak the removal exists to prevent, and the bound is far above any real client.
-const MAX_CONNECTION_TOKENS: usize = 16;
+/// Taken before any plugin runs and restored after the last chain, because a plugin that changes
+/// `content-length` must not change how the data plane frames what it sends on. A side effect worth
+/// having: the value the upstream normalizer and the body reader agree on is the client's, not a
+/// plugin's.
+#[derive(Debug)]
+pub(super) struct Framing {
+    /// Every value of each framing header, in the order the client sent them, as raw bytes.
+    ///
+    /// Bytes rather than a header-value type: this crate does not name the HTTP framework's value
+    /// type anywhere else, and restoring a value must not require re-encoding it.
+    values: [Vec<Vec<u8>>; FRAMING_HEADERS.len()],
+}
+
+impl Framing {
+    /// Records the framing headers of `request`.
+    pub(super) fn snapshot(request: &RequestHeader) -> Self {
+        Self {
+            values: FRAMING_HEADERS.map(|name| {
+                request
+                    .headers
+                    .get_all(name)
+                    .iter()
+                    .map(|value| value.as_bytes().to_vec())
+                    .collect()
+            }),
+        }
+    }
+
+    /// Puts the recorded headers back, removing whatever a plugin left in their place.
+    ///
+    /// A header that was absent stays absent: "the client declared nothing" is a fact, and restoring a
+    /// plugin's value would let a plugin decide the framing by omitting it.
+    pub(super) fn restore(&self, request: &mut RequestHeader) {
+        for (name, values) in FRAMING_HEADERS.iter().zip(&self.values) {
+            let name = *name;
+            request.remove_header(name);
+            for value in values {
+                // A recorded value came out of a header map, so it is valid by construction. The
+                // guard's whole job is to leave the request forwardable, so a failure is reported and
+                // the chain continues rather than panicking in a hook.
+                if let Err(error) = request.append_header(name, value.clone()) {
+                    tracing::debug!(
+                        header = name,
+                        error = %error,
+                        "a framing header could not be restored"
+                    );
+                }
+            }
+        }
+    }
+}
 
 /// Returns the address the downstream connection arrived from, when the transport knows it.
 ///
@@ -107,43 +153,6 @@ fn find_upstream<'a>(document: &'a Document, name: &str) -> Option<&'a Upstream>
         .upstreams()
         .iter()
         .find(|upstream| upstream.name() == name)
-}
-
-/// Returns the header names a request nominates in its `Connection` header.
-///
-/// RFC 9110 §7.6.1: a connection option lists headers that apply to this connection only, and a
-/// proxy must remove them with the `Connection` header itself. Tokens are lowercased and
-/// deduplicated by the caller's removal path, so the order here does not matter; a non-UTF-8 value
-/// nominates nothing, because there is no name to remove.
-///
-/// # Errors
-/// Returns [`HttpError::InvalidRequest`] when the header names more than [`MAX_CONNECTION_TOKENS`]
-/// headers: the request is refused rather than forwarded with some of its nominated headers, which
-/// would hand the upstream a connection semantic it must not inherit.
-pub(super) fn connection_tokens(request: &RequestHeader) -> Result<Vec<String>, HttpError> {
-    let Some(value) = request.headers.get("connection") else {
-        return Ok(Vec::new());
-    };
-    let Ok(value) = value.to_str() else {
-        return Ok(Vec::new());
-    };
-
-    let mut tokens = Vec::new();
-    for token in value.split(',').map(str::trim) {
-        if token.is_empty() {
-            continue;
-        }
-        if tokens.len() == MAX_CONNECTION_TOKENS {
-            return Err(HttpError::InvalidRequest {
-                reason: format!(
-                    "the `connection` header nominates more than {MAX_CONNECTION_TOKENS} headers"
-                )
-                .into(),
-            });
-        }
-        tokens.push(token.to_ascii_lowercase());
-    }
-    Ok(tokens)
 }
 
 /// Sets a request header, converting the header-name failure into a recorded data-plane error.

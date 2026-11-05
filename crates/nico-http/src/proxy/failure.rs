@@ -13,6 +13,7 @@ use pingora::{Error, ErrorSource, ErrorType, http::ResponseHeader, proxy::Sessio
 use crate::{
     context::HttpContext,
     error::{HttpError, Respond},
+    plugin::{ResponseData, response::clean_response},
 };
 
 /// Records `error` and returns the Pingora error that aborts the hook.
@@ -152,7 +153,67 @@ pub(super) async fn write_respond(
 /// Rounded **up**, never down: a caller that waits exactly what it was told must find a token
 /// available, and truncating 900 ms to `0` would invite an immediate retry into the same rejection.
 fn retry_after_seconds(wait: Duration) -> u64 {
-    wait.as_secs() + u64::from(wait.subsec_nanos() > 0)
+    // `Duration::MAX` has nanoseconds left, so the naive `+ 1` would overflow in a debug build and
+    // wrap to `0` in release — telling a caller to retry immediately into the same rejection. A
+    // public `PluginError::Refused` may carry any duration, including from a plugin this build did
+    // not write, so the conversion has to be total.
+    wait.as_secs()
+        .saturating_add(u64::from(wait.subsec_nanos() > 0))
+}
+
+/// Writes the response a plugin synthesised instead of forwarding the request.
+///
+/// The plugin's header list is not a wire head: [`clean_response`] drops the hop-by-hop headers, drops
+/// a `content-length` the plugin supplied, drops the two headers only a refusal may carry, and empties
+/// the body of a status that cannot have one. What survives is written here, and the two headers this
+/// data plane owns are written last so a plugin cannot end up owning them:
+///
+/// - `content-length` from the bytes actually sent, so body and length cannot disagree;
+/// - `x-nico-trace-id`, so a caller can quote a synthesised answer in a report just like a refusal.
+///
+/// `x-nico-error-code` is deliberately absent: a synthesised response is an answer, not a failure, and
+/// no stable error code describes it.
+///
+/// # Errors
+/// Returns the failure of any step: building the header, or writing the header or the body. Every one
+/// of them means the client is gone or the connection is unusable.
+pub(super) async fn write_synthetic(
+    session: &mut Session,
+    data: ResponseData,
+    trace_id: &str,
+) -> pingora::Result<()> {
+    let (header, body) = synthetic_head(data, trace_id)?;
+    let complete = body.is_empty();
+    session
+        .write_response_header(Box::new(header), complete)
+        .await?;
+    if complete {
+        return Ok(());
+    }
+    session.write_response_body(Some(body), true).await
+}
+
+/// Builds the head and the body a synthesised response is written with.
+///
+/// Separated from the write so the part that decides values can be tested without a session: a header
+/// set and a body length are exactly what a client sees, and a `Session` needs a connection.
+fn synthetic_head(
+    data: ResponseData,
+    trace_id: &str,
+) -> pingora::Result<(ResponseHeader, bytes::Bytes)> {
+    let clean = clean_response(data);
+    let body = clean.body().clone();
+    let mut header = ResponseHeader::build(clean.status(), None)?;
+    for (name, value) in clean.headers() {
+        // Appending keeps repeated headers (two `set-cookie` values describe two cookies), which
+        // `insert_header` would collapse into the last one. The name is passed owned because
+        // `IntoCaseHeaderName` only takes a `&'static str` by reference; owning it also preserves the
+        // casing the plugin chose.
+        header.append_header(name.clone(), value.as_str())?;
+    }
+    header.insert_header("content-length", body.len())?;
+    header.insert_header("x-nico-trace-id", trace_id)?;
+    Ok((header, body))
 }
 
 #[cfg(test)]

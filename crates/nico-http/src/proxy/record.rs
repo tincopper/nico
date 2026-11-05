@@ -24,17 +24,26 @@ use crate::context::HttpContext;
 /// never sent on the wire, only reported.
 const CANCELLED_STATUS: u16 = 499;
 
-/// Emits one record, adding `authn` only when a filter claimed the request.
+/// Emits one record, adding `authn` and `plugin` only when those facts exist.
 ///
 /// `tracing` cannot add a field conditionally inside one invocation, and writing `authn = ""` would
 /// claim "authenticated by nothing" where the truth is "not authenticated" — two different facts for
-/// anyone filtering the log. The level stays a literal at each call site, so every expansion still has
-/// static callsite metadata.
+/// anyone filtering the log. `plugin` is the instance a failure is attributed to, absent when no
+/// plugin failed, so a 500 caused by a policy can be told apart from one caused by an upstream.
+/// The level stays a literal at each call site, so every expansion still has static callsite metadata.
 macro_rules! record {
     ($level:expr, $ctx:expr, $message:literal, $($fields:tt)*) => {
-        match $ctx.identity() {
-            Some(identity) => tracing::event!($level, authn = %identity.source(), $($fields)* $message),
-            None => tracing::event!($level, $($fields)* $message),
+        match ($ctx.identity(), $ctx.failed_plugin()) {
+            (Some(identity), Some(plugin)) => tracing::event!(
+                $level, authn = %identity.source(), plugin = %plugin, $($fields)* $message
+            ),
+            (Some(identity), None) => tracing::event!(
+                $level, authn = %identity.source(), $($fields)* $message
+            ),
+            (None, Some(plugin)) => tracing::event!(
+                $level, plugin = %plugin, $($fields)* $message
+            ),
+            (None, None) => tracing::event!($level, $($fields)* $message),
         }
     };
 }

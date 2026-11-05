@@ -17,13 +17,9 @@
 //! message is one rule, and "what a plugin may write" and "what the data plane strips" must not be
 //! able to disagree about it.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the five-phase contract lands before its caller; the hook rewrite wires this in"
-    )
-)]
+use pingora::http::HMap;
+
+use super::PluginError;
 
 /// Headers that describe one connection and are never forwarded nor synthesized.
 ///
@@ -40,6 +36,32 @@ pub(crate) const HOP_BY_HOP: [&str; 8] = [
     "transfer-encoding",
     "upgrade",
 ];
+
+/// Rejects a write to a header the data plane frames a message with.
+///
+/// A synthetic response has its `content-length` recomputed and a forwarded one has its framing
+/// restored, so a plugin write here could only ever be overwritten — or, worse, believed by a reader.
+/// Answering with a refusal keeps the rule visible at the call site instead of leaving a silent no-op.
+///
+/// # Errors
+/// Returns [`PluginError::Execute`] when `name` is `content-length` or `transfer-encoding`.
+pub(crate) fn reject_framing(name: &str) -> Result<(), PluginError> {
+    if is_framing(name) {
+        return Err(PluginError::Execute(
+            "the data plane owns `content-length` and `transfer-encoding`",
+        ));
+    }
+    Ok(())
+}
+
+/// Reports whether `name` is a framing header the data plane owns.
+///
+/// The head must describe the bytes that follow it, and only the data plane knows those. A plugin
+/// writing either of these would desynchronise a message from its own body, which is why every write
+/// path refuses them instead of trusting a later correction.
+pub(crate) fn is_framing(name: &str) -> bool {
+    name.eq_ignore_ascii_case("content-length") || name.eq_ignore_ascii_case("transfer-encoding")
+}
 
 /// Reports whether `name` describes the connection rather than the message.
 ///
@@ -99,6 +121,40 @@ const fn is_token_byte(byte: u8) -> bool {
         || byte.is_ascii_alphabetic()
 }
 
+/// Reads the first value of one header, or `None` when it is absent or not UTF-8.
+///
+/// A value that is not valid UTF-8 reads as absent on purpose: the contract's value type is a
+/// `String`, and handing a plugin a mangled copy of a credential is worse than telling it there is
+/// none. An authentication plugin then answers "missing", which is the closed answer.
+pub(crate) fn first_value(headers: &HMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+}
+
+/// Validates one header name and value, and returns them in the owned form a header map stores.
+///
+/// The write path and the synthesised-response constructor share it, so "a name is a token and a value
+/// is visible ASCII" has one spelling and one message.
+///
+/// # Errors
+/// Returns [`PluginError::Execute`] when `name` is not an RFC 9110 token or `value` contains a byte
+/// that cannot be read back as a field value.
+pub(crate) fn validated(name: &str, value: &str) -> Result<(String, String), PluginError> {
+    if !is_header_name(name) {
+        return Err(PluginError::Execute(
+            "a header name must be an RFC 9110 token",
+        ));
+    }
+    if !is_header_value(value) {
+        return Err(PluginError::Execute(
+            "a header value must be visible ASCII, space or tab",
+        ));
+    }
+    Ok((name.to_owned(), value.to_owned()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,6 +184,34 @@ mod tests {
         assert!(is_hop_by_hop("Connection"));
         assert!(is_hop_by_hop("TRANSFER-ENCODING"));
         assert!(!is_hop_by_hop("content-type"));
+    }
+
+    #[test]
+    fn a_validated_pair_is_owned_and_a_broken_one_names_the_rule() {
+        let (name, value) = validated("x-api-key", "abc").expect("the pair is valid");
+        assert_eq!((name.as_str(), value.as_str()), ("x-api-key", "abc"));
+
+        let error = validated("bad name", "abc").expect_err("a name must be a token");
+        assert!(
+            error.to_string().contains("RFC 9110 token"),
+            "the message must name the rule: {error}"
+        );
+        let error = validated("x-api-key", "a\nb").expect_err("a value must be visible ASCII");
+        assert!(
+            error.to_string().contains("visible ASCII"),
+            "the message must name the rule: {error}"
+        );
+    }
+
+    #[test]
+    fn a_first_value_reads_utf8_only() {
+        let mut headers = HMap::new();
+        assert_eq!(first_value(&headers, "x-api-key"), None);
+        headers.insert(
+            "x-api-key",
+            "abc".parse().expect("the fixture value parses"),
+        );
+        assert_eq!(first_value(&headers, "x-api-key").as_deref(), Some("abc"));
     }
 
     #[test]

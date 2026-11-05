@@ -82,8 +82,8 @@ not add the abstraction.
   registry, factory or lifecycle manager until the second real implementation exists.
 - Prefer configuration-driven variation over new code branches; features gate capability, never
   default behaviour.
-- New extension points are added where the domain already owns the vocabulary (HTTP filter in
-  `nico-http`, provider in `nico-ai`), not in a central "plugins" catch-all.
+- New extension points are added where the domain already owns the vocabulary (the `Plugin` contract
+  in `nico-http`, a provider in `nico-ai`), not in a central "plugins" catch-all.
 
 ### File budget: 300–500 lines, hard cap 500
 
@@ -322,7 +322,7 @@ Rust's ownership system prefers borrow over clone. These are the patterns review
   `SchemaBounds::with(Bound::Routes, 1024)`, where `Bound::name()` is also the configuration key the
   field is written as. The names then live in one table, a new field is one variant plus one match
   arm, and the compiler points at every consumer that must decide something about it. Two fields, or
-  fields that mean different things, keep named accessors (`Limits::max_request_body_bytes`,
+  fields that mean different things, keep named accessors (`RequestBounds::max_body_bytes`,
   `Route::path_prefix`): an enum for them is ceremony, not cohesion.
 
 ### Option / Result
@@ -538,7 +538,7 @@ Tests are the first place a reader looks to understand behavior — they are liv
 | Layer | Must be covered |
 |---|---|
 | `nico-config` | digest dedup, out-of-order/regressed revisions, watch disconnect, compaction/gap → `ResyncRequired`, oversized document, invalid UTF-8/YAML, unknown fields rejected, compile failure keeps LKG, subsequent fix publishes, debounce + single-flight, in-flight requests unaffected during outage |
-| `nico-http` | route matching, filter ordering, response commit state, retry legality, deadline propagation, SSE/WebSocket streaming boundaries, backpressure and slow client |
+| `nico-http` | route matching, plugin ordering, response commit state, retry legality, deadline propagation, SSE/WebSocket streaming boundaries, backpressure and slow client |
 | `nico-ai` | SSE chunk-splitting across event/line/UTF-8/JSON boundaries, provider error mapping, usage accounting separation (measured vs reported), no fallback after first byte |
 | `nico-core` | error category mapping, deadline/cancellation semantics |
 

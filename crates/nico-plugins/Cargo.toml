@@ -8,7 +8,7 @@ publish.workspace = true
 description = "Built-in HTTP policies: HS256 JWT, static API key and token-bucket rate limit"
 
 [dependencies]
-# A filter is an `HttpFilter`, whose async methods are declared through this macro.
+# A plugin implements `Plugin`, whose async stages are declared through this macro.
 async-trait.workspace = true
 # JWT segments are base64url without padding; nothing else is decoded here.
 base64.workspace = true

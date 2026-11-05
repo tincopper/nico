@@ -7,13 +7,15 @@
 //!
 //! [`HttpState`] removes the possibility instead of documenting it: publication writes one `ArcSwap`
 //! slot holding everything a generation serves with, so `current()` returns parts that were built
-//! together. One generation carries three sets of policies, and all three travel in
+//! together. One generation carries four sets of facts about its policies, and all four travel in
 //! [`PublishedChains`]:
 //!
 //! - `global` — the chain every request runs before it is routed;
 //! - `routes` — the chain each route names, looked up after routing;
 //! - `buffered` — the routes whose request body plugins need whole, decided at publication because the
-//!   hook that receives a chunk may not re-read configuration.
+//!   hook that receives a chunk may not re-read configuration;
+//! - `rewriting_responses` — the routes whose response body a plugin rewrites, which is what decides
+//!   that the upstream's `content-length` cannot be kept and the response is framed as chunked.
 //!
 //! [`SnapshotHandle`] is still the configuration-state fact source (readiness, degradation, generation
 //! for operators); it is not part of the request path, and the reload pipeline writes both in one step.
@@ -29,7 +31,7 @@ use std::{
 use arc_swap::ArcSwapOption;
 use nico_core::{Route, RuntimeSnapshot};
 
-use crate::{error::HttpError, filter::FilterChain};
+use crate::{error::HttpError, plugin::PluginChain};
 
 /// The configuration one generation serves requests from.
 ///
@@ -59,11 +61,11 @@ impl HttpState {
 
     /// Returns the chain every request runs before a route is matched.
     ///
-    /// The global chain is the document's own `plugins` collection: an entry enabled there runs for
-    /// every request, including a request no route matches, so it sees a request that has no route id
-    /// and no identity yet.
+    /// The global chain is the document's own `global_plugins` use site: an entry listed there runs
+    /// for every request, including a request no route matches, so it sees a request that has no
+    /// route id and no identity yet.
     #[must_use]
-    pub fn global(&self) -> &FilterChain {
+    pub fn global(&self) -> &PluginChain {
         self.policies.global()
     }
 
@@ -75,6 +77,15 @@ impl HttpState {
     pub fn buffered(&self) -> &BufferedRoutes {
         self.policies.buffered()
     }
+
+    /// Returns whether the response of `route_id` is rewritten by a plugin.
+    ///
+    /// True means the upstream's `content-length` cannot be kept: the bytes downstream are no longer
+    /// the bytes that length described, so the response is framed as chunked instead.
+    #[must_use]
+    pub fn rewrites_response(&self, route_id: &str) -> bool {
+        self.policies.rewrites_response(route_id)
+    }
 }
 
 impl fmt::Debug for HttpState {
@@ -85,6 +96,7 @@ impl fmt::Debug for HttpState {
             .field("global", &self.global())
             .field("chains", &self.chains())
             .field("buffered", &self.buffered())
+            .field("rewriting_responses", &self.policies.rewriting_responses())
             .finish()
     }
 }
@@ -128,25 +140,32 @@ impl HttpStateHandle {
 
 /// Everything a plugin compiler produced from one document.
 ///
-/// The three sets are the whole plan, and they are one value because publication is one step: a
+/// The four sets are the whole plan, and they are one value because publication is one step: a
 /// generation that took its global chain from this document and its per-route chains from the previous
 /// one would run policies the operator never put in service together.
 ///
 /// Built by the crate that owns the plugin kinds; this crate only reads it.
 pub struct PublishedChains {
-    global: FilterChain,
+    global: PluginChain,
     routes: RouteChains,
     buffered: BufferedRoutes,
+    rewriting_responses: ResponseRewrites,
 }
 
 impl PublishedChains {
-    /// Builds a plan from its three parts.
+    /// Builds a plan from its four parts.
     #[must_use]
-    pub fn new(global: FilterChain, routes: RouteChains, buffered: BufferedRoutes) -> Self {
+    pub fn new(
+        global: PluginChain,
+        routes: RouteChains,
+        buffered: BufferedRoutes,
+        rewriting_responses: ResponseRewrites,
+    ) -> Self {
         Self {
             global,
             routes,
             buffered,
+            rewriting_responses,
         }
     }
 
@@ -157,15 +176,16 @@ impl PublishedChains {
     #[must_use]
     pub fn empty() -> Self {
         Self::new(
-            FilterChain::empty(),
+            PluginChain::empty(),
             RouteChains::empty(),
             BufferedRoutes::empty(),
+            ResponseRewrites::empty(),
         )
     }
 
     /// Returns the chain every request runs before routing.
     #[must_use]
-    pub fn global(&self) -> &FilterChain {
+    pub fn global(&self) -> &PluginChain {
         &self.global
     }
 
@@ -179,6 +199,18 @@ impl PublishedChains {
     #[must_use]
     pub fn buffered(&self) -> &BufferedRoutes {
         &self.buffered
+    }
+
+    /// Returns whether a plugin rewrites the response body of `route_id`.
+    #[must_use]
+    pub fn rewrites_response(&self, route_id: &str) -> bool {
+        self.rewriting_responses.contains(route_id)
+    }
+
+    /// Returns the routes whose response body a plugin rewrites.
+    #[must_use]
+    pub fn rewriting_responses(&self) -> &ResponseRewrites {
+        &self.rewriting_responses
     }
 }
 
@@ -196,21 +228,22 @@ impl fmt::Debug for PublishedChains {
             .field("global", &self.global)
             .field("routes", &self.routes)
             .field("buffered", &self.buffered)
+            .field("rewriting_responses", &self.rewriting_responses)
             .finish()
     }
 }
 
-/// The filter chain of every route that has one.
+/// The plugin chain of every route that has one.
 ///
 /// A route with no plugins has no entry, which is the zero-cost path: the map is empty for a
 /// deployment without policies, and the lookup returns before hashing anything.
 ///
-/// Chains are shared, not copied: [`FilterChain`] clones one `Arc`, so two routes that reference the
+/// Chains are shared, not copied: [`PluginChain`] clones one `Arc`, so two routes that reference the
 /// same plugins hold two pointers to one compiled chain — which is what makes interning them in the
 /// pipeline worth doing.
 #[derive(Clone, Default)]
 pub struct RouteChains {
-    chains: HashMap<String, FilterChain>,
+    chains: HashMap<String, PluginChain>,
 }
 
 impl RouteChains {
@@ -222,7 +255,7 @@ impl RouteChains {
 
     /// Returns the chain `route_id` runs, or `None` when the route has no plugins.
     #[must_use]
-    pub fn chain_for(&self, route_id: &str) -> Option<&FilterChain> {
+    pub fn chain_for(&self, route_id: &str) -> Option<&PluginChain> {
         if self.chains.is_empty() {
             return None;
         }
@@ -242,13 +275,13 @@ impl RouteChains {
     }
 }
 
-impl FromIterator<(String, FilterChain)> for RouteChains {
+impl FromIterator<(String, PluginChain)> for RouteChains {
     /// Collects `(route id, chain)` pairs into a chain set.
     ///
     /// A repeated route id keeps the last pair: a document cannot express the same route twice
     /// (`Document::parse` rejects it), so a duplicate here would be a bug in the code that built the
     /// pairs rather than a configuration an operator can write.
-    fn from_iter<I: IntoIterator<Item = (String, FilterChain)>>(pairs: I) -> Self {
+    fn from_iter<I: IntoIterator<Item = (String, PluginChain)>>(pairs: I) -> Self {
         Self {
             chains: pairs.into_iter().collect(),
         }
@@ -261,19 +294,63 @@ impl fmt::Debug for RouteChains {
     }
 }
 
+/// A set of route ids decided while the document was compiled.
+///
+/// The body and response hooks run per chunk, so they may read a decision but must not re-read
+/// configuration. Both decisions this generation carries are of that shape ("which routes buffer their
+/// request body", "which routes have their response body rewritten"), so one bounded set backs both —
+/// and each is a distinct type, because a plan that swapped them would be a silent bug rather than a
+/// compile error.
+///
+/// A sorted set rather than a hash set: the set has at most one id per route (bounded by
+/// `SchemaBounds::max_routes`), so the lookup cost is irrelevant, while a debug line or a test that
+/// lists the routes is deterministic instead of depending on hash order.
+#[derive(Clone, Default)]
+struct RouteIds {
+    routes: BTreeSet<String>,
+}
+
+impl RouteIds {
+    /// Returns whether `route_id` is in the set.
+    fn contains(&self, route_id: &str) -> bool {
+        self.routes.contains(route_id)
+    }
+
+    /// Returns how many routes the set holds.
+    fn len(&self) -> usize {
+        self.routes.len()
+    }
+
+    /// Returns whether the set is empty.
+    fn is_empty(&self) -> bool {
+        self.routes.is_empty()
+    }
+}
+
+impl FromIterator<String> for RouteIds {
+    /// Collects the route ids the compiler decided on.
+    fn from_iter<I: IntoIterator<Item = String>>(route_ids: I) -> Self {
+        Self {
+            routes: route_ids.into_iter().collect(),
+        }
+    }
+}
+
+impl fmt::Debug for RouteIds {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_set().entries(&self.routes).finish()
+    }
+}
+
 /// The routes whose request body reaches plugins as one value, by route id.
 ///
 /// Membership is decided once, while the document is compiled, from the plugins the route names: the
 /// body hook runs per chunk, so it may read a decision but must not re-read configuration. A route
 /// that names no plugin, or only plugins that never ask for the body, is absent — which is what keeps
 /// the body on the streaming path.
-///
-/// A sorted set rather than a hash set: the set has at most one id per route (bounded by
-/// `SchemaBounds::max_routes`), so the lookup cost is irrelevant, while a debug line or a test that
-/// lists the buffered routes is deterministic instead of depending on hash order.
 #[derive(Clone, Default)]
 pub struct BufferedRoutes {
-    routes: BTreeSet<String>,
+    ids: RouteIds,
 }
 
 impl BufferedRoutes {
@@ -286,19 +363,19 @@ impl BufferedRoutes {
     /// Returns whether `route_id` buffers its request body whole.
     #[must_use]
     pub fn contains(&self, route_id: &str) -> bool {
-        self.routes.contains(route_id)
+        self.ids.contains(route_id)
     }
 
     /// Returns how many routes buffer their request body.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.routes.len()
+        self.ids.len()
     }
 
     /// Returns whether no route buffers its request body.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.routes.is_empty()
+        self.ids.is_empty()
     }
 }
 
@@ -306,14 +383,70 @@ impl FromIterator<String> for BufferedRoutes {
     /// Collects the ids of the routes that buffer their request body.
     fn from_iter<I: IntoIterator<Item = String>>(route_ids: I) -> Self {
         Self {
-            routes: route_ids.into_iter().collect(),
+            ids: route_ids.into_iter().collect(),
         }
     }
 }
 
 impl fmt::Debug for BufferedRoutes {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_set().entries(&self.routes).finish()
+        fmt::Debug::fmt(&self.ids, formatter)
+    }
+}
+
+/// The routes whose response body a plugin rewrites, by route id.
+///
+/// A route listed here cannot keep the `content-length` its upstream declared: the plugin sees each
+/// chunk and may replace or drop it, so the number of bytes downstream is not the number the header
+/// states. The response-header hook therefore removes it and lets the framework frame the response as
+/// chunked.
+///
+/// Membership is per route because the decision is: a route whose chain declares
+/// [`PluginPhases::RESPONSE_BODY`](crate::PluginPhases::RESPONSE_BODY) is listed, and a route whose
+/// chain does not keeps its upstream framing.
+#[derive(Clone, Default)]
+pub struct ResponseRewrites {
+    ids: RouteIds,
+}
+
+impl ResponseRewrites {
+    /// Returns a set with no rewriting route.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Returns whether a plugin rewrites the response body of `route_id`.
+    #[must_use]
+    pub fn contains(&self, route_id: &str) -> bool {
+        self.ids.contains(route_id)
+    }
+
+    /// Returns how many routes have their response body rewritten.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.ids.len()
+    }
+
+    /// Returns whether no route has its response body rewritten.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+}
+
+impl FromIterator<String> for ResponseRewrites {
+    /// Collects the ids of the routes whose response body a plugin rewrites.
+    fn from_iter<I: IntoIterator<Item = String>>(route_ids: I) -> Self {
+        Self {
+            ids: route_ids.into_iter().collect(),
+        }
+    }
+}
+
+impl fmt::Debug for ResponseRewrites {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.ids, formatter)
     }
 }
 
@@ -332,7 +465,7 @@ impl fmt::Debug for BufferedRoutes {
 pub(crate) fn chain_for_route(
     state: &HttpState,
     route: &Route,
-) -> Result<Option<FilterChain>, HttpError> {
+) -> Result<Option<PluginChain>, HttpError> {
     if let Some(chain) = state.chains().chain_for(route.id()) {
         return Ok(Some(chain.clone()));
     }
@@ -341,7 +474,7 @@ pub(crate) fn chain_for_route(
     }
     Err(HttpError::Internal {
         source: Box::new(io::Error::other(format!(
-            "route `{}` names plugins but no filter chain was published for it",
+            "route `{}` names plugins but no plugin chain was published for it",
             route.id()
         ))),
     })

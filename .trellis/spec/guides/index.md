@@ -48,7 +48,7 @@ instead.
 - [ ] You're not sure which crate owns some logic
 - [ ] You are adding a config field, an SSE frame field, or a provider response field
 - [ ] A consumer starts reading raw JSON / `serde_json::Value` fields directly
-- [ ] You are adding a new `Provider`, `HttpFilter`, `Upstream`, or `ConfigSource` implementation
+- [ ] You are adding a new `Provider`, `Plugin` kind, `Upstream`, or `ConfigSource` implementation
 - [ ] You are changing something that crosses the reload boundary (config → `RuntimeSnapshot` → hot path)
 - [ ] You are touching streaming / incremental parsing (`ProviderStream`)
 

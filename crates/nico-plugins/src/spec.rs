@@ -1,4 +1,4 @@
-//! A document entry compiled into the parameters a filter runs with.
+//! A document entry compiled into the parameters a plugin runs with.
 //!
 //! Everything expensive or fallible happens here, once per publication: configuration is re-checked
 //! into types the request path can use without checking, and the refusal the plugin presents is

@@ -38,7 +38,7 @@ ConfigSource (Bytes + Revision)
   → nico-server (deserialize, validate, compile)
   → RuntimeSnapshot (ArcSwap)
   → nico-http (CompiledRoute + HttpContext)
-  → nico-plugins (HttpFilter chain)
+  → nico-plugins (Plugin chain)
   → nico-ai (Provider + ProviderStream)
   → client (response bytes / SSE events)
 ```
@@ -57,8 +57,8 @@ For each arrow, ask:
 | ------------------------------------- | ----------------------------------------------------------------------------------- |
 | `ConfigSource` ↔ `nico-server`     | Revision vs digest semantics, out-of-order events, raw bytes vs parsed document      |
 | `nico-server` ↔ `RuntimeSnapshot`  | Partially validated config, lost generation, two snapshots in one request            |
-| `RuntimeSnapshot` ↔ `nico-http`    | `CompiledRoute` missing resource limits, unstable filter ordering                    |
-| `nico-http` ↔ `nico-plugins`    | Filter wants typed HTTP state but receives untyped metadata                          |
+| `RuntimeSnapshot` ↔ `nico-http`    | `CompiledRoute` missing resource limits, unstable plugin ordering                    |
+| `nico-http` ↔ `nico-plugins`    | A plugin wants typed HTTP state but receives untyped metadata                        |
 | `nico-http` ↔ `nico-ai`         | AI state leaking into `nico-core`, or created for non-AI requests                 |
 | `nico-ai` ↔ `Provider`             | Request semantics (model mapping) vs response semantics (stream, usage) conflated    |
 | `ProviderStream` ↔ client             | Lost incremental events, writes after cancel, usage not matching delivered bytes     |

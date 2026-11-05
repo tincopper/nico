@@ -1,41 +1,48 @@
 //! The Pingora hook contract: one snapshot read, one order, one response per failure.
 //!
-//! The order is the contract, not an implementation detail:
+//! The order is the contract, not an implementation detail, and every row below is a decision that a
+//! Pingora upgrade can invalidate:
 //!
-//! | Hook | What it does | Why there |
+//! | Hook | Plugin stages it drives | Why there |
 //! |---|---|---|
-//! | `new_ctx` | empty request context | request-local state, never global |
-//! | `request_filter` | published state, route, `Content-Length`, filter chain | before the body, which is never read |
-//! | `upstream_peer` | target becomes a peer | route and upstream are known by now |
-//! | `upstream_request_filter` | `Host` rewrite, `X-Forwarded-*`, hop-by-hop removal | the upstream sees only legal headers |
-//! | `request_body_filter` | counts bytes, enforces the body bound and the deadline | streaming: the body is metered, never buffered |
-//! | `response_filter` | response filters, deadline | the last point that can still change the status |
-//! | `upstream_response_body_filter` | deadline | guarantees the body is never rewritten |
-//! | `fail_to_proxy` | the one place a proxy failure becomes a response | Pingora calls it once per failed request |
-//! | `logging` | one structured request record | so no filter logs and the count stays one per request |
+//! | `new_ctx` | — | request-local state, never global |
+//! | `request_filter` | **global `on_request`**, then routing, then **route `on_request`** | the global stage runs before a route exists, so it sees no route id and no identity |
+//! | `upstream_peer` | — | the target becomes a connectable peer, bounded by the remaining budget |
+//! | `upstream_request_filter` | — | `Host`, `X-Forwarded-*`, and chunked framing for a buffered body |
+//! | `request_body_filter` | `on_request_body`, global then route | per chunk, or once for a buffered route |
+//! | `upstream_response_filter` | `on_response`, **route then global** | the head is not downstream yet, so the status and headers can still change |
+//! | `upstream_response_body_filter` | `on_response_body`, **route then global** | per chunk, synchronous: the response stream is framed already |
+//! | `response_filter` | — | informational responses are left untouched |
+//! | `error_while_proxy` | — | classification only: it is synchronous and writes nothing |
+//! | `fail_to_proxy` | — | the one place a failure becomes a response |
+//! | `logging` | `on_logging`, **route then global** | after the response, so it cannot change it |
 //!
-//! Two hooks are deliberately absent. `upstream_response_filter` would have an empty body: nothing
-//! this milestone does modifies an upstream response, and the informational-response trap it exists
-//! to guard is handled where a header is actually touched, in `response_filter`. `error_while_proxy`
-//! is synchronous, so it classifies a failure and writes nothing; `fail_to_proxy` is the one writer.
+//! Response and logging run in the reverse scope order — route first, global last — because a scope
+//! that published later has to be the last to withdraw, the same way nested middleware unwinds.
+//!
+//! Three facts about the framework shape the whole module:
+//!
+//! - **A hook that consumes a request-body chunk never gives it back.** The bodies are streamed and not
+//!   replayed, so a plugin receives the chunk through the context and returns the bytes to send; it
+//!   never reads the session.
+//! - **The response-body hook is synchronous.** A plugin stage there cannot await, which is why
+//!   [`Plugin::on_response_body`](crate::Plugin::on_response_body) is the one synchronous stage.
+//! - **Informational responses reach the response hooks.** A `100 Continue` arrives as a header task,
+//!   so anything a plugin added there would corrupt the `Expect: 100-continue` handshake.
+//!
+//! The bodies of the hooks live in the submodules, one per direction: `request` decides whether the
+//! request is served at all, `body` moves the bytes, and `response` closes the request out. This file
+//! is the assembly — the `ProxyHttp` implementation itself must be one block, so each method is a
+//! delegation and the order above is the only thing it states.
 
-use std::{io, time::Instant};
+mod body;
+mod request;
+mod response;
 
-use bytes::Bytes;
-use pingora::{
-    Error,
-    http::{RequestHeader, ResponseHeader},
-    proxy::{FailToProxy, ProxyHttp, Session},
-    upstreams::peer::HttpPeer,
-};
+use pingora::proxy::ProxyHttp;
 
-use super::{
-    HttpApp,
-    failure::{abort, classify, is_downstream_gone, write_respond},
-    forward::{HOP_BY_HOP, connection_tokens, destination, forwarded_for, peer_ip, set_header},
-    record,
-};
-use crate::{budget, context::HttpContext, error::HttpError, route, state, upstream};
+use super::HttpApp;
+use crate::context::HttpContext;
 
 #[async_trait::async_trait]
 impl ProxyHttp for HttpApp {
@@ -45,332 +52,95 @@ impl ProxyHttp for HttpApp {
         HttpContext::default()
     }
 
-    /// Routes the request, or answers it without ever contacting an upstream.
-    ///
-    /// Every rejection funnels through one writer, so the only difference between "no snapshot",
-    /// "no route", "body too large" and "a filter said no" is the [`HttpError`] value.
-    ///
-    /// The published state is read **once**: the snapshot, the route and the chain that decides
-    /// whether the request may proceed all come from the same `Arc`, so a reload that lands while this
-    /// hook runs cannot pair a newer route table with an older policy set. The chain is recorded in
-    /// the context, so the response stage runs the same filters the request was admitted by.
     async fn request_filter(
         &self,
-        session: &mut Session,
+        session: &mut pingora::proxy::Session,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<bool> {
-        let now = Instant::now();
-        let trace_id = self.trace_id(session.req_header());
-        ctx.set_trace_id(&trace_id);
-        // Read before the immutable borrow of the request header ends: the peer address is a fact of
-        // the connection, so a policy that keys on the caller reads it from the context instead of
-        // from a header the caller controls.
-        let client_ip = peer_ip(session);
-
-        let Some(state) = self.state.current() else {
-            return self.reject(session, ctx, HttpError::NotReady).await;
-        };
-
-        let Some(route) =
-            route::match_route(session.req_header(), state.snapshot().document().routes())
-        else {
-            return self.reject(session, ctx, HttpError::RouteNotFound).await;
-        };
-
-        // A route without plugins has no chain: the request skips the filter stage entirely, which is
-        // the same zero-cost path an empty service-level chain used to take. Whether the route *names*
-        // plugins is read inside `chain_for_route`, because a route that names one and finds no chain
-        // must not be forwarded: a missing entry would be an authentication bypass, not "no policy".
-        let chain = state::chain_for_route(&state, route);
-
-        // The immutable borrow of the request ends here: everything routing needed has been copied
-        // into the context, and the filter chain below needs the header mutably.
-        let declared = budget::declared_length(session.req_header());
-        ctx.begin(state.snapshot(), route, session.req_header(), now);
-        if let Some(address) = client_ip {
-            ctx.set_client_ip(address);
-        }
-
-        if let (Some(limit), Some(declared)) = (ctx.body_limit(), declared) {
-            if budget::over_limit(limit, declared) {
-                return self
-                    .reject(session, ctx, HttpError::BodyTooLarge { limit })
-                    .await;
-            }
-        }
-
-        let chain = match chain {
-            Ok(Some(chain)) => chain,
-            Ok(None) => return Ok(false),
-            // Fail closed. The compiler that produced the published state is supposed to cover every
-            // route that names a plugin; if it did not, forwarding the request would run it with no
-            // policy at all — which for an authentication plugin is the one failure that must never
-            // be silent.
-            Err(error) => return self.reject(session, ctx, error).await,
-        };
-        ctx.set_chain(chain.clone());
-        if let Err(error) = chain.run_request(ctx, session.req_header_mut()).await {
-            return self.reject(session, ctx, error).await;
-        }
-
-        Ok(false)
+        request::request_filter(self, session, ctx).await
     }
 
-    /// Turns the matched target into a peer, bounded by the request's remaining budget.
-    ///
-    /// The peer is decided once and recorded in the context: the `Host` rewrite that follows reads
-    /// the same destination instead of resolving the target a second time, so a filter-chosen peer
-    /// and the header sent to it cannot disagree.
     async fn upstream_peer(
         &self,
-        _session: &mut Session,
+        session: &mut pingora::proxy::Session,
         ctx: &mut Self::CTX,
-    ) -> pingora::Result<Box<HttpPeer>> {
-        let now = Instant::now();
-        // An expired budget spends no resolver query and opens no socket: the answer is already
-        // known, and it is the request's own clock that decided it.
-        let budget = ctx.remaining(now).unwrap_or_default();
-        if budget.is_zero() {
-            let error = ctx.deadline_error();
-            return Err(abort(ctx, error));
-        }
-
-        let chosen = destination(ctx).map_err(|error| abort(ctx, error))?;
-        let peer = upstream::peer(&chosen, budget).await;
-        ctx.set_destination(chosen);
-        peer.map_err(|error| abort(ctx, error))
+    ) -> pingora::Result<Box<pingora::upstreams::peer::HttpPeer>> {
+        request::upstream_peer(self, session, ctx).await
     }
 
-    /// Rewrites the request headers for the upstream and removes what must not travel further.
     async fn upstream_request_filter(
         &self,
-        session: &mut Session,
-        request: &mut RequestHeader,
+        session: &mut pingora::proxy::Session,
+        upstream_request: &mut pingora::http::RequestHeader,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<()> {
-        // Both reads borrow the downstream session immutably; the header below is a different
-        // object, so the borrows do not overlap.
-        let client_host = session.req_header().headers.get("host").cloned();
-        let client_addr = peer_ip(session);
-
-        // The `Connection` header nominates a second, open-ended set of headers that belong to
-        // this connection only; read it before the fixed set removes it.
-        let nominated = connection_tokens(request).map_err(|error| abort(ctx, error))?;
-        for name in HOP_BY_HOP {
-            request.remove_header(name);
-        }
-        for name in &nominated {
-            request.remove_header(name.as_str());
-        }
-
-        // `upstream_peer` recorded the destination it connected to, so this hook only reads it.
-        let Some(destination) = ctx.destination() else {
-            return Err(abort(
-                ctx,
-                HttpError::Internal {
-                    source: Box::new(io::Error::other(
-                        "no destination was recorded before the request was forwarded",
-                    )),
-                },
-            ));
-        };
-        let host = upstream::host_header(destination);
-        if let Some(host) = client_host.as_ref().and_then(|value| value.to_str().ok()) {
-            set_header(request, "x-forwarded-host", host, ctx)?;
-        }
-        if let Some(forwarded_for) = forwarded_for(request, client_addr) {
-            set_header(request, "x-forwarded-for", &forwarded_for, ctx)?;
-        }
-        // Only the outermost hop states the scheme: appending a second value produces a list that
-        // no server parses, and this build terminates no TLS, so it can only ever say `http`.
-        if request.headers.get("x-forwarded-proto").is_none() {
-            set_header(request, "x-forwarded-proto", "http", ctx)?;
-        }
-        set_header(request, "host", &host, ctx)?;
-
-        Ok(())
+        request::upstream_request_filter(self, session, upstream_request, ctx).await
     }
 
-    /// Counts the request body; it never buffers, rewrites or replays a chunk.
-    ///
-    /// The counter is also the only place the whole-request deadline can stop a *downstream* body:
-    /// Pingora bounds neither the time nor the rate at which a client sends one, so without this
-    /// check a client trickling bytes keeps the request (and the upstream connection already opened
-    /// for it) alive for as long as its own patience lasts. The peer's read timeout would eventually
-    /// fire, but it cannot tell a slow caller from a slow peer — this hook can.
     async fn request_body_filter(
         &self,
-        _session: &mut Session,
-        body: &mut Option<Bytes>,
-        _end_of_stream: bool,
+        session: &mut pingora::proxy::Session,
+        body: &mut Option<bytes::Bytes>,
+        end_of_stream: bool,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<()> {
-        let Some(chunk) = body.as_ref() else {
-            return Ok(());
-        };
-        ctx.count_body(chunk.len());
-        if ctx.body_over_limit() {
-            // A chunked upload over the bound is answered by `fail_to_proxy` before anything was
-            // committed; if the limit is ever missing that is a bug, not a `0`-byte limit.
-            let limit = body_limit_of(ctx);
-            return Err(abort(ctx, HttpError::BodyTooLarge { limit }));
-        }
-        if ctx.expired(Instant::now()) {
-            // The body is still arriving, so the caller is the slow party and the peer is not at
-            // fault. `408` is the one status that says so: a `504` here would send an operator to
-            // inspect a healthy upstream.
-            let error = HttpError::RequestTimeout;
-            return Err(abort(ctx, error));
-        }
-        Ok(())
+        body::request_body_filter(self, session, body, end_of_stream, ctx).await
     }
 
-    /// Runs the response filters and re-checks the deadline; it never rewrites the body.
-    async fn response_filter(
+    async fn upstream_response_filter(
         &self,
-        _session: &mut Session,
-        response: &mut ResponseHeader,
+        session: &mut pingora::proxy::Session,
+        upstream_response: &mut pingora::http::ResponseHeader,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<()> {
-        // PHASE-0: a `100 Continue` reaches this hook as an informational response, which may be
-        // followed by the real one. Anything a filter adds here would be appended to that interim
-        // response and break the handshake.
-        if response.status.is_informational() {
-            return Ok(());
-        }
-
-        // The chain recorded by `request_filter`: the same generation decided that this request may
-        // proceed, so the same filters inspect the response it produced.
-        if let Some(chain) = ctx.chain().cloned() {
-            if let Err(error) = chain.run_response(ctx, response).await {
-                return Err(abort(ctx, error));
-            }
-        }
-
-        if ctx.expired(Instant::now()) {
-            let error = ctx.deadline_error();
-            return Err(abort(ctx, error));
-        }
-
-        Ok(())
+        response::upstream_response_filter(self, session, upstream_response, ctx).await
     }
 
-    /// Re-checks the deadline while streaming, and leaves the chunk alone.
     fn upstream_response_body_filter(
         &self,
-        _session: &mut Session,
-        _body: &mut Option<Bytes>,
-        _end_of_stream: bool,
+        session: &mut pingora::proxy::Session,
+        body: &mut Option<bytes::Bytes>,
+        end_of_stream: bool,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<Option<std::time::Duration>> {
-        if ctx.expired(Instant::now()) {
-            // The status line is already downstream, so it cannot be replaced by a 504: abort the
-            // stream and record the request as cancelled rather than appending a second response.
-            ctx.mark_cancelled();
-            let error = ctx.deadline_error();
-            return Err(abort(ctx, error));
-        }
-        Ok(None)
+        body::upstream_response_body_filter(self, session, body, end_of_stream, ctx)
     }
 
-    /// Classifies a failure Pingora reported, so a disconnect is never counted as a server fault.
+    async fn response_filter(
+        &self,
+        session: &mut pingora::proxy::Session,
+        upstream_response: &mut pingora::http::ResponseHeader,
+        ctx: &mut Self::CTX,
+    ) -> pingora::Result<()> {
+        response::response_filter(self, session, upstream_response, ctx).await
+    }
+
     fn error_while_proxy(
         &self,
-        _peer: &HttpPeer,
-        _session: &mut Session,
-        error: Box<Error>,
+        peer: &pingora::upstreams::peer::HttpPeer,
+        session: &mut pingora::proxy::Session,
+        error: Box<pingora::Error>,
         ctx: &mut Self::CTX,
-        _client_reused: bool,
-    ) -> Box<Error> {
-        if is_downstream_gone(&error) {
-            ctx.mark_cancelled();
-        }
-        // One attempt per request (`ServerConf::max_retries == 1`), so the error is not retryable:
-        // this build never retries, and Pingora would otherwise log a phantom retry.
-        let mut error = error;
-        error.set_retry(false);
-        error
+        client_reused: bool,
+    ) -> Box<pingora::Error> {
+        response::error_while_proxy(self, peer, session, error, ctx, client_reused)
     }
 
-    /// Writes the one response a proxy failure is allowed to produce.
-    ///
-    /// Pingora calls this exactly once per request that failed after the filters, whatever the
-    /// stage, and its default would write a framework error page. Installing our own keeps the body
-    /// shape contract and leaves exactly one writer of failure responses in the proxy path.
     async fn fail_to_proxy(
         &self,
-        session: &mut Session,
-        error: &Error,
+        session: &mut pingora::proxy::Session,
+        error: &pingora::Error,
         ctx: &mut Self::CTX,
-    ) -> FailToProxy {
-        if ctx.error().is_none() {
-            match classify(ctx, error) {
-                Some(failure) => ctx.fail(failure),
-                None => {
-                    // The client is gone: there is nobody left to answer.
-                    ctx.mark_cancelled();
-                    return FailToProxy {
-                        error_code: 0,
-                        can_reuse_downstream: false,
-                    };
-                }
-            }
-        }
-
-        if session.response_written().is_some() {
-            // The status line is already downstream, so this failure cannot become a response: the
-            // client sees a stream that ended early, not a 5xx. Recording it as a cancellation is
-            // what keeps an already-delivered response out of the operator's error stream; the
-            // cause stays in the log through `error = %failure`.
-            ctx.mark_cancelled();
-            return FailToProxy {
-                error_code: 0,
-                can_reuse_downstream: false,
-            };
-        }
-        if ctx.is_cancelled() {
-            return FailToProxy {
-                error_code: 0,
-                can_reuse_downstream: false,
-            };
-        }
-
-        let Some(respond) = ctx.error().and_then(HttpError::respond) else {
-            // `ResponseCommitted`: our own vocabulary says the failure cannot be rendered.
-            ctx.mark_cancelled();
-            return FailToProxy {
-                error_code: 0,
-                can_reuse_downstream: false,
-            };
-        };
-
-        let status = respond.status().as_u16();
-        if let Err(error) = write_respond(session, &respond, ctx.trace_id()).await {
-            tracing::debug!(error = %error, "the error response could not be written");
-        }
-        FailToProxy {
-            error_code: status,
-            // A request that reached an upstream may have consumed body bytes; reusing the
-            // connection would risk a desynchronised stream on the next request.
-            can_reuse_downstream: false,
-        }
+    ) -> pingora::proxy::FailToProxy {
+        response::fail_to_proxy(self, session, error, ctx).await
     }
 
-    /// Emits the request's one structured record (what it says lives in `record`).
-    async fn logging(&self, session: &mut Session, error: Option<&Error>, ctx: &mut Self::CTX) {
-        record::emit(session, error, ctx);
+    async fn logging(
+        &self,
+        session: &mut pingora::proxy::Session,
+        error: Option<&pingora::Error>,
+        ctx: &mut Self::CTX,
+    ) {
+        response::logging(self, session, error, ctx).await;
     }
-}
-
-/// Returns the body limit `HttpContext::begin` recorded.
-///
-/// `begin` always records one, so a missing limit is a defect in this crate; failing loudly beats
-/// rendering the rejection as a `0`-byte limit, which would send whoever reads it in the wrong
-/// direction.
-#[expect(
-    clippy::expect_used,
-    reason = "HttpContext::begin always records the body limit"
-)]
-fn body_limit_of(ctx: &HttpContext) -> u32 {
-    ctx.body_limit().expect("begin records the body limit")
 }

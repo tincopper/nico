@@ -52,18 +52,38 @@ nico/
     │       └── error.rs
     ├── nico-http/           # Pingora integration + HTTP domain traits
     │   └── src/
-    │       ├── lib.rs          # //! + the public contract (HttpError, HttpFilter, Destination, …)
-    │       ├── context.rs      # HttpContext: snapshot, route, identity, destination, deadline
+    │       ├── lib.rs          # //! + the public contract (HttpError, Plugin, Destination, …)
+    │       ├── budget.rs       # crate-private: body and time budget arithmetic
+    │       ├── context.rs      # HttpContext: snapshot, route, identity, destination, deadline, framing flags
+    │       ├── context/         # identity.rs, buffer.rs, tests.rs: one data structure per file
     │       ├── error.rs        # HttpError + the single (status, code) mapping
     │       ├── error/          # rejection.rs: compiled refusal (status, template, category)
-    │       ├── filter.rs       # HttpFilter trait + FilterChain (budget-bounded stages)
-    │       ├── limits.rs       # crate-private: body and time budget arithmetic
+    │       ├── plugin.rs       # Plugin trait + Outcome/PluginInfo; re-exports ResponseData; the closed context contract
+    │       ├── plugin/
+    │       │   ├── chain.rs    # PluginChain/PluginEntry: the five stages under the remaining budget
+    │       │   ├── chain/      # tests/{fixture,control,bytes}.rs: the driver's tests by subject
+    │       │   ├── context.rs  # the data-plane PluginContext state and its phase guards
+    │       │   ├── context/    # contract.rs (the trait impl), {phase,caller}.rs, tests.rs, tests/
+    │       │   ├── error.rs    # PluginError + the one conversion into HttpError
+    │       │   ├── header.rs   # header grammar and the hop-by-hop set a synthesized response is cleaned of
+    │       │   ├── phases.rs   # PluginPhases: which stages a plugin declares (decides response framing)
+    │       │   ├── registry.rs # PluginFactory/PluginRegistry: a document's `kind` becomes an implementation
+    │       │   ├── response.rs # defines, validates and cleans ResponseData
+    │       │   └── response/   # tests.rs: ResponseData validation and cleaning tests
     │       ├── proxy.rs        # HttpApp + the unified rejection path
-    │       ├── proxy/          # hooks.rs, failure.rs, forward.rs, record.rs (the Pingora contract)
+    │       ├── proxy/          # the Pingora contract
+    │       │   ├── hooks.rs    # the ProxyHttp impl: delegation only, one block per trait
+    │       │   ├── hooks/      # {request,body,response}.rs: per-hook delegation
+    │       │   │   ├── request.rs
+    │       │   │   ├── body.rs
+    │       │   │   └── response.rs
+    │       │   ├── failure.rs  # classify + write_respond + write_synthetic, the only writers
+    │       │   ├── forward.rs  # destination, Host/X-Forwarded-*, and the framing guard
+    │       │   └── record.rs   # the request's one log record
     │       ├── route.rs        # match_route(header, routes)
     │       ├── service.rs      # ServerConf derivation + ProxyServiceBuilder + listener
     │       ├── settings.rs     # HttpSettings: bootstrap `http` defaults and ranges
-    │       ├── state.rs        # HttpState/HttpStateHandle: snapshot + global/per-route chains + buffered routes, one store
+    │       ├── state.rs        # HttpState/HttpStateHandle: snapshot + global/per-route chains + the two framing sets, one store
     │       └── upstream.rs     # crate-private: Destination → HttpPeer
     ├── nico-ai/             # AI domain traits, providers, stream adapters
     │   └── src/
@@ -95,20 +115,13 @@ nico/
             ├── spec.rs      # a document entry compiled into the parameters a plugin runs with
             ├── rejection.rs # the compiled refusal of one instance + the built-in defaults
             ├── compile.rs   # document → global + per-route chains, buffered routes; registry lookup
-            ├── jwt.rs       # token parsing, HS256 verification, claim rules, the `Plugin` impl
-            │   ├── config.rs # the `jwt` kind's own fields, defaults and rules
-            │   ├── factory.rs # the `jwt` PluginFactory: config → spec → credentials → plugin
-            │   ├── json.rs  # the minimal JSON reader a token payload needs
-            │   └── tests.rs
-            ├── api_key.rs   # constant-time key set, one configured header, the `Plugin` impl
-            │   ├── config.rs # the `api_key` kind's own fields and rules
-            │   ├── factory.rs # the `api_key` PluginFactory
-            │   └── tests.rs
-            └── rate_limit.rs # key derivation + the `Plugin` impl
-                ├── config.rs # the `rate_limit` kind's numbers, defaults, key source
-                ├── factory.rs # the `rate_limit` PluginFactory + the bucket tables a reload reuses
-                ├── limiter.rs # bounded token-bucket table (LRU, max_keys)
-                └── tests.rs
+            ├── <kind>.rs    # the `Plugin` implementation for one kind
+            └── <kind>/      # `{config,factory,json,tests}.rs`: config, factory, helpers, tests
+                ├── config.rs  # kind's own fields, defaults and rules
+                ├── factory.rs # PluginFactory: config → spec → credentials → plugin
+                ├── json.rs    # kind-specific JSON helpers when needed
+                ├── limiter.rs # kind-specific policy helper when needed
+                └── tests.rs   # the kind's tests
 ```
 
 Per-crate test helpers live in `tests/` (integration) or in a `#[cfg(test)]` module inside the
@@ -148,7 +161,7 @@ submodules. Name modules after the capability (`debounce`, `publish`, `cache`), 
 
 | Kind of code | Location |
 |---|---|
-| HTTP/Pingora lifecycle, route matching, `HttpFilter`, upstream TLS policy | `nico-http` |
+| HTTP/Pingora lifecycle, route matching, the `Plugin` contract, upstream TLS policy | `nico-http` |
 | Signals, runtime ownership, shutdown token, drain wiring | `nico-server` |
 | AI provider semantics, model mapping, SSE translation | `nico-ai` |
 | Config source protocol (etcd/Nacos clients) | `nico-config-*` (own crate, own feature) |
@@ -175,16 +188,20 @@ nico-server
 Hard rules:
 
 - `nico-core` must not depend on `nico-http`, `nico-ai`, `nico-plugins`, `pingora`,
-  `hyper`, or any config-center client. It also holds no cryptography: a plugin credential, a
-  signature and a hash of a caller's address all live in the crate that uses them, so adding a
-  built-in policy can never grow the kernel's dependency tree.
-- `nico-http` must not import `nico-ai`. AI plugs in through HTTP extension points: a filter
+  `hyper`, or any config-center client. It carries no network client and no policy cryptography:
+  plugin credentials, signatures and caller-address hashes live in the crate that uses them; its one
+  `sha2` use is `ConfigDigest`, a digest of the document bytes. That keeps adding a built-in policy
+  from growing the kernel's dependency tree.
+- `nico-http` must not import `nico-ai`. AI plugs in through HTTP extension points: a plugin
   resolves a provider target and records a `Destination`, and this crate owns only how to reach it.
-  For the same reason it must not import `nico-plugins`: a policy implements `HttpFilter` and reaches
-  the request through `HttpContext`, so the dependency edge points the other way.
-- `nico-http` re-exports the two Pingora header types its filter trait names (`RequestHeader`,
-  `ResponseHeader`). A crate that implements a policy therefore does not depend on the HTTP framework
-  itself: there is one version source for those types, and upgrading Pingora is one crate's task.
+  For the same reason it must not import `nico-plugins`: a policy implements `Plugin` and reaches the
+  request through `PluginContext` — a value type it never sees a framework type in — so the dependency
+  edge points the other way.
+- `nico-http` re-exports **no** Pingora type. The `Plugin` / `PluginContext` contract names only
+  `String`, `Vec<u8>`, `u16`, `bool` and `u64` (`PluginContext::client_ip_hash() -> Option<u64>`),
+  so a crate that implements a policy never depends on the HTTP framework: upgrading Pingora is one
+  crate's task, and a WASM guest can mirror the same trait. `PluginChain` is the framework-facing
+  driver and does name Pingora header types.
 - `nico-http` must not install signal handlers or build a runtime; that is process assembly, and
   it lives in `nico-server`.
 - Config-center clients are never in the default dependency tree; they arrive only with their
@@ -217,7 +234,7 @@ groups. This is enforced by `rustfmt.toml` (`group_imports = "StdExternalCrate"`
 |---|---|---|
 | Crate | `nico-<domain>` kebab-case | `nico-config-etcd` |
 | Module / file | `snake_case`, one concern per file | `reload.rs` |
-| Trait | noun describing the role, in the owning crate | `HttpFilter`, `Provider`, `ConfigSource` |
+| Trait | noun describing the role, in the owning crate | `Plugin`, `Provider`, `ConfigSource` |
 | Type | `PascalCase`, no `Impl`/`Manager`/`Factory` prefixes | `CompiledRoute`, `RuntimeSnapshot` |
 | Function | `snake_case`, verb first | `build_snapshot`, `publish` |
 | Constructor | `new` / `with_config`; `try_new` when fallible | `RouteTable::try_new` |
@@ -234,15 +251,18 @@ unless the type really manages several lifecycles or algorithms.
 
 - Adding an AI provider: new module in `crates/nico-ai/src/provider/`, strong-typed config,
   registration in `nico-server` bootstrap. No changes to `nico-core` or `nico-http`.
-- Adding an auth filter: new module in `crates/nico-plugins/src/`, implements
-  `nico_http::HttpFilter`, registered in `nico-server`. No changes to `nico-ai`.
+- Adding an auth plugin: add `<kind>.rs` for the `Plugin` implementation and `<kind>/` with
+  `{config,factory,json,tests}.rs` for its config, factory, helpers and tests, registered by
+  `builtin_registry()`. No changes to `nico-ai`, and none to `nico-core` or `nico-http`.
 - Adding a config center: new `nico-config-*` crate implementing
   `nico_config::ConfigSource`, feature-gated, registered in `bootstrap.rs`. No changes to the
   reload pipeline.
 
 ### Where a plugin boundary sits
 
-A built-in plugin is one file for the policy and its tests, plus one shared decision surface:
+A built-in plugin uses the `foo.rs` + `foo/` split: `<kind>.rs` holds the `Plugin` implementation and
+`<kind>/{config,factory,json,tests}.rs` hold its config, factory, helpers and tests, plus one shared
+decision surface:
 
 | Concern | Owner |
 |---|---|
@@ -276,10 +296,11 @@ cargo tree -p nico-core --prefix none | grep -E 'pingora|nico-http|nico-ai|etcd-
 cargo tree -p nico-config --prefix none | grep -E 'pingora|nico-http|nico-ai|etcd-client'
 cargo tree -p nico-http --prefix none | grep -E 'nico-ai'
 
-# Feature matrix must build
+# Feature matrix must build (the workspace currently defines no features)
 cargo check --no-default-features
-cargo check --features ai,builtin-plugins
 cargo check --all-features
+
+# Add a feature to this matrix when one is introduced.
 
 # Duplicate / conflicting heavy deps
 cargo tree -d

@@ -31,9 +31,10 @@ pub struct HttpState {
 }
 impl HttpState {
     pub fn snapshot(&self) -> &Arc<RuntimeSnapshot>;
-    pub fn global(&self) -> &FilterChain;
+    pub fn global(&self) -> &PluginChain;
     pub fn chains(&self) -> &RouteChains;
     pub fn buffered(&self) -> &BufferedRoutes;
+    pub fn rewrites_response(&self, route_id: &str) -> bool;
 }
 impl HttpStateHandle {
     pub fn new() -> Arc<Self>;
@@ -42,21 +43,43 @@ impl HttpStateHandle {
     pub fn publish(&self, snapshot: Arc<RuntimeSnapshot>, plan: PublishedChains);
 }
 // Everything one publication carries, built by the plugin compiler and stored unchanged: the chain that
-// runs before routing, the chain each route runs, and the routes whose request body is buffered whole.
-pub struct PublishedChains { /* global, routes, buffered */ }
+// runs before routing, the chain each route runs, and the two per-route framing decisions — whose request
+// body is buffered whole, and whose response body a plugin rewrites.
+pub struct PublishedChains { /* global, routes, buffered, rewriting_responses */ }
 impl RouteChains {
-    pub fn chain_for(&self, route_id: &str) -> Option<&FilterChain>;
+    pub fn chain_for(&self, route_id: &str) -> Option<&PluginChain>;
 }
 impl BufferedRoutes {
+    pub fn contains(&self, route_id: &str) -> bool;
+}
+impl ResponseRewrites {
     pub fn contains(&self, route_id: &str) -> bool;
 }
 // The fail-closed guard (crate-private), so the hook and its test reach the same decision.
 pub(crate) fn chain_for_route(
     state: &HttpState,
     route: &Route,
-) -> Result<Option<FilterChain>, HttpError>;
+) -> Result<Option<PluginChain>, HttpError>;
 
-// nico-http: the exported peer seam a filter uses for a target this crate cannot resolve
+// nico-http — the `Plugin` / `PluginContext` / `Outcome` / `ResponseData` contract names only
+// owned, framework-free values (`String`, `Vec<u8>`, `u16`, `bool`, `u64`). `PluginChain` is the
+// framework-facing driver: its `run_*` signatures legitimately name Pingora header and bytes types
+// (`RequestHeader`, `ResponseHeader`, `Bytes`) and the data plane's `HttpContext`.
+pub trait Plugin { /* name, info, five stages; only on_response_body is synchronous */ }
+pub struct PluginChain { /* Arc<[PluginEntry]>: one compiled entry per plugin instance */ }
+impl PluginChain {
+    pub async fn run_request(&self, ctx: &mut HttpContext, request: &mut RequestHeader)
+        -> Result<Option<ResponseData>, HttpError>;
+    pub async fn run_request_body(&self, ctx: &mut HttpContext, request: &mut RequestHeader,
+        chunk: Vec<u8>, complete: bool) -> Result<Vec<u8>, HttpError>;
+    pub async fn run_response(&self, ctx: &mut HttpContext, response: &mut ResponseHeader)
+        -> Result<(), HttpError>;
+    pub fn run_response_body(&self, ctx: &mut HttpContext, response: Option<&ResponseHeader>,
+        chunk: Bytes, complete: bool) -> Result<Option<Bytes>, HttpError>;
+    pub async fn run_logging(&self, ctx: &mut HttpContext, response: Option<&ResponseHeader>);
+}
+
+// nico-http: the exported peer seam a plugin uses for a target this crate cannot resolve
 pub struct Destination { /* scheme, host, port */ }
 impl HttpContext {
     pub fn set_destination(&mut self, destination: Destination);
@@ -93,6 +116,17 @@ not part of the request path.
 | `http.threads` | worker threads per service | `1..=256`, default 1 — `ServerConf::threads` feeds Tokio's `worker_threads`, which panics on `0` |
 | `ServerConf::max_retries` | **attempts**, not retries (`while retries < max_retries`) | `1` = exactly one attempt, no retry. `0` sends no request at all |
 
+### Attribution
+
+The data plane owns the wire decisions a plugin cannot make. `HttpUpstreamRequestPolicy` strips
+hop-by-hop and `Connection`-nominated request headers, and `finalize_h1_upstream_request_framing`
+decides request framing. `Framing::snapshot/restore` in `proxy/forward.rs` is the single guard that
+prevents a plugin from changing `content-length` or `transfer-encoding`; `PluginContext` rejects
+writes to either header. A synthesized response is cleaned by `plugin/response.rs` and written by
+`proxy/failure.rs::write_synthetic`. A buffered route holds each chunk back as `Some(Bytes::new())`
+with `end_of_stream == false` until the stream ends, then delivers the whole body once and forces the
+upstream request head to `transfer-encoding: chunked`.
+
 ## 4. Validation & Error Matrix
 
 | Condition | Result |
@@ -102,23 +136,28 @@ not part of the request path.
 | a route names plugins and the published state has no chain for it | `500 internal_error` — never forwarded: a missing chain is an authentication bypass, not "no policy" |
 | an authentication plugin refuses the request | `401` + `www-authenticate`, code `auth_missing` or `auth_invalid` (a document may override status/body, 4xx only) |
 | a rate-limit plugin refuses the request | `429 rate_limited` + `retry-after`, rounded up to whole seconds |
-| `route.target` is a provider and no filter replaced it | `502 provider_unavailable` |
+| `route.target` is a provider and no plugin replaced it | `502 provider_unavailable` |
 | upstream host does not resolve | `502 upstream_unreachable` |
 | `scheme: https` while no TLS provider is compiled | `502 upstream_unreachable` (refused, never plaintext) |
 | `Content-Length` or metered chunked body over the limit | `413 body_too_large` |
+| an over-limit body in buffered mode | `413 body_too_large` |
 | request body still arriving when the budget expires (caller is slow) | `408 request_timeout` |
-| `Connection` header nominating more than 16 headers | `400 invalid_request` |
 | `ReadTimedout` / `WriteTimedout` / `ConnectTimedout` from Pingora | `504 upstream_timeout` |
 | other upstream-sourced Pingora error | `502 upstream_unreachable` |
 | downstream read/write failure, or shutdown mid-request | no response; log-only `http.status=499`, `error.category=Cancelled` |
 | a failure after the response was committed | no second response; the stream is cut and logged as cancelled |
+| a plugin answers instead of forwarding (`Outcome::Respond`, request stage only) | the synthesized status, its end-to-end headers cleaned, `content-length` recomputed, `x-nico-trace-id` added |
 
-Every row above that answers at all is written by **one** function: `proxy::failure::write_respond`.
-A filter — including every plugin — describes a failure as `HttpError` and never touches a
-`ResponseHeader`, so the header set stays closed (`content-type`, `content-length`,
-`x-nico-error-code`, `x-nico-trace-id`, plus `www-authenticate` and `retry-after`) and `(status, code)`
-is decided in exactly one place. The one exception is the informational response, which
-`response_filter` deliberately leaves untouched.
+Every row above that answers at all is written by one of **two** functions in `proxy::failure`, and
+the two never overlap: `write_respond` is the sole writer for every failure (including a plugin
+refusal), and `write_synthetic` is the sole writer for a synthesized answer (`Outcome::Respond`). A
+policy — including every plugin — describes a failure as `HttpError` and never touches a
+`ResponseHeader`, so the refusal header
+set stays closed (`content-type`, `content-length`, `x-nico-error-code`, `x-nico-trace-id`, plus
+`www-authenticate` and `retry-after`) and `(status, code)` is decided in exactly one place. A
+synthesized answer is not a failure, so it keeps the end-to-end headers its plugin produced minus the
+ones the data plane owns. The one exception to both is the informational response, which
+`upstream_response_filter` and `response_filter` deliberately leave untouched.
 
 ## 5. Good / Base / Bad Cases
 
@@ -126,9 +165,11 @@ is decided in exactly one place. The one exception is the informational response
   contacted with a peer whose `connection_timeout`/`read_timeout` carry the remaining budget.
 - **Base**: a route with only `path_prefix` and an `upstream`; request and response stream through
   unchunked; response headers pass through untouched.
-- **Bad**: reading `Some(body)` in `request_filter`, or collecting the response body in a filter.
+- **Bad**: reading `Some(body)` in `request_filter`, or collecting the response body in a stage.
   Pingora does not replay a consumed body and does not un-buffer a collected response: the upstream
-  hangs or memory grows with the body.
+  hangs or memory grows with the body. The one collection this data plane does perform is the buffered
+  request mode, and it is bounded by `request.max_body_bytes` and only reachable when a document
+  declares `buffers_body`.
 
 ## 6. Tests Required
 
@@ -143,7 +184,8 @@ is decided in exactly one place. The one exception is the informational response
 | a client that trickles its body is answered `408` and logged as a client fault | `http_limits.rs` |
 | configured grace period is honoured, then `serve` returns | `http_shutdown.rs` |
 | `h2c` set/cleared through `ProxyServiceBuilder` | `nico-http/src/service/tests.rs` |
-| a filter stage cannot outlive the request budget | `nico-http/src/filter/tests.rs` |
+| a plugin stage cannot outlive the request budget, a refusal or a synthesised response short-circuits the chain, and a body stage replaces or drops its chunk | `nico-http/src/plugin/chain/tests.rs` |
+| a synthesised response recomputes `content-length` and drops the refusal-only headers | `nico-http/src/proxy/failure/tests.rs` |
 | a cancelled token becomes a graceful termination | `nico-server/src/server/shutdown/tests.rs` |
 | `max_retries == 1`, seconds rounded up and never `0`, `threads` passthrough | `service/tests.rs` |
 | a route that names plugins and has no chain is refused, a route without plugins runs none | `nico-http/src/state/tests.rs` (`chain_for_route`) |

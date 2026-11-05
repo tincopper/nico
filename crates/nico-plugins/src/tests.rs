@@ -246,6 +246,29 @@ mod kinds {
     }
 
     #[test]
+    fn the_built_in_kinds_declare_only_the_request_stage() {
+        // None of the three rewrites a response byte, so none may claim `RESPONSE_BODY`: that claim
+        // removes the upstream `content-length` from every route that names the kind and is the only
+        // phase declaration with a consequence outside the plugin.
+        for (kind, info) in [
+            ("jwt", crate::jwt::INFO),
+            ("api_key", crate::api_key::INFO),
+            ("rate_limit", crate::rate_limit::INFO),
+        ] {
+            assert!(
+                info.phases().contains(nico_http::PluginPhases::REQUEST),
+                "{kind} runs in on_request"
+            );
+            assert!(
+                !info
+                    .phases()
+                    .contains(nico_http::PluginPhases::RESPONSE_BODY),
+                "{kind} must not force every response it touches to be chunked"
+            );
+        }
+    }
+
+    #[test]
     fn a_factory_refuses_a_configuration_field_the_kind_does_not_have() {
         let document = document(
             concat!(

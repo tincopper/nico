@@ -36,16 +36,18 @@
 //! remaining time, and a stage that outlives it is terminated by the data plane. A plugin must not
 //! start work that outlives its call.
 
-mod compat;
+pub(crate) mod chain;
 pub(crate) mod context;
 mod error;
 pub(crate) mod header;
+mod phases;
 mod registry;
 pub(crate) mod response;
 
 use async_trait::async_trait;
-pub use compat::PluginFilter;
+pub use chain::{PluginChain, PluginEntry};
 pub use error::{LogLevel, PluginError};
+pub use phases::PluginPhases;
 pub use registry::{PluginBuildError, PluginFactory, PluginPhase, PluginRegistry, RegistryError};
 pub use response::{ResponseData, ResponseError};
 
@@ -127,9 +129,19 @@ pub trait Plugin: Send + Sync {
     /// The response is always streamed: an event stream may never end, so no document can declare
     /// that a plugin needs the whole body. `ctx.body_complete()` reports the last chunk.
     ///
+    /// This stage is **synchronous**, unlike the other four: the framework hook that delivers a
+    /// downstream body chunk cannot await, so a plugin may not either. Nothing here may block either
+    /// — the call is on the streaming path, once per chunk — and the work a plugin does must be
+    /// bounded by the chunk it is handed.
+    ///
+    /// A plugin that rewrites bytes here must declare [`PluginPhases::RESPONSE_BODY`] in its
+    /// [`PluginInfo`]: that declaration is what tells the data plane the response can no longer be
+    /// framed by the length the upstream declared.
+    ///
     /// # Errors
-    /// As [`Plugin::on_request`].
-    async fn on_response_body(&self, _ctx: &mut dyn PluginContext) -> PluginResult {
+    /// As [`Plugin::on_request`]. A failure after the response head was sent cannot be answered, so
+    /// the data plane ends the stream and records the request as cancelled.
+    fn on_response_body(&self, _ctx: &mut dyn PluginContext) -> PluginResult {
         Ok(Outcome::Continue)
     }
 
@@ -143,7 +155,7 @@ pub trait Plugin: Send + Sync {
 
 /// Static facts about one plugin implementation, for documentation and operators.
 ///
-/// Every field is `&'static str`: the values are compiled into the implementation, and
+/// Every string is `&'static str`: the values are compiled into the implementation, and
 /// `default_config` deliberately stays JSON *text* so this crate needs no JSON library to describe a
 /// plugin it does not own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,6 +164,7 @@ pub struct PluginInfo {
     description: &'static str,
     default_config: &'static str,
     readme: Option<&'static str>,
+    phases: PluginPhases,
 }
 
 impl PluginInfo {
@@ -161,6 +174,11 @@ impl PluginInfo {
     /// with no required field is also what a document that writes no `config` gets. The registry
     /// exposes the same string through [`PluginFactory::default_config`], and a test asserts the two
     /// agree, so the example an operator reads cannot drift from the one the kind loads.
+    ///
+    /// The phases default to [`PluginPhases::REQUEST`], the stage every chain entry is asked first:
+    /// declaring less would claim a plugin does nothing, and the one declaration with a consequence
+    /// outside the plugin — [`PluginPhases::RESPONSE_BODY`] — is exactly the one a body-rewriting kind
+    /// has to add.
     #[must_use]
     pub const fn new(
         version: &'static str,
@@ -172,6 +190,7 @@ impl PluginInfo {
             description,
             default_config,
             readme: None,
+            phases: PluginPhases::REQUEST,
         }
     }
 
@@ -182,6 +201,17 @@ impl PluginInfo {
             readme: Some(readme),
             ..self
         }
+    }
+
+    /// Returns a copy declaring the stages this plugin implements.
+    ///
+    /// The declaration does not decide whether a stage is called — every stage is — but it does
+    /// decide how the response is framed when it includes [`PluginPhases::RESPONSE_BODY`]. A kind
+    /// that rewrites response bytes and omits the flag produces a response whose declared length no
+    /// longer matches its body.
+    #[must_use]
+    pub const fn with_phases(self, phases: PluginPhases) -> Self {
+        Self { phases, ..self }
     }
 
     /// Returns the plugin's version, as its implementation names it.
@@ -206,6 +236,12 @@ impl PluginInfo {
     #[must_use]
     pub const fn readme(&self) -> Option<&'static str> {
         self.readme
+    }
+
+    /// Returns the stages this plugin declares it implements.
+    #[must_use]
+    pub const fn phases(&self) -> PluginPhases {
+        self.phases
     }
 }
 
@@ -299,9 +335,14 @@ pub trait PluginContext: Send {
 
     /// Replaces every value of a response header.
     ///
+    /// The three mutators below are only available in `on_response`: that is the last moment the head
+    /// can still be changed, because the body stages describe a head the client is already reading.
+    /// Asking later is a [`PluginError::PhaseViolation`], which says so, rather than an edit that
+    /// quietly reaches nothing.
+    ///
     /// # Errors
-    /// [`PluginError::PhaseViolation`] outside the response stages; [`PluginError::Execute`] when the
-    /// name is not a token or the value is not visible ASCII, space or tab.
+    /// [`PluginError::PhaseViolation`] outside `on_response`; [`PluginError::Execute`] when the name is
+    /// not a token or the value is not visible ASCII, space or tab.
     fn set_response_header(&mut self, name: &str, value: &str) -> Result<(), PluginError>;
 
     /// Adds one more value to a response header, keeping the existing ones.
@@ -313,8 +354,8 @@ pub trait PluginContext: Send {
     /// Removes every value of a response header; removing an absent header is not an error.
     ///
     /// # Errors
-    /// [`PluginError::PhaseViolation`] outside the response stages; [`PluginError::Execute`] when the
-    /// name is not a token.
+    /// [`PluginError::PhaseViolation`] outside `on_response`; [`PluginError::Execute`] when the name is
+    /// not a token.
     fn remove_response_header(&mut self, name: &str) -> Result<(), PluginError>;
 
     /// Returns the current request-body chunk.

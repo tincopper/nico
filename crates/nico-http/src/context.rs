@@ -1,10 +1,15 @@
-//! Per-request state: the one snapshot a request sees, the peer it goes to, and what it costs.
+//! Per-request state: the one snapshot a request sees, the peer it goes to, and each budget.
 //!
-//! [`HttpContext`] is the whole world an [`HttpFilter`](crate::HttpFilter) is allowed to see. It
-//! deliberately exposes neither the session nor the request body: a filter cannot write a response
-//! behind the data plane's back, and cannot consume body bytes that Pingora will not replay. What a
-//! filter *can* do is record where the request goes ([`HttpContext::set_destination`]), which is how
-//! a policy that understands a provider target hands it to the data plane.
+//! [`HttpContext`] is the data plane's own state, not part of the plugin contract: a plugin reaches a
+//! narrowed view of it through [`PluginContext`](crate::PluginContext), and never sees the session,
+//! the header structures or the body it is charged for. The split is what lets two loading mechanisms
+//! share one interface — a WASM guest is handed a value, never this type.
+//!
+//! What the context deliberately does not expose is the session and the raw body: a policy cannot
+//! write a response behind the data plane's back, and cannot consume body bytes that Pingora will not
+//! replay. What a policy *can* do is record where the request goes
+//! ([`HttpContext::set_destination`]), which is how a filter that understands a provider target hands
+//! it to the data plane.
 //!
 //! The context copies the few fields it needs — route id, target name, method, path — instead of
 //! borrowing them from the document. A borrow would make the context self-referential, because it
@@ -20,10 +25,13 @@
 //! instead of re-deriving the comparison from `deadline()` and reporting its own elapsed time.
 //!
 //! The identity a policy established is a typed slot ([`Identity`]), not a request header: a header
-//! can be forged by the client and read by every other filter, while this slot can only be written by
-//! a filter that authenticated the request and cannot carry anything the caller sent. The same rule
+//! can be forged by the client and read by every other plugin, while this slot can only be written by
+//! a plugin that authenticated the request and cannot carry anything the caller sent. The same rule
 //! covers the peer address ([`HttpContext::client_ip`]): it is recorded from the connection, so a
 //! policy that keys on the caller never reads a value the caller chose.
+
+mod buffer;
+mod identity;
 
 use std::{
     net::IpAddr,
@@ -31,51 +39,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub use identity::Identity;
 use nico_core::{Generation, Route, RouteTarget, RuntimeSnapshot};
 use pingora::http::{Method, RequestHeader};
 
-use crate::{budget, error::HttpError, filter::FilterChain, upstream::Destination};
-
-/// The identity of the caller, as established by an authenticating filter.
-///
-/// It is not read from, written to, or derived from any request header. `source` names the plugin
-/// **instance** that claimed the request, which is what makes a subject attributable in logs without
-/// `nico-http` learning any policy vocabulary: a JWT `sub`, an API key's name and a future scheme's
-/// principal are all just "a subject, claimed by this plugin".
-///
-/// `source` is an `Arc<str>` rather than the `&'static str` a filter's
-/// [`name`](crate::HttpFilter::name) returns, because it is the name a document gave the entry, and
-/// the same route may run two entries of one kind: each has to key its own rate-limit bucket and
-/// appear under its own `authn` value. Sharing one allocation across requests keeps the per-request
-/// cost to a refcount bump.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Identity {
-    subject: String,
-    source: Arc<str>,
-}
-
-impl Identity {
-    /// Records the subject `source` authenticated.
-    #[must_use]
-    pub fn new(subject: impl Into<String>, source: impl Into<Arc<str>>) -> Self {
-        Self {
-            subject: subject.into(),
-            source: source.into(),
-        }
-    }
-
-    /// Returns the subject the authenticating filter established.
-    #[must_use]
-    pub fn subject(&self) -> &str {
-        &self.subject
-    }
-
-    /// Returns the plugin instance that claimed this request.
-    #[must_use]
-    pub fn source(&self) -> &str {
-        &self.source
-    }
-}
+use self::buffer::BodyBuffer;
+use crate::{budget, error::HttpError, plugin::PluginChain, upstream::Destination};
 
 /// What the data plane remembers about one in-flight request.
 ///
@@ -96,39 +65,62 @@ pub struct HttpContext {
     body_limit: Option<u32>,
     body_bytes: u64,
     error: Option<HttpError>,
-    chain: Option<FilterChain>,
+    global: Option<PluginChain>,
+    route_chain: Option<PluginChain>,
+    buffered: bool,
+    rewrites_response: bool,
+    request_buffer: BodyBuffer,
     identity: Option<Identity>,
+    failed_plugin: Option<Arc<str>>,
     cancelled: bool,
     trace_id: String,
 }
 
 impl HttpContext {
-    /// Records what the request matched and the budget it may spend.
+    /// Records the generation and the document-wide budget, before anything is matched.
     ///
-    /// Called once per request, as soon as routing has chosen a route; a cancelled or rejected
-    /// request never reaches it and keeps its empty context.
+    /// Routing comes second because a global plugin runs *before* it, and a plugin stage runs inside
+    /// the request's remaining time: without a deadline here, the first stage of every request would
+    /// be the one stage no budget covers. What this sets is the document's own `request` bound; the
+    /// route can only tighten it ([`HttpContext::bind_route`]).
     ///
     /// The snapshot is borrowed and cloned into the context rather than taken by value: the caller
-    /// passes `&route`, which borrows the same snapshot, so the context has to do the clone.
+    /// owns it for the request anyway, and the context has to hold a handle to outlive that borrow.
     ///
     /// `now` is the instant the request started: the deadline is derived from it so a test can
     /// drive the clock instead of sleeping.
-    pub fn begin(
-        &mut self,
-        snapshot: &Arc<RuntimeSnapshot>,
-        route: &Route,
-        header: &RequestHeader,
-        now: Instant,
-    ) {
+    pub fn begin(&mut self, snapshot: &Arc<RuntimeSnapshot>, header: &RequestHeader, now: Instant) {
         let request = snapshot.document().request();
-        self.route_id = Some(route.id().to_owned());
-        self.target = Some(route.target().clone());
         self.method = Some(header.method.clone());
         self.path = Some(header.uri.path().to_owned());
         self.started = Some(now);
-        self.deadline = Some(now + budget::request_budget(route, request));
-        self.body_limit = Some(budget::body_limit(route, request));
+        self.deadline = Some(now + budget::document_budget(request));
+        self.body_limit = Some(request.max_body_bytes());
         self.snapshot = Some(Arc::clone(snapshot));
+    }
+
+    /// Records what the request matched, tightening the budget the document set.
+    ///
+    /// A route may only make the deadline earlier and the body limit smaller, which is the same
+    /// "inner may tighten, never widen" rule the budget arithmetic applies — and it is why the deadline
+    /// is recomputed from the start instant rather than extended from the current one.
+    ///
+    /// Called once, after routing, by whichever hook matched the route. A rejected request may never
+    /// reach it and keeps the document budget.
+    pub fn bind_route(&mut self, route: &Route) {
+        self.route_id = Some(route.id().to_owned());
+        self.target = Some(route.target().clone());
+        let Some(request) = self
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.document().request())
+        else {
+            return;
+        };
+        self.body_limit = Some(budget::body_limit(route, request));
+        if let Some(started) = self.started {
+            self.deadline = Some(started + budget::request_budget(route, request));
+        }
     }
 
     /// Returns the snapshot this request is served from, once it has begun.
@@ -197,7 +189,7 @@ impl HttpContext {
     /// Only the data plane calls this, and only from the connection's own peer address: a filter
     /// that wants "who is calling" must never derive it from a header, which is exactly the value a
     /// client controls. The address is recorded rather than the session, because a
-    /// [`HttpFilter`](crate::HttpFilter) deliberately cannot see the session.
+    /// [`PluginContext`](crate::PluginContext) deliberately cannot see the session.
     ///
     /// The first address wins. The data plane records it before any filter runs, so a later write
     /// can only come from a policy — and a policy must not be able to choose the address a rate
@@ -261,6 +253,17 @@ impl HttpContext {
         }
     }
 
+    /// Returns the deadline failure when the request's budget is spent, or `None` while it is alive.
+    ///
+    /// The context owns both the clock and the error built from it, so a hook never re-derives one
+    /// from the other. This is the single guard for every stage `timeout_at` cannot wrap: the
+    /// synchronous response-body hook calls it before and after the stage, and the header hooks call
+    /// it before committing a response.
+    #[must_use]
+    pub fn deadline_failure(&self, now: Instant) -> Option<HttpError> {
+        self.expired(now).then(|| self.deadline_error())
+    }
+
     /// Returns the milliseconds spent on this request so far, for the `elapsed_ms` log field.
     #[must_use]
     pub fn elapsed_ms(&self, now: Instant) -> u64 {
@@ -288,11 +291,14 @@ impl HttpContext {
             .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
     }
 
-    /// Reports whether the counted body has crossed this route's limit.
+    /// Returns the limit the counted body exceeded, or `None` while it is within the limit.
+    ///
+    /// The verdict and the limit it was measured against are one query: a caller never has to assume
+    /// a limit exists after being told the body is over it, and no request path needs `expect`.
     #[must_use]
-    pub fn body_over_limit(&self) -> bool {
+    pub fn exceeded_body_limit(&self) -> Option<u32> {
         self.body_limit
-            .is_some_and(|limit| budget::over_limit(limit, self.body_bytes))
+            .filter(|&limit| budget::over_limit(limit, self.body_bytes))
     }
 
     /// Stores a failure for the hook that can still act on it.
@@ -324,18 +330,59 @@ impl HttpContext {
         self.cancelled
     }
 
-    /// Records the chain this request was admitted by.
+    /// Records the two chains this request was admitted by, and how it is framed.
     ///
-    /// The response stage reads it back instead of resolving the route again, so a reload that
-    /// publishes while a request is in flight cannot run a *different* generation's response filters
-    /// against a response the request's own filters shaped. Only the hooks call this.
-    pub(crate) fn set_chain(&mut self, chain: FilterChain) {
-        self.chain = Some(chain);
+    /// The response and logging stages read them back instead of resolving the route again, so a
+    /// reload that publishes while a request is in flight cannot run a *different* generation's
+    /// plugins against a response the request's own plugins shaped. Both chains come from the same
+    /// `HttpState`, so they are one generation by construction.
+    ///
+    /// `body` and `response` are the framing decisions made while that generation was compiled: the
+    /// body hook runs per chunk and may read them, but may not re-derive them from configuration.
+    /// Only the hooks call this.
+    pub(crate) fn set_chains(&mut self, global: PluginChain, route: Option<PluginChain>) {
+        self.global = Some(global);
+        self.route_chain = route;
     }
 
-    /// Returns the chain this request runs, when its route has plugins.
-    pub(crate) fn chain(&self) -> Option<&FilterChain> {
-        self.chain.as_ref()
+    /// Records that this route's request body is delivered to plugins whole.
+    pub(crate) fn set_buffered(&mut self, buffered: bool) {
+        self.buffered = buffered;
+    }
+
+    /// Records that a plugin rewrites this route's response body.
+    pub(crate) fn set_response_rewrite(&mut self, rewrites: bool) {
+        self.rewrites_response = rewrites;
+    }
+
+    /// Returns the chain every request runs, once the request has been admitted.
+    pub(crate) fn global(&self) -> Option<&PluginChain> {
+        self.global.as_ref()
+    }
+
+    /// Returns the chain this request's route runs, when the route has plugins.
+    pub(crate) fn route_chain(&self) -> Option<&PluginChain> {
+        self.route_chain.as_ref()
+    }
+
+    /// Returns whether this route's request body is buffered whole.
+    pub(crate) fn buffers_body(&self) -> bool {
+        self.buffered
+    }
+
+    /// Returns whether a plugin rewrites this route's response body.
+    pub(crate) fn rewrites_response(&self) -> bool {
+        self.rewrites_response
+    }
+
+    /// Appends one received chunk to the buffered request body.
+    pub(crate) fn push_body(&mut self, chunk: &[u8]) {
+        self.request_buffer.push(chunk);
+    }
+
+    /// Takes the buffered request body, leaving the buffer empty.
+    pub(crate) fn take_body(&mut self) -> Vec<u8> {
+        self.request_buffer.take()
     }
 
     /// Records the identity an authenticating filter established.
@@ -357,6 +404,22 @@ impl HttpContext {
     #[must_use]
     pub fn identity(&self) -> Option<&Identity> {
         self.identity.as_ref()
+    }
+
+    /// Records the plugin instance whose stage failed, for the request's one log record.
+    ///
+    /// The chain is the only place that knows both the instance name and the error; the record is the
+    /// only place that reports it. The first failure wins, so a later symptom cannot hide the cause.
+    pub(crate) fn set_failed_plugin(&mut self, name: &str) {
+        if self.failed_plugin.is_none() {
+            self.failed_plugin = Some(Arc::from(name));
+        }
+    }
+
+    /// Returns the plugin instance a failure is attributed to, when one produced it.
+    #[must_use]
+    pub(crate) fn failed_plugin(&self) -> Option<&str> {
+        self.failed_plugin.as_deref()
     }
 
     /// Records the correlation id for this request's log line and error bodies.

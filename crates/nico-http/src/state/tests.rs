@@ -8,56 +8,52 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nico_core::{ConfigDigest, Generation, Revision, RuntimeSnapshot};
-use pingora::http::{RequestHeader, ResponseHeader};
 
-use super::{HttpStateHandle, PublishedChains, RouteChains, chain_for_route};
+use super::{
+    BufferedRoutes, HttpStateHandle, PublishedChains, ResponseRewrites, RouteChains,
+    chain_for_route,
+};
 use crate::{
-    context::HttpContext,
+    Plugin, PluginChain, PluginEntry, PluginInfo,
     error::HttpError,
-    filter::{FilterChain, HttpFilter},
     test_support::{document, route, snapshot, snapshot_with_plugins},
 };
 
-/// A filter with no behaviour: only its name matters here.
+/// A plugin with no behaviour: only its name matters here.
 struct Noop;
 
 #[async_trait]
-impl HttpFilter for Noop {
+impl Plugin for Noop {
     fn name(&self) -> &str {
         "noop"
     }
 
-    async fn on_request(
-        &self,
-        _ctx: &mut HttpContext,
-        _request: &mut RequestHeader,
-    ) -> Result<(), HttpError> {
-        Ok(())
-    }
-
-    async fn on_response(
-        &self,
-        _ctx: &mut HttpContext,
-        _response: &mut ResponseHeader,
-    ) -> Result<(), HttpError> {
-        Ok(())
+    fn info(&self) -> PluginInfo {
+        PluginInfo::new("0.0.1", "does nothing", "{}")
     }
 }
 
 /// A chain holding one [`Noop`].
-fn chain() -> FilterChain {
-    FilterChain::new(Arc::from(vec![Arc::new(Noop) as Arc<dyn HttpFilter>]))
+fn chain() -> PluginChain {
+    PluginChain::new(
+        vec![PluginEntry::new(
+            Arc::new(Noop) as Arc<dyn Plugin>,
+            Arc::from("{}"),
+        )]
+        .into(),
+    )
 }
 
 /// A plan with one route chain per pair and the buffered route ids `buffered`, and no global chain.
-fn plan(routes: &[(&str, FilterChain)], buffered: &[&str]) -> PublishedChains {
+fn plan(routes: &[(&str, PluginChain)], buffered: &[&str]) -> PublishedChains {
     PublishedChains::new(
-        FilterChain::empty(),
+        PluginChain::empty(),
         routes
             .iter()
             .map(|(route, chain)| ((*route).to_owned(), chain.clone()))
             .collect(),
         buffered.iter().map(|route| (*route).to_owned()).collect(),
+        ResponseRewrites::empty(),
     )
 }
 
@@ -66,7 +62,8 @@ fn full_plan() -> PublishedChains {
     PublishedChains::new(
         chain(),
         plan(&[("api", chain())], &[]).routes().clone(),
-        ["api".to_owned()].into_iter().collect(),
+        BufferedRoutes::from_iter(["api".to_owned()]),
+        ResponseRewrites::from_iter(["api".to_owned()]),
     )
 }
 
@@ -195,6 +192,10 @@ fn publish_exposes_every_part_of_the_generation_together() {
         "a buffered route published with the snapshot is visible with it"
     );
     assert!(
+        state.rewrites_response("api"),
+        "and so is the route whose response body a plugin rewrites"
+    );
+    assert!(
         !state.buffered().contains("open"),
         "and a route that declared no body mode is not marked"
     );
@@ -223,7 +224,7 @@ fn a_chain_is_found_only_for_the_route_that_declared_it() {
 #[test]
 fn two_routes_that_reference_the_same_plugins_share_one_chain() {
     let one = chain();
-    // A `FilterChain` clone is one `Arc` bump: the pipeline interns a chain by cloning it, so two
+    // A `PluginChain` clone is one `Arc` bump: the pipeline interns a chain by cloning it, so two
     // routes with the same plugin list do not compile or allocate a second copy.
     let chains: RouteChains = [("api".to_owned(), one.clone()), ("open".to_owned(), one)]
         .into_iter()
@@ -289,4 +290,8 @@ fn a_new_publication_replaces_the_whole_plan() {
         "and a generation that declared no plugin must not keep the old global chain"
     );
     assert!(state.buffered().is_empty(), "nor the previous body mode");
+    assert!(
+        !state.rewrites_response("api"),
+        "nor the previous response framing"
+    );
 }

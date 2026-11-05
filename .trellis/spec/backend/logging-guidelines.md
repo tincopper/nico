@@ -25,13 +25,21 @@
 | `error!` | The system is failing in a way an operator must act on | config reload failed and LKG is now stale, upstream TLS verification failure, panic-adjacent invariant breach |
 | `warn!` | Degraded but serving; retryable or expected-then-recovered | watch reconnect, config compile rejected, rate-limit tripped for a tenant, single upstream attempt failed but retry succeeded |
 | `info!` | Lifecycle milestones, once per meaningful event (not per request) | startup with role/features, config snapshot published with generation, graceful drain started, shutdown complete |
-| `debug!` | Per-request diagnostics, off in production | route matched, filter chain executed, upstream selected, body size limits applied |
+| `debug!` | Per-request diagnostics, off in production | route matched, plugin chain executed, upstream selected, body size limits applied |
 | `trace!` | Byte/chunk-level detail; almost always off | SSE chunk boundaries, JSON field extraction, retry budget accounting |
 
 Rules:
 
 - **Never `info!` on the per-request path** — at gateway volume that is a self-inflicted DoS on the
   logging pipeline. Per-request records are `debug!` at most.
+- Plugin log lines carry `plugin = <instance name>` and remain separate from the data plane's single
+  request record; `proxy/record.rs` emits that record once, with `authn` set to the authenticating
+  instance name when one exists.
+- At publication, exactly one `info!` line per plugin instance is emitted with fields `plugin`,
+  `kind`, `scope` (`global` / `route` / `global+route` / `unused`), `phase`, `phases`,
+  `buffers_body`, `enabled`. It is a lifecycle event, not a per-request event. Per-request `info!` is
+  forbidden: a plugin's `LogLevel::Info` on the request path is emitted at `debug!` by the data
+  plane; `info!` is reserved for lifecycle milestones.
 - An expected client disconnect or cancellation is `debug!`, not `error!`. Report it with the
   log-only `http.status = 499` plus `error.category = Cancelled`; `499` is never sent on the wire.
 - If you cannot say which action an operator takes after reading an `error!` line, it should be
@@ -49,16 +57,17 @@ Rules:
   `upstream.name`, `ai.model`, `config.generation`.
 - `authn` is the **instance** name, not the plugin kind: a route may run two `jwt` entries, and the
   record has to say which one claimed the request. Its value can never come from the request — it is
-  written by the filter that verified the credential, from the typed `Identity` slot in the request
+  written by the plugin that verified the credential, from the typed `Identity` slot in the request
   context — so a caller cannot put a string of its own into the field.
 - Reserved field names, always the same spelling across crates:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `trace_id` | string | Correlates logs across filters, provider calls, retries |
+| `trace_id` | string | Correlates logs across plugins, provider calls, retries |
 | `request_id` | string | Per-request identifier surfaced to the caller |
 | `tenant` | string | Tenant / project isolation key; empty until a tenant model exists |
 | `authn` | string | The plugin instance that authenticated the request (the `name` the document gave it); absent when nothing did |
+| `plugin` | string | The plugin instance a failure/refusal is attributed to; absent when no plugin was involved |
 | `route_id` | string | Compiled route identity |
 | `upstream` | string | Selected peer / provider name |
 | `config.generation` | u64 | Snapshot generation in use |

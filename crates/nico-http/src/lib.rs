@@ -4,14 +4,15 @@
 //! traffic. It owns the HTTP concerns of that path and nothing else:
 //!
 //! - [route] — which route a request matches, decided from request headers only.
-//! - [filter] — the seam HTTP policy plugs into, and [error] — the single failure vocabulary that
-//!   maps to exactly one wire response.
-//! - [plugin] — the five-phase policy contract a built-in or WASM plugin implements, plus the
-//!   registry that turns a document's `kind` into an implementation.
-//! - [context] — the per-request state a policy may read, including its identity and the peer the
-//!   request goes to.
+//! - [plugin] — the five-phase policy contract a built-in or WASM plugin implements: the `Plugin`
+//!   trait, the chain that drives it, and the registry that turns a document's `kind` into an
+//!   implementation.
+//! - [error] — the single failure vocabulary that maps to exactly one wire response.
+//! - [context] — the per-request state the data plane keeps, including its identity and the peer the
+//!   request goes to. A plugin reaches it only through `PluginContext`.
 //! - [state] — the one published value the request path reads: a snapshot, the global and per-route
-//!   filter chains compiled from it, and the routes whose request body is buffered whole.
+//!   chains compiled from it, and the two per-route framing decisions (buffered request body,
+//!   rewritten response body).
 //! - [proxy] — the Pingora hook contract that ties the above together, and [mod@service] — the
 //!   process-level assembly (server configuration, listener).
 //! - [settings] — the validated bootstrap knobs this data plane is configured with.
@@ -19,7 +20,9 @@
 //! Two boundaries stay inside the crate: `budget` owns the body/time budget arithmetic, and
 //! `upstream` owns "destination → connectable peer". Neither is part of the public contract: the
 //! only thing another crate needs from the second one is [`Destination`], the value a policy hands
-//! over when it understood a target this crate does not.
+//! over when it understood a target this crate does not. The Pingora header types are no longer
+//! re-exported either: a plugin never sees one, so there is no reason for its crate to depend on the
+//! framework.
 //!
 //! # Boundaries
 //!
@@ -32,17 +35,18 @@
 //! # Invariants
 //!
 //! - **Route selection never reads the request body.** Pingora's body hooks stream chunks and never
-//!   replay them, so a filter that consumed the body would leave the upstream waiting forever.
-//!   Every decision here is made from request headers.
+//!   replay them, so a policy that consumed the body would leave the upstream waiting forever. Every
+//!   decision here is made from request headers — except the body stages, which hand the chunk back.
 //! - **One snapshot per request.** The context holds one `Arc<RuntimeSnapshot>` for the whole
 //!   request, so a reload cannot change the route, limits or generation mid-flight.
 //! - **One peer decision per request.** The destination is chosen once — by a filter that resolved
 //!   the target, or from the document — and recorded, so the hook that connects and the hook that
 //!   rewrites `Host` cannot describe different peers.
-//! - **One deadline.** The request's budget is enforced at every point that can block: the filter
-//!   chain, the connect, the response headers, the response stream and the request body stream.
+//! - **One deadline.** The request's budget exists before routing — a global plugin runs before a
+//!   route does — and is enforced at every point that can block: each plugin stage, the connect, the
+//!   response headers, the response stream and the request body stream.
 //! - **One error mapping.** [`HttpError`] is the only failure vocabulary; [`HttpError::respond`] is
-//!   the only place that decides a status code and a stable error code. Filters and hooks describe
+//!   the only place that decides a status code and a stable error code. Plugins and hooks describe
 //!   *why* something failed and never build a response themselves.
 //! - **Upstream semantics are not rewritten.** No response compression, no injected `server` header,
 //!   no `Content-Length` changes, no retries.
@@ -84,7 +88,6 @@
 
 pub mod context;
 pub mod error;
-pub mod filter;
 pub mod plugin;
 pub mod proxy;
 pub mod route;
@@ -103,20 +106,16 @@ pub use error::{
     BodyFormat, BodyTemplate, HttpError, MAX_LITERAL_BYTES, Part, Rejection, RejectionError,
     Respond, escape_json_string,
 };
-pub use filter::{FilterChain, HttpFilter};
-/// The header types [`HttpFilter`] names.
-///
-/// Re-exported so a crate that implements a policy does not have to depend on the HTTP framework
-/// itself: the filter contract is this crate's, and these two types are part of it.
-pub use pingora::http::{RequestHeader, ResponseHeader};
 pub use plugin::{
-    LogLevel, Outcome, Plugin, PluginBuildError, PluginContext, PluginError, PluginFactory,
-    PluginFilter, PluginInfo, PluginPhase, PluginRegistry, PluginResult, RegistryError,
-    ResponseData, ResponseError,
+    LogLevel, Outcome, Plugin, PluginBuildError, PluginChain, PluginContext, PluginEntry,
+    PluginError, PluginFactory, PluginInfo, PluginPhase, PluginPhases, PluginRegistry,
+    PluginResult, RegistryError, ResponseData, ResponseError,
 };
 pub use proxy::HttpApp;
 pub use route::match_route;
 pub use service::{server_conf, service};
 pub use settings::{HttpSettings, HttpSettingsError};
-pub use state::{BufferedRoutes, HttpState, HttpStateHandle, PublishedChains, RouteChains};
+pub use state::{
+    BufferedRoutes, HttpState, HttpStateHandle, PublishedChains, ResponseRewrites, RouteChains,
+};
 pub use upstream::Destination;

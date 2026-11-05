@@ -368,7 +368,7 @@ fn reportable(raw: &str) -> String {
         .collect()
 }
 
-// Compiled-in proof that the compiled refusal a filter shares can cross `.await` and threads.
+// Compiled-in proof that the compiled refusal a plugin shares can cross `.await` and threads.
 const _: fn() = || {
     const fn assert_send_sync_static<T: Send + Sync + 'static>() {}
     assert_send_sync_static::<AuthRejections>();

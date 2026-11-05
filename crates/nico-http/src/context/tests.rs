@@ -30,12 +30,8 @@ fn begin(routes: &str) -> (HttpContext, Instant) {
     let route = &snapshot.document().routes()[0];
     let now = Instant::now();
     let mut ctx = HttpContext::default();
-    ctx.begin(
-        &snapshot,
-        route,
-        &request_to("example.test", "/api/items"),
-        now,
-    );
+    ctx.begin(&snapshot, &request_to("example.test", "/api/items"), now);
+    ctx.bind_route(route);
     (ctx, now)
 }
 
@@ -81,10 +77,10 @@ fn begin_records_the_method_and_the_path_without_its_query() {
 
     ctx.begin(
         &snapshot,
-        route,
         &request_to("example.test", "/api/items?page=2"),
         Instant::now(),
     );
+    ctx.bind_route(route);
 
     assert_eq!(ctx.method(), Some(&Method::GET));
     assert_eq!(ctx.path(), Some("/api/items"));
@@ -177,7 +173,11 @@ fn counted_body_bytes_accumulate_across_chunks() {
     ctx.count_body(100);
 
     assert_eq!(ctx.body_bytes(), 300);
-    assert!(!ctx.body_over_limit(), "300 bytes is under the 512 limit");
+    assert_eq!(
+        ctx.exceeded_body_limit(),
+        None,
+        "300 bytes is under the 512 limit"
+    );
 }
 
 #[test]
@@ -186,7 +186,7 @@ fn a_body_exactly_at_the_limit_is_not_over_it() {
 
     ctx.count_body(512);
 
-    assert!(!ctx.body_over_limit());
+    assert_eq!(ctx.exceeded_body_limit(), None);
 }
 
 #[test]
@@ -195,7 +195,46 @@ fn a_body_one_byte_over_the_limit_is_over_it() {
 
     ctx.count_body(513);
 
-    assert!(ctx.body_over_limit());
+    assert_eq!(
+        ctx.exceeded_body_limit(),
+        Some(512),
+        "the verdict carries the limit it was measured against, so no caller has to look it up again"
+    );
+}
+
+#[test]
+fn the_deadline_guard_returns_the_failure_only_when_the_clock_ran_out() {
+    let (ctx, now) = begin(TIGHT_ROUTE);
+
+    assert!(ctx.deadline_failure(now).is_none());
+    let error = ctx
+        .deadline_failure(now + Duration::from_millis(101))
+        .expect("the 100 ms route budget is spent");
+    assert!(matches!(error, HttpError::DeadlineExceeded { .. }));
+}
+
+#[test]
+fn a_zero_body_limit_rejects_the_first_byte() {
+    let (mut ctx, _) = begin(concat!(
+        "  - id: api\n",
+        "    path_prefix: /api\n",
+        "    upstream: api-backend\n",
+        "    max_body_bytes: 0\n",
+    ));
+
+    assert_eq!(ctx.exceeded_body_limit(), None, "an empty body is allowed");
+    ctx.count_body(1);
+    assert_eq!(ctx.exceeded_body_limit(), Some(0), "0 accepts no body");
+}
+
+#[test]
+fn the_first_plugin_attribution_wins() {
+    let (mut ctx, _) = begin(ROUTE);
+
+    assert_eq!(ctx.failed_plugin(), None);
+    ctx.set_failed_plugin("edge-firewall");
+    ctx.set_failed_plugin("a-later-symptom");
+    assert_eq!(ctx.failed_plugin(), Some("edge-firewall"));
 }
 
 #[test]

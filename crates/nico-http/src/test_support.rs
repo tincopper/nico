@@ -153,7 +153,8 @@ impl PluginFixture {
         let route = &snapshot.document().routes()[0];
         let request = request_to("example.test", "/api/items?page=2");
         let mut http = HttpContext::default();
-        http.begin(&snapshot, route, &request, Instant::now());
+        http.begin(&snapshot, &request, Instant::now());
+        http.bind_route(route);
         http.set_trace_id("trace-1");
         http.set_client_ip(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7)));
         Self {

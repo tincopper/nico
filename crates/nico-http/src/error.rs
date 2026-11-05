@@ -1,9 +1,9 @@
 //! The data plane's failure vocabulary and the only place it becomes a wire response.
 //!
-//! Every failure on the request path — routing, limits, filters, upstream connection — is expressed
+//! Every failure on the request path — routing, limits, plugins, upstream connection — is expressed
 //! as one [`HttpError`]. [`HttpError::respond`] maps each variant to exactly one status code, one
 //! stable machine-readable `code` and one caller-safe `message`; nothing else in this crate builds
-//! an error response, so a filter cannot invent a status and two call sites cannot disagree.
+//! an error response, so a plugin cannot invent a status and two call sites cannot disagree.
 //!
 //! Two properties are deliberate:
 //!
@@ -222,10 +222,11 @@ pub enum HttpError {
     },
     /// A policy refused the request and compiled how the refusal is presented.
     ///
-    /// This is the one variant a filter builds itself: the status, the stable code, the headers and
-    /// the body all come from a [`Rejection`], compiled when the document was published. `category`
-    /// is carried by the rejection, so a document that overrides the status cannot change how the
-    /// failure is logged.
+    /// This is the one variant a policy decides: a plugin returns
+    /// [`PluginError::Refused`], and the status, the stable code, the
+    /// headers and the body all come from the [`Rejection`] compiled when the document was
+    /// published. `category` is carried by the rejection, so a document that overrides the status
+    /// cannot change how the failure is logged.
     #[error("request rejected by policy: {detail}")]
     Rejected {
         /// The compiled presentation, shared by every request this policy refuses.
@@ -331,8 +332,10 @@ impl HttpError {
 /// Why a plugin stage failed, kept as the cause of an internal failure.
 ///
 /// A plugin that cannot do its job is this process's defect, so it is answered as
-/// [`HttpError::Internal`] with the plugin layer named in the cause. The plugin *instance* is added by
-/// the hook that ran the stage, because that is the only place that knows which one it was.
+/// [`HttpError::Internal`] with the plugin layer named in the cause. The plugin *instance* is a
+/// per-request fact: the chain records it on [`HttpContext`](crate::HttpContext) at the one place
+/// that knows both the entry and the error, and the request's single log record emits it as `plugin`.
+/// Keeping it out of the error type is what preserves one conversion and a caller-safe `Display`.
 #[derive(Debug, thiserror::Error)]
 enum PluginFault {
     /// The plugin failed to do its own work.

@@ -1,16 +1,14 @@
-//! Tests for the plan a document compiles to: the global chain, interning and the body mode.
+//! Tests for the plan a document compiles to: the global chain, interning and the framing decisions.
 //!
-//! The subject is the whole plan rather than one filter: which entries run before routing, which
-//! filters a route shares with that chain, and which routes buffer the request body. Each fixture is a
-//! real document parsed by `Document::parse`, so a test can only prove something about a shape an
-//! operator could actually write.
+//! The subject is the whole plan rather than one plugin: which entries run before routing, which
+//! entries a route shares with that chain, and which routes buffer the request body or lose the
+//! upstream's response length. Each fixture is a real document parsed by `Document::parse`, so a test
+//! can only prove something about a shape an operator could actually write.
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::collections::{HashMap, HashSet};
 
 use nico_core::ErrorCategory;
+use nico_http::PluginPhases;
 use tempfile::TempDir;
 
 use super::{
@@ -281,6 +279,39 @@ fn a_route_that_declares_a_body_buffering_entry_is_marked() {
 }
 
 #[test]
+fn a_global_entry_that_buffers_or_rewrites_marks_every_route() {
+    // No built-in kind declares `RESPONSE_BODY`, so the declaration is injected on the compiled
+    // entry — the only input the framing decision reads. A global entry runs on every request, so a
+    // route that names no plugin at all still needs the buffered mode and a chunked response.
+    let directory = TempDir::new().expect("temporary directory");
+    let secret = secret_file(&directory, SECRET);
+    let document = document_with_globals(
+        &jwt_entry(&secret),
+        "jwt",
+        &format!("{}{}", route("api", &[]), route("open", &[])),
+    );
+    let mut entries = compiled(&document);
+    for entry in &mut entries {
+        entry.phases = PluginPhases::RESPONSE_BODY;
+        entry.buffers_body = true;
+    }
+
+    let plan =
+        compile_plan(&document, &entries, &HashSet::new()).expect("the fixture plan is complete");
+
+    for route in ["api", "open"] {
+        assert!(
+            plan.buffered.contains(route),
+            "{route} buffers its request body"
+        );
+        assert!(
+            plan.rewriting_responses.contains(route),
+            "{route} cannot keep a length-framed response"
+        );
+    }
+}
+
+#[test]
 fn a_route_whose_entries_never_ask_for_the_body_is_not_marked() {
     let document = document_with(QUOTA_ENTRY, &route("api", &["quota"]));
 
@@ -297,7 +328,7 @@ fn a_route_whose_entries_never_ask_for_the_body_is_not_marked() {
 #[test]
 fn a_plugin_declared_and_named_by_a_route_is_one_instance_in_both_chains() {
     // The entry is declared once and a route names it, so the global chain and the route chain must
-    // hold the same `Arc<dyn HttpFilter>`: a second element would keep a second piece of runtime
+    // drive the same plugin instance: a second element would keep a second piece of runtime
     // state (a token bucket, say) for one configured plugin, and the two would drift apart.
     let directory = TempDir::new().expect("temporary directory");
     let secret = secret_file(&directory, SECRET);
@@ -323,14 +354,14 @@ fn a_plugin_declared_and_named_by_a_route_is_one_instance_in_both_chains() {
     );
     for (global, routed) in plan.global.iter().zip(api.iter()) {
         assert!(
-            Arc::ptr_eq(global, routed),
+            global.is_same_instance(routed),
             "a filter the route shares with the global chain is one instance"
         );
     }
     let limited = plan.routes.get("limited").expect("the route has a chain");
     assert_eq!(limited.len(), 1);
     assert!(
-        Arc::ptr_eq(&plan.global[1], &limited[0]),
+        plan.global[1].is_same_instance(&limited[0]),
         "and a route that names only the limit holds the instance the global chain runs"
     );
 }

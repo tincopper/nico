@@ -38,7 +38,7 @@ use std::{
 
 use nico_core::{Document, ErrorCategory, PluginSpec, Route};
 use nico_http::{
-    FilterChain, HttpFilter, Plugin, PluginFilter, PluginPhase, PluginRegistry, PublishedChains,
+    Plugin, PluginChain, PluginEntry, PluginPhase, PluginPhases, PluginRegistry, PublishedChains,
 };
 use serde_norway::Value;
 
@@ -77,7 +77,9 @@ fn log_scope(document: &Document, compiled: &[Compiled]) {
             kind = entry.kind,
             scope,
             phase = phase_label(entry.phase),
+            phases = ?entry.phases,
             buffers_body = entry.buffers_body,
+            enabled = true,
             "plugin compiled"
         );
     }
@@ -106,6 +108,8 @@ struct Compiled {
     phase: PluginPhase,
     /// The `kind` string the entry was built from, for the compilation log.
     kind: String,
+    /// The stages the plugin declares, for the compilation log and for the framing decision.
+    phases: PluginPhases,
     /// Whether the entry asked for the whole request body in one call.
     ///
     /// It rides on the compiled entry because the decision it feeds is per route: a route that names
@@ -186,16 +190,18 @@ impl PluginRuntime {
             routes = document.routes().len(),
             chains = planned.chains,
             buffered = planned.buffered.len(),
+            rewriting_responses = planned.rewriting_responses.len(),
             "plugin plan compiled"
         );
         Ok(PublishedChains::new(
-            FilterChain::new(planned.global),
+            PluginChain::new(planned.global),
             planned
                 .routes
                 .into_iter()
-                .map(|(route, filters)| (route, FilterChain::new(filters)))
+                .map(|(route, entries)| (route, PluginChain::new(entries)))
                 .collect(),
             planned.buffered.into_iter().collect(),
+            planned.rewriting_responses.into_iter().collect(),
         ))
     }
 
@@ -243,6 +249,7 @@ impl PluginRuntime {
             name: plugin.name().to_owned(),
             phase: factory.phase(),
             kind: plugin.kind().to_owned(),
+            phases: plugin_instance.info().phases(),
             buffers_body: plugin.buffers_body(),
             plugin: plugin_instance,
             config,
@@ -286,7 +293,7 @@ fn config_text(plugin: &PluginSpec) -> Result<Arc<str>, PluginError> {
 ///
 /// One `Arc` per compiled entry inside one `Arc` slice: cloning a chain is one refcount bump, and an
 /// entry that is both global and route-scoped keeps one element rather than a copy per chain.
-type SharedFilters = Arc<[Arc<dyn HttpFilter>]>;
+type SharedEntries = Arc<[PluginEntry]>;
 
 /// The policies one document compiles to, before they become the published value.
 ///
@@ -295,11 +302,13 @@ type SharedFilters = Arc<[Arc<dyn HttpFilter>]>;
 /// piece of runtime state (a bucket table, say) rather than two.
 struct Planned {
     /// The chain a request runs before it is routed.
-    global: SharedFilters,
+    global: SharedEntries,
     /// The chain of every route that names a plugin.
-    routes: HashMap<String, SharedFilters>,
+    routes: HashMap<String, SharedEntries>,
     /// The routes whose request body plugins need whole.
     buffered: BTreeSet<String>,
+    /// The routes whose response body a plugin rewrites.
+    rewriting_responses: BTreeSet<String>,
     /// How many distinct chains the plan allocates — what interning is measured by. The global chain
     /// counts when it has filters, a route that names every entry reuses that same slice, and a
     /// document that declares no plugin allocates none.
@@ -331,20 +340,12 @@ fn plan(
     // One chain element per compiled entry, built before interning so every chain that names the
     // entry shares that one element — which is what keeps one configured plugin one instance even
     // when it runs globally and on a route.
-    //
-    // TEMPORARY: the element is the two-stage adapter of a five-phase plugin (step 6a). The hook
-    // rewrite stores the plugin itself, and this mapping disappears with the adapter.
-    let elements: Vec<Arc<dyn HttpFilter>> = ordered
+    let elements: Vec<PluginEntry> = ordered
         .iter()
-        .map(|entry| {
-            Arc::new(PluginFilter::new(
-                Arc::clone(&entry.plugin),
-                Arc::clone(&entry.config),
-            )) as Arc<dyn HttpFilter>
-        })
+        .map(|entry| PluginEntry::new(Arc::clone(&entry.plugin), Arc::clone(&entry.config)))
         .collect();
 
-    let mut interned: HashMap<Vec<usize>, SharedFilters> = HashMap::new();
+    let mut interned: HashMap<Vec<usize>, SharedEntries> = HashMap::new();
     // `global_plugins` is the global use site: the document decides there which declared plugins run
     // before routing. Declaring a plugin is not such a decision, so an entry that is not listed does
     // not run for every request. Interning first lets a route that names the same set share the slice.
@@ -355,20 +356,31 @@ fn plan(
         &phases,
         disabled,
     )?;
+    // The two per-route framing decisions a global entry can force. It runs on every route, so a body
+    // it needs whole, or a response body it rewrites, is a property of the whole document rather than
+    // of the routes that happen to name it.
+    let global_buffers = wants_whole_body(&global, &ordered);
+    let global_rewrites = rewrites_response(&global, &ordered);
     let global = intern(&mut interned, &global, &elements);
 
     let mut routes = HashMap::new();
     let mut buffered = BTreeSet::new();
+    let mut rewriting_responses = BTreeSet::new();
     for route in document.routes() {
-        if route.plugins().is_empty() {
-            // The zero-cost path: no entry, no lookup, no chain.
-            continue;
-        }
         let key = order(route.id(), route.plugins(), &index_of, &phases, disabled)?;
         // One entry that needs the whole body puts its route into that mode: the body can only be
         // delivered once, so a per-plugin "you get chunks, you get a buffer" split is not expressible.
-        if key.iter().any(|index| ordered[*index].buffers_body) {
+        // A buffered global entry does the same for every route.
+        if global_buffers || wants_whole_body(&key, &ordered) {
             buffered.insert(route.id().to_owned());
+        }
+        // A route whose response body is rewritten cannot keep a length-framed response.
+        if global_rewrites || rewrites_response(&key, &ordered) {
+            rewriting_responses.insert(route.id().to_owned());
+        }
+        if route.plugins().is_empty() {
+            // The zero-cost path: no entry, no lookup, no chain.
+            continue;
         }
         routes.insert(
             route.id().to_owned(),
@@ -380,9 +392,25 @@ fn plan(
         global,
         routes,
         buffered,
+        rewriting_responses,
         // A slice no entry contributes to is not a chain, so an empty plan reports none.
         chains: interned.keys().filter(|key| !key.is_empty()).count(),
     })
+}
+
+/// Returns whether any entry of a chain needs the whole request body in one call.
+fn wants_whole_body(key: &[usize], ordered: &[&Compiled]) -> bool {
+    key.iter().any(|index| ordered[*index].buffers_body)
+}
+
+/// Returns whether any entry of a chain declares that it rewrites the response body.
+///
+/// The declaration is the plugin's, read once when the document was compiled: a route listed here has
+/// its upstream `content-length` removed, because the number in it would no longer describe the bytes
+/// the plugin sends.
+fn rewrites_response(key: &[usize], ordered: &[&Compiled]) -> bool {
+    key.iter()
+        .any(|index| ordered[*index].phases.contains(PluginPhases::RESPONSE_BODY))
 }
 
 /// Returns the interned element slice for `key`, building it the first time it is asked for.
@@ -391,26 +419,28 @@ fn plan(
 /// list the same plugins in a different order resolve to the same key, which is what makes interning
 /// follow execution order rather than text.
 fn intern(
-    interned: &mut HashMap<Vec<usize>, SharedFilters>,
+    interned: &mut HashMap<Vec<usize>, SharedEntries>,
     key: &[usize],
-    elements: &[Arc<dyn HttpFilter>],
-) -> SharedFilters {
-    if let Some(filters) = interned.get(key) {
-        return Arc::clone(filters);
+    elements: &[PluginEntry],
+) -> SharedEntries {
+    if let Some(entries) = interned.get(key) {
+        return Arc::clone(entries);
     }
-    let filters: SharedFilters = key
+    // The entries are cloned by reference into the slice: one `PluginEntry` per compiled plugin, so a
+    // chain that names the same set twice points at the same elements instead of rebuilding them.
+    let entries: SharedEntries = key
         .iter()
-        .map(|index| Arc::clone(&elements[*index]))
+        .map(|index| elements[*index].clone())
         .collect::<Vec<_>>()
         .into();
-    interned.insert(key.to_vec(), Arc::clone(&filters));
-    filters
+    interned.insert(key.to_vec(), Arc::clone(&entries));
+    entries
 }
 
 /// Returns the entries a route runs, as positions in the phase-ordered list.
 ///
 /// A name the plan does not compile is skipped **only** when the document declared it disabled: that
-/// is a configured no-op, not a missing policy. An empty result is a real chain with no filters, so a
+/// is a configured no-op, not a missing policy. An empty result is a real chain with no plugins, so a
 /// route that lists only disabled plugins still resolves.
 ///
 /// # Errors

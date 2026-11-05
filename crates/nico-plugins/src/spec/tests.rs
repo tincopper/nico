@@ -1,4 +1,4 @@
-//! Tests for the compiled parameters: the values a filter reads that came out of the document.
+//! Tests for the compiled parameters: the values a plugin reads that came out of the document.
 //!
 //! A range the kind's own configuration already refuses cannot be produced here — a `JwtConfig` only
 //! exists after the entry's `config` was read — so these tests assert the compiled shape (durations,
