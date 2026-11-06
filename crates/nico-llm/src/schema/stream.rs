@@ -35,6 +35,12 @@ pub enum StreamEvent {
         id: ToolCallId,
         /// The tool being called.
         name: ToolName,
+        /// The call's position among the calls of this response.
+        ///
+        /// A protocol whose streamed chunks address a call by position before its id is known
+        /// needs a stable index, and the id alone does not give one: the decoder assigns it when
+        /// the call starts and repeats it on every later event of the same call.
+        index: u32,
     },
     /// A fragment of a tool call's JSON arguments.
     ///
@@ -45,11 +51,17 @@ pub enum StreamEvent {
         id: ToolCallId,
         /// A text fragment of the JSON arguments.
         arguments: String,
+        /// The call's position among the calls of this response, as [`StreamEvent::ToolCallStart`]
+        /// assigned it.
+        index: u32,
     },
     /// A tool call's arguments are complete.
     ToolCallEnd {
         /// The completed call.
         id: ToolCallId,
+        /// The call's position among the calls of this response, as [`StreamEvent::ToolCallStart`]
+        /// assigned it.
+        index: u32,
     },
     /// Token usage for the response so far.
     Usage(Usage),

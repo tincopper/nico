@@ -85,7 +85,7 @@ impl ExchangeError {
     pub fn canonical(&self) -> CanonicalError {
         match self {
             Self::Unsupported { .. }
-            | Self::Codec(CodecError::Unsupported { .. })
+            | Self::Codec(CodecError::Unsupported { .. } | CodecError::UnsupportedField { .. })
             | Self::Provider(ProviderError::Unsupported { .. }) => {
                 CanonicalError::from_static_parts(
                     ErrorCategory::Client,

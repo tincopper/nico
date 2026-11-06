@@ -348,6 +348,13 @@ fn every_failure_maps_to_a_valid_canonical_error() {
             ("unsupported_capability", 422),
         ),
         (
+            ExchangeError::Codec(CodecError::UnsupportedField {
+                protocol: PROTOCOL,
+                field: "n".to_owned(),
+            }),
+            ("unsupported_capability", 422),
+        ),
+        (
             ExchangeError::Provider(ProviderError::Unsupported {
                 kind: KIND,
                 feature: Capability::Images,

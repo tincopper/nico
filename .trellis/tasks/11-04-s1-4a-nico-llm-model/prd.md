@@ -31,10 +31,10 @@
 
 ### R2：canonical 形状
 
-- 请求：`ChatRequest { model, conversation: Vec<Item>, tools, tool_choice, sampling, response_format, stream, extensions }`。
+- 请求：`ChatRequest { model, conversation: Vec<Item>, tools, tool_choice, sampling, response_format, stream, extensions }`；`sampling` 覆盖两端都能表达的旋钮（temperature、top_p、输出上限、stop sequences、seed、presence/frequency penalty）。
 - `Item::{Message(Message), ToolCall(ToolCall), ToolResult(ToolResult), Reasoning(Reasoning)}`；`ContentPart::{Text, Image, File}`。
 - 响应：`ChatResponse { id, model, choices, usage, extensions }`；`Choice { index, turn: AssistantTurn, finish_reason }`；`AssistantTurn { content, tool_calls, reasoning }`。
-- 流：`StreamEvent::{Start, TextDelta, ReasoningDelta, ToolCallStart, ToolCallDelta, ToolCallEnd, Usage, Finish, Error}`；canonical 事件不是 OpenAI chunk DTO。
+- 流：`StreamEvent::{Start, TextDelta, ReasoningDelta, ToolCallStart, ToolCallDelta, ToolCallEnd, Usage, Finish, Error}`；tool call 的三个事件携带该 call 在响应中的稳定 `index`（按位置寻址的协议在 id 出现前只能靠位置标识一个并行 call）；canonical 事件不是 OpenAI chunk DTO。
 - 资源与错误：`Usage` 区分 measured 与 provider-reported；`CanonicalError` 携带 `ErrorCategory`、稳定 code、`http_status`、`retryable`、可选 provider code；`RawJson` 只用于调用方声明的 JSON 文档（tool parameters、tool arguments、structured-output schema）与未建模字段，配置/路由路径仍禁止 `serde_json::Value`。
 - 每个形状有构造校验与 golden fixture；未知字段进 `extensions`，不得静默丢失。
 
@@ -42,8 +42,9 @@
 
 - `protocol/openai_chat.rs` 实现 `ClientCodec`：把客户端 `/v1/chat/completions` 请求（body + 必要头）解码为 canonical；把 canonical response/stream/error 编码回 OpenAI wire。
 - 流式：任意字节分片、跨块 UTF-8、多行 `data:`、`[DONE]`、心跳都必须安全；输出事件序列与 canonical 一致。
-- 未知字段保留到 `extensions`；不支持的能力（例如工具被路由禁用）返回 typed error，不静默丢。
-- 声明 `Capabilities`：streaming / tools / images / files / reasoning / response_format；发布期记录与 provider 的交集，空交集不拒绝（纯文本不需要能力）；请求体声明的需求超出交集时返回 422 `unsupported_capability`，不静默丢。
+- 未知字段保留到 `extensions`；已知但 canonical 无法承载的字段（`n > 1`、logprobs、audio 输出、`strict` 等）返回 typed error（422，只报字段名），不静默丢；需要字节级兼容的路由用 `mode: passthrough`。
+- 流式编码每响应一个 encoder（不仅 codec 单例）：chunk 需要重复 `Start` 携带的响应 id/模型，终止符在 body 结束时写出。
+- 声明 `Capabilities`：能力轴是 streaming / tools / images / files / reasoning / response_format，codec 只声明自己真的映射过的那些（1.4a 的 OpenAI Chat 声明除 `files` 外的五项：file 引用没有 canonical 形态）；发布期记录与 provider 的交集，空交集不拒绝（纯文本不需要能力）；请求体声明的需求超出交集时返回 422 `unsupported_capability`，不静默丢。
 
 ### R4：OpenAI 上游 provider 适配
 

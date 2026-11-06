@@ -11,10 +11,10 @@ use nico_core::ErrorCategory;
 use nico_http::Destination;
 use nico_llm::{
     AssistantTurn, CanonicalError, Capabilities, Capability, ChatRequest, ChatResponse, Choice,
-    ClientCodec, ClientReply, CodecError, ContentPart, Credential, Endpoint, Exchange,
-    ExchangeMode, FinishReason, ImageSource, Item, Message, ModelId, ProtocolId, Provider,
-    ProviderError, ProviderKind, ProviderRoute, ProviderStream, RequestFacts, ResponseFacts,
-    ResponseId, Role, StreamEvent,
+    ClientCodec, ClientReply, ClientStreamEncoder, CodecError, ContentPart, Credential, Endpoint,
+    Exchange, ExchangeMode, FinishReason, ImageSource, Item, Message, ModelId, ProtocolId,
+    Provider, ProviderError, ProviderKind, ProviderRoute, ProviderStream, RequestFacts,
+    ResponseFacts, ResponseId, Role, StreamEvent,
 };
 
 /// The protocol both mocks speak; a test that pairs a different one is testing a refusal.
@@ -125,7 +125,20 @@ impl ClientCodec for MockCodec {
         ))
     }
 
-    fn encode_stream_event(&self, event: &StreamEvent) -> Result<Vec<u8>, CodecError> {
+    fn stream_encoder(&self) -> Box<dyn ClientStreamEncoder> {
+        Box::new(MockStreamEncoder)
+    }
+
+    fn encode_error(&self, error: &CanonicalError) -> Result<Vec<u8>, CodecError> {
+        Ok(format!("error:{}:{}\n", error.http_status(), error.code()).into_bytes())
+    }
+}
+
+/// Encodes one text delta per line and nothing for the other events.
+struct MockStreamEncoder;
+
+impl ClientStreamEncoder for MockStreamEncoder {
+    fn push(&mut self, event: &StreamEvent) -> Result<Vec<u8>, CodecError> {
         let line = match event {
             StreamEvent::TextDelta(text) => format!("text:{text}\n"),
             StreamEvent::Finish(reason) => format!("finish:{reason:?}\n"),
@@ -139,8 +152,8 @@ impl ClientCodec for MockCodec {
         Ok(line.into_bytes())
     }
 
-    fn encode_error(&self, error: &CanonicalError) -> Result<Vec<u8>, CodecError> {
-        Ok(format!("error:{}:{}\n", error.http_status(), error.code()).into_bytes())
+    fn finish(&mut self) -> Result<Vec<u8>, CodecError> {
+        Ok(Vec::new())
     }
 }
 

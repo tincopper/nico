@@ -194,11 +194,11 @@ impl Exchange {
     /// completed by another one's bytes.
     #[must_use]
     pub fn stream(&self) -> StreamEncoder {
-        StreamEncoder::new(Arc::clone(&self.codec), self.provider.stream_decoder())
+        StreamEncoder::new(self.codec.stream_encoder(), self.provider.stream_decoder())
     }
 }
 
-impl std::fmt::Debug for Exchange {
+impl fmt::Debug for Exchange {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("Exchange")

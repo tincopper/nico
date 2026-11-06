@@ -16,9 +16,10 @@ The backend is **one Cargo Workspace** at the repository root. The layout follow
 3. **One binary target** — `nico` (built by the `nico-server` crate). Deployment roles (traffic / LLM) are selected by Cargo
    features plus runtime config, not by adding more binaries.
 
-> **Status**: `nico-core`, `nico-config`, `nico-http`, `nico-plugins` and `nico-server` exist as
-> built. The remaining crates below are the binding target structure. Architecture rationale lives
-> in `.trellis/tasks/11-03-unified-gateway-analysis/design.md` — do not re-derive it from this file.
+> **Status**: `nico-core`, `nico-config`, `nico-http`, `nico-plugins`, `nico-llm` and `nico-server`
+> exist as built. The remaining crates below are the binding target structure. Architecture rationale
+> lives in `.trellis/tasks/11-03-unified-gateway-analysis/design.md` — do not re-derive it from this
+> file.
 
 ---
 
@@ -89,15 +90,17 @@ nico/
     │   └── src/
     │       ├── lib.rs
     │       ├── schema.rs        # canonical shape root; schema/ split by data boundary
-    │       ├── schema/          # request/conversation/tool/extension/response/stream/usage/error/model
-    │       ├── protocol.rs      # ClientCodec trait + ClientReply (the status a client protocol answers with) + registry
-    │       ├── protocol/        # facts.rs (framework-free request/response facts), then openai_chat, openai_responses, anthropic, gemini
+    │       ├── schema/          # request/conversation/tool/extension/response/stream/usage/error/model/sampling
+    │       ├── protocol.rs      # ClientCodec + ClientStreamEncoder traits, ClientReply (the status a client protocol answers with), registry
+    │       ├── protocol/        # capabilities.rs (what a side can express), facts.rs (framework-free exchange facts), then openai_chat, openai_responses, anthropic, gemini
+    │       ├── protocol/openai_chat/  # one codec's documents: {request,declaration,message,response,stream,error,usage}.rs
     │       ├── provider.rs      # Provider/ProviderStream traits + registry
     │       ├── provider/        # route.rs (compiled route facts), then openai, anthropic, gemini: wire ↔ canonical
+    │       ├── stream.rs        # declares the shared framing submodule
     │       ├── stream/
-    │       │   └── sse.rs       # shared SSE framing, no vendor semantics
+    │       │   └── sse.rs       # shared SSE framing (event boundaries, cross-chunk UTF-8, terminator), no vendor semantics
     │       ├── filter.rs        # route exchange: endpoint → decode → encode → response/stream
-    │       └── filter/          # error.rs (failure vocabulary), stream.rs (per-response encoder); model map lives on provider/route.rs
+    │       └── filter/          # error.rs (failure vocabulary), stream.rs (one client encoder + one provider decoder per response); model map lives on provider/route.rs
     ├── nico-config/         # ConfigSource trait, local source, LKG cache, fakes
     │   └── src/
     │       ├── lib.rs
@@ -263,7 +266,10 @@ unless the type really manages several lifecycles or algorithms.
   (client wire ↔ canonical), register in `builtin_registry()`. No changes to `provider/`.
 - A vendor name or a `match` on a provider kind is allowed only in `provider/<vendor>` and
   `protocol/<vendor>`; `schema/`, `filter.rs` and `stream/sse.rs` must not learn vendors. The
-  canonical schema is the only vocabulary the two sides share.
+  canonical schema is the only vocabulary the two sides share. The one repetition is a module
+  declaration: `protocol.rs` and `provider.rs` must name `protocol/<vendor>.rs` for the compiler, so
+  `crates/nico-llm/tests/structure.rs` allows a vendor name on a module-wiring line of those two
+  registry roots and nowhere else.
 - Adding an auth plugin: add `<kind>.rs` for the `Plugin` implementation and `<kind>/` with
   `{config,factory,json,tests}.rs` for its config, factory, helpers and tests, registered by
   `builtin_registry()`. No changes to `nico-llm`, and none to `nico-core` or `nico-http`.

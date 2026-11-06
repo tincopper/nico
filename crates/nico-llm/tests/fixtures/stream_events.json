@@ -20,28 +20,19 @@
   },
   {
     "type": "tool_call_start",
-    "data": {
-      "id": "call_3",
-      "name": "describe"
-    }
+    "data": { "id": "call_3", "name": "describe", "index": 0 }
   },
   {
     "type": "tool_call_delta",
-    "data": {
-      "id": "call_3",
-      "arguments": "{\"detail\":"
-    }
+    "data": { "id": "call_3", "arguments": "{\"detail\":", "index": 0 }
   },
   {
     "type": "tool_call_delta",
-    "data": {
-      "id": "call_3",
-      "arguments": "\"brief\"}"
-    }
+    "data": { "id": "call_3", "arguments": "\"brief\"}", "index": 0 }
   },
   {
     "type": "tool_call_end",
-    "data": { "id": "call_3" }
+    "data": { "id": "call_3", "index": 0 }
   },
   {
     "type": "usage",

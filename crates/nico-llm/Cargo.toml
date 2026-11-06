@@ -12,8 +12,8 @@ nico-core.workspace = true
 # The provider contract hands over a `Destination` and nothing else: TLS policy, budgets and framing
 # stay in the data plane, and `nico-http` never depends on this crate.
 nico-http.workspace = true
-# The canonical values serialize for golden fixtures and diagnostics; the wire codecs arrive in a
-# later step and own their own parsing.
+# The canonical values serialize for golden fixtures and diagnostics; a wire codec owns its own
+# parsing and does not go through these derives.
 serde.workspace = true
 # `RawJson` is the only place an untyped JSON value is allowed: the JSON a caller declares (tool
 # parameters, tool arguments, a structured-output schema) and unmodelled fields.

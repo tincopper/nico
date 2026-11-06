@@ -10,14 +10,23 @@
 //! method, the path or a header reads [`RequestFacts`]; a provider adapter that must interpret a
 //! response status reads [`ResponseFacts`]. Both are owned, framework-free values (they live in the
 //! `facts` submodule), so a codec is testable without a server and the data plane never leaks a
-//! framework type into this contract. [`ClientReply`] is what an encoder produces for the client.
+//! framework type into this contract. [`ClientReply`] is what an encoder produces for the client,
+//! and [`ClientStreamEncoder`] is the per-response state a streamed answer needs.
+//!
+//! Submodules hold the parts this file would otherwise duplicate: `capabilities` owns what a
+//! protocol can express, `facts` owns the exchange's framework-free views, and each concrete codec
+//! gets a module named after its protocol.
 
 use std::{collections::BTreeMap, fmt, sync::Arc};
 
 use crate::schema::{CanonicalError, ChatRequest, ChatResponse, StreamEvent};
 
+mod capabilities;
 mod facts;
 
+pub mod openai_chat;
+
+pub use capabilities::{Capabilities, Capability};
 pub(crate) use facts::header_names;
 pub use facts::{RequestFacts, ResponseFacts};
 
@@ -45,150 +54,6 @@ impl ProtocolId {
 impl fmt::Display for ProtocolId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.0)
-    }
-}
-
-/// One optional feature a client protocol or a provider adapter may support.
-///
-/// The set is deliberately small and semantic: these are the features a request can require, so a
-/// capability the pair does not share is a refusal with a stable name instead of a silently dropped
-/// field. Plain text needs no capability; it is what a chat protocol does by definition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum Capability {
-    /// Incremental, event-streamed responses.
-    Streaming,
-    /// Tool declarations, tool calls and tool results.
-    Tools,
-    /// Image content parts.
-    Images,
-    /// File content parts.
-    Files,
-    /// Hidden reasoning parts.
-    Reasoning,
-    /// A structured response format.
-    ResponseFormat,
-}
-
-/// Number of kinds in [`Capability::ALL`]; the storage width of [`Capabilities`].
-const CAPABILITY_COUNT: usize = 6;
-
-// The bit set has one bit per capability, so the table must fit the `u8` it is stored in.
-const _: () = assert!(CAPABILITY_COUNT <= u8::BITS as usize);
-
-impl Capability {
-    /// Every capability, in bit order.
-    pub const ALL: [Self; CAPABILITY_COUNT] = [
-        Self::Streaming,
-        Self::Tools,
-        Self::Images,
-        Self::Files,
-        Self::Reasoning,
-        Self::ResponseFormat,
-    ];
-
-    /// Returns the capability's position in [`Capability::ALL`].
-    const fn index(self) -> usize {
-        match self {
-            Self::Streaming => 0,
-            Self::Tools => 1,
-            Self::Images => 2,
-            Self::Files => 3,
-            Self::Reasoning => 4,
-            Self::ResponseFormat => 5,
-        }
-    }
-
-    /// Returns the bit this capability occupies.
-    const fn mask(self) -> u8 {
-        1 << self.index()
-    }
-
-    /// Returns the stable name used in logs and diagnostics.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Streaming => "streaming",
-            Self::Tools => "tools",
-            Self::Images => "images",
-            Self::Files => "files",
-            Self::Reasoning => "reasoning",
-            Self::ResponseFormat => "response_format",
-        }
-    }
-}
-
-impl fmt::Display for Capability {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.name())
-    }
-}
-
-/// A set of [`Capability`] flags.
-///
-/// One value answers "what can this side express". Publication intersects the client codec's set with
-/// the provider adapter's and the exchange keeps the result, so a request that needs something the
-/// pair does not share is refused once, with the capability named, instead of failing later inside a
-/// vendor encoder.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct Capabilities {
-    bits: u8,
-}
-
-impl Capabilities {
-    /// Builds a set with no capability.
-    #[must_use]
-    pub const fn none() -> Self {
-        Self { bits: 0 }
-    }
-
-    /// Builds a set with every capability.
-    #[must_use]
-    pub const fn all() -> Self {
-        Self {
-            bits: (1 << CAPABILITY_COUNT) - 1,
-        }
-    }
-
-    /// Reports whether `capability` is set.
-    #[must_use]
-    pub const fn supports(self, capability: Capability) -> bool {
-        self.bits & capability.mask() != 0
-    }
-
-    /// Returns a copy with `capability` set.
-    #[must_use]
-    pub const fn with(mut self, capability: Capability) -> Self {
-        self.bits |= capability.mask();
-        self
-    }
-
-    /// Returns a copy with `capability` cleared.
-    #[must_use]
-    pub const fn without(mut self, capability: Capability) -> Self {
-        self.bits &= !capability.mask();
-        self
-    }
-
-    /// Returns the capabilities both sets have.
-    #[must_use]
-    pub const fn intersection(self, other: Self) -> Self {
-        Self {
-            bits: self.bits & other.bits,
-        }
-    }
-
-    /// Reports whether no capability is set.
-    #[must_use]
-    pub const fn is_empty(self) -> bool {
-        self.bits == 0
-    }
-
-    /// Iterates the capabilities that are set, in [`Capability::ALL`] order.
-    pub fn iter(self) -> impl Iterator<Item = Capability> {
-        Capability::ALL
-            .into_iter()
-            .filter(move |capability| self.supports(*capability))
     }
 }
 
@@ -228,14 +93,29 @@ pub enum CodecError {
         /// A diagnostic, for the log only.
         reason: String,
     },
+    /// The client asked for a wire field the canonical model cannot carry, and which is not one of
+    /// the [`Capability`] axes.
+    ///
+    /// The capability set names the features the canonical *shapes* can express, so a knob outside
+    /// them — more than one candidate answer, audio output, log-probabilities — has no capability to
+    /// name. It is the same refusal as [`CodecError::Unsupported`] (the caller asked for something
+    /// this pair cannot serve) and it is refused at request time, never dropped or approximated.
+    #[error("`{protocol}` cannot express the field `{field}`")]
+    UnsupportedField {
+        /// The protocol that cannot carry the field.
+        protocol: ProtocolId,
+        /// The dotted path of the wire field, without any part of its value.
+        field: String,
+    },
 }
 
 /// One client protocol's wire format.
 ///
 /// A codec is shared by every request of its protocol, so it holds configuration and no
 /// per-request state: the decode result is a value the exchange keeps, not state the codec
-/// remembers. Implementations live one per file under `protocol/`; the registry below is the only
-/// place protocol names are resolved.
+/// remembers, and the state a streamed answer needs lives in the [`ClientStreamEncoder`] the codec
+/// creates per response. Implementations live one per file under `protocol/`; the registry below is
+/// the only place protocol names are resolved.
 pub trait ClientCodec: Send + Sync {
     /// Returns the protocol this codec speaks; the value is also its registry key.
     fn protocol(&self) -> ProtocolId;
@@ -248,12 +128,13 @@ pub trait ClientCodec: Send + Sync {
     /// The body is complete: a convert-mode exchange buffers it before calling here, so a codec may
     /// parse it as one document. A field the canonical model does not name belongs in
     /// [`ChatRequest::extensions`]; a field the codec cannot express is refused with
-    /// [`CodecError::Unsupported`], never dropped.
+    /// [`CodecError::Unsupported`] or [`CodecError::UnsupportedField`], never dropped.
     ///
     /// # Errors
     /// Returns [`CodecError::InvalidRequest`] when the document is malformed or a required fact is
-    /// missing, and [`CodecError::Unsupported`] when the request needs something this protocol cannot
-    /// express.
+    /// missing, [`CodecError::Unsupported`] when the request needs a capability this protocol does
+    /// not have, and [`CodecError::UnsupportedField`] when it asks for a wire field outside the
+    /// capability axes that the canonical model cannot carry.
     fn decode_request(&self, facts: &RequestFacts, body: &[u8]) -> Result<ChatRequest, CodecError>;
 
     /// Encodes one complete canonical response as this protocol's answer.
@@ -270,21 +151,51 @@ pub trait ClientCodec: Send + Sync {
     /// cannot be refused as unsupported after the upstream has answered.
     fn encode_response(&self, response: &ChatResponse) -> Result<ClientReply, CodecError>;
 
-    /// Encodes one canonical stream event as the bytes the client receives for it.
+    /// Creates the encoder for one response stream.
     ///
-    /// The returned bytes include whatever framing the protocol needs — concatenating the results of
-    /// a sequence of events is a well-formed stream of this protocol.
-    ///
-    /// # Errors
-    /// Returns [`CodecError::Encode`] when the encoder fails, including for an event the protocol
-    /// cannot express: once the stream has started there is no status left to refuse with.
-    fn encode_stream_event(&self, event: &StreamEvent) -> Result<Vec<u8>, CodecError>;
+    /// The encoder is per response, not per codec: a streamed chunk can repeat a fact the start
+    /// event carried (the response id and model, for example), and a codec shared by every request
+    /// of its protocol cannot remember which response it is encoding. The value is created the same
+    /// way a provider creates its per-response decoder.
+    fn stream_encoder(&self) -> Box<dyn ClientStreamEncoder>;
 
     /// Encodes one canonical failure in this protocol's error envelope.
     ///
     /// # Errors
     /// Returns [`CodecError::Encode`] when the protocol has no error envelope the encoder can build.
     fn encode_error(&self, error: &CanonicalError) -> Result<Vec<u8>, CodecError>;
+}
+
+/// One response stream's client-side encoder state.
+///
+/// Created by [`ClientCodec::stream_encoder`] and used once: the bytes for the client depend on the
+/// events that came before them (a chunk may repeat the response id the start event carried, and a
+/// protocol's terminator is written once), so the state belongs to the response, not to the codec
+/// or to the exchange.
+///
+/// The returned bytes include whatever framing the protocol needs, so concatenating the results of
+/// a sequence of events is a well-formed stream of this protocol.
+pub trait ClientStreamEncoder: Send {
+    /// Encodes one canonical event as the bytes the client receives for it.
+    ///
+    /// An event the protocol has no wire form for may return no bytes at all; it is not an error to
+    /// observe a canonical event without writing something for it.
+    ///
+    /// # Errors
+    /// Returns [`CodecError::Encode`] when the protocol cannot write the event. Once the stream has
+    /// started there is no status left to refuse with, so an unrepresentable event ends the stream
+    /// instead of answering a client error.
+    fn push(&mut self, event: &StreamEvent) -> Result<Vec<u8>, CodecError>;
+
+    /// Signals the end of the canonical stream and returns any trailing bytes.
+    ///
+    /// Called once after the last event, including when the provider body ended before a finish
+    /// event: a protocol whose stream has a terminator writes it here, so the client always sees a
+    /// terminated stream.
+    ///
+    /// # Errors
+    /// Returns [`CodecError::Encode`] when the terminator cannot be written.
+    fn finish(&mut self) -> Result<Vec<u8>, CodecError>;
 }
 
 /// What one client protocol's encoder produces: the status the client is answered with and the

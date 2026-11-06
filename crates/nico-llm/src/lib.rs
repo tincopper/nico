@@ -17,9 +17,9 @@
 //!   compiled route facts an adapter reads.
 //! - [`filter`] — [`Exchange`], the one place a codec and an adapter meet.
 //!
-//! Concrete codecs (`protocol/<vendor>.rs`), adapters (`provider/<vendor>.rs`), the shared SSE
-//! framing (`stream/`) and the built-in registries arrive in later steps. Vendor names belong only in
-//! those modules; the canonical model, the two contracts and the exchange never learn them.
+//! The shared SSE framing lives in `stream/` (crate-private: it is a framing detail, not a contract),
+//! and the OpenAI Chat Completions codec lives in [`protocol::openai_chat`]. Vendor names belong only
+//! in those modules; the canonical model, the two contracts and the exchange never learn them.
 //!
 //! # Invariants
 //!
@@ -43,10 +43,12 @@ pub mod protocol;
 pub mod provider;
 pub mod schema;
 
+mod stream;
+
 pub use filter::{Exchange, ExchangeBuildError, ExchangeError, PreparedExchange, StreamEncoder};
 pub use protocol::{
-    Capabilities, Capability, ClientCodec, ClientReply, CodecError, ProtocolId, ProtocolRegistry,
-    RegistryError, RequestFacts, ResponseFacts,
+    Capabilities, Capability, ClientCodec, ClientReply, ClientStreamEncoder, CodecError,
+    ProtocolId, ProtocolRegistry, RegistryError, RequestFacts, ResponseFacts,
 };
 pub use provider::{
     Credential, Endpoint, EndpointError, ExchangeMode, Provider, ProviderError, ProviderKind,

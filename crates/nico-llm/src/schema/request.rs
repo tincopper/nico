@@ -1,4 +1,5 @@
-//! The canonical chat request, its sampling knobs and its response format.
+//! The canonical chat request, its response format and the JSON-Schema contract of a structured
+//! response.
 //!
 //! [`ChatRequest`] is what a client codec produces and what a provider adapter consumes. It carries
 //! the *logical* model the client wrote; resolving that to a physical model belongs to the route's
@@ -9,14 +10,9 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use super::{Extensions, Item, ModelId, RawJson, SchemaError, Tool, ToolChoice, error::excerpt};
-
-/// Highest `temperature` accepted; the range every target protocol fits.
-const MAX_TEMPERATURE: f64 = 2.0;
-/// Lowest `top_p` accepted.
-const MIN_TOP_P: f64 = 0.0;
-/// Highest `top_p` accepted.
-const MAX_TOP_P: f64 = 1.0;
+use super::{
+    Extensions, Item, ModelId, RawJson, Sampling, SchemaError, Tool, ToolChoice, error::excerpt,
+};
 
 /// A request to produce one model turn.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -168,10 +164,10 @@ impl ChatRequest {
         &self.tool_choice
     }
 
-    /// Returns the sampling knobs (a small `Copy` value).
+    /// Returns the sampling knobs.
     #[must_use]
-    pub const fn sampling(&self) -> Sampling {
-        self.sampling
+    pub const fn sampling(&self) -> &Sampling {
+        &self.sampling
     }
 
     /// Returns the response format.
@@ -190,135 +186,6 @@ impl ChatRequest {
     #[must_use]
     pub const fn extensions(&self) -> &Extensions {
         &self.extensions
-    }
-}
-
-/// Sampling knobs, all optional so "unset" stays distinct from "explicitly zero".
-///
-/// The bounds are the narrowest common denominator of the target protocols: a value accepted here
-/// can be encoded by every one of them, so a range failure is reported once, at construction,
-/// instead of surfacing as a provider 400.
-///
-/// The floats are `f64` because that is what a JSON number is: storing `f32` would make a canonical
-/// round trip lossy (`0.2` would serialize back as `0.20000000298023224`) and a golden fixture could
-/// not compare equal. A sampling knob the canonical model does not name is rejected rather than
-/// dropped: `Sampling` has no extension bucket, and silently forwarding an unknown knob would let
-/// a caller believe it took effect.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "SamplingWire")]
-pub struct Sampling {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    temperature: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    top_p: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    max_tokens: Option<u32>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SamplingWire {
-    #[serde(default)]
-    temperature: Option<f64>,
-    #[serde(default)]
-    top_p: Option<f64>,
-    #[serde(default)]
-    max_tokens: Option<u32>,
-}
-
-impl Sampling {
-    /// Builds sampling knobs.
-    ///
-    /// # Errors
-    /// Returns [`SchemaError::NotFinite`] or [`SchemaError::OutOfRange`] for a non-finite or
-    /// out-of-range `temperature`/`top_p`, and [`SchemaError::OutOfRange`] for `max_tokens == 0`.
-    pub fn try_new(
-        temperature: Option<f64>,
-        top_p: Option<f64>,
-        max_tokens: Option<u32>,
-    ) -> Result<Self, SchemaError> {
-        let sampling = Self {
-            temperature,
-            top_p,
-            max_tokens,
-        };
-        sampling.validate()?;
-        Ok(sampling)
-    }
-
-    /// Sets `temperature`, which controls randomness.
-    ///
-    /// # Errors
-    /// Returns [`SchemaError::NotFinite`] or [`SchemaError::OutOfRange`] when the value is not in
-    /// `0.0..=2.0`.
-    pub fn with_temperature(mut self, temperature: f64) -> Result<Self, SchemaError> {
-        validate_temperature(temperature)?;
-        self.temperature = Some(temperature);
-        Ok(self)
-    }
-
-    /// Sets `top_p`, which restricts sampling to the most likely tokens.
-    ///
-    /// # Errors
-    /// Returns [`SchemaError::NotFinite`] or [`SchemaError::OutOfRange`] when the value is not in
-    /// `0.0..=1.0`.
-    pub fn with_top_p(mut self, top_p: f64) -> Result<Self, SchemaError> {
-        validate_top_p(top_p)?;
-        self.top_p = Some(top_p);
-        Ok(self)
-    }
-
-    /// Sets the output token ceiling.
-    ///
-    /// # Errors
-    /// Returns [`SchemaError::OutOfRange`] when `max_tokens` is zero.
-    pub fn with_max_tokens(mut self, max_tokens: u32) -> Result<Self, SchemaError> {
-        validate_max_tokens(max_tokens)?;
-        self.max_tokens = Some(max_tokens);
-        Ok(self)
-    }
-
-    /// Checks every set knob.
-    ///
-    /// # Errors
-    /// Returns the same variants as [`Sampling::try_new`].
-    pub fn validate(&self) -> Result<(), SchemaError> {
-        if let Some(temperature) = self.temperature {
-            validate_temperature(temperature)?;
-        }
-        if let Some(top_p) = self.top_p {
-            validate_top_p(top_p)?;
-        }
-        if let Some(max_tokens) = self.max_tokens {
-            validate_max_tokens(max_tokens)?;
-        }
-        Ok(())
-    }
-
-    /// Returns `temperature`.
-    #[must_use]
-    pub const fn temperature(&self) -> Option<f64> {
-        self.temperature
-    }
-
-    /// Returns `top_p`.
-    #[must_use]
-    pub const fn top_p(&self) -> Option<f64> {
-        self.top_p
-    }
-
-    /// Returns the output token ceiling.
-    #[must_use]
-    pub const fn max_tokens(&self) -> Option<u32> {
-        self.max_tokens
-    }
-}
-
-impl TryFrom<SamplingWire> for Sampling {
-    type Error = SchemaError;
-
-    fn try_from(wire: SamplingWire) -> Result<Self, Self::Error> {
-        Self::try_new(wire.temperature, wire.top_p, wire.max_tokens)
     }
 }
 
@@ -423,46 +290,6 @@ impl ResponseFormat {
             Self::Text | Self::JsonObject => Ok(()),
         }
     }
-}
-
-fn validate_temperature(temperature: f64) -> Result<(), SchemaError> {
-    if !temperature.is_finite() {
-        return Err(SchemaError::NotFinite {
-            field: "sampling.temperature",
-        });
-    }
-    if !(0.0..=MAX_TEMPERATURE).contains(&temperature) {
-        return Err(SchemaError::OutOfRange {
-            field: "sampling.temperature",
-            value: temperature.to_string(),
-        });
-    }
-    Ok(())
-}
-
-fn validate_top_p(top_p: f64) -> Result<(), SchemaError> {
-    if !top_p.is_finite() {
-        return Err(SchemaError::NotFinite {
-            field: "sampling.top_p",
-        });
-    }
-    if !(MIN_TOP_P..=MAX_TOP_P).contains(&top_p) {
-        return Err(SchemaError::OutOfRange {
-            field: "sampling.top_p",
-            value: top_p.to_string(),
-        });
-    }
-    Ok(())
-}
-
-fn validate_max_tokens(max_tokens: u32) -> Result<(), SchemaError> {
-    if max_tokens == 0 {
-        return Err(SchemaError::OutOfRange {
-            field: "sampling.max_tokens",
-            value: max_tokens.to_string(),
-        });
-    }
-    Ok(())
 }
 
 fn validate_tools(tools: &[Tool], choice: &ToolChoice) -> Result<(), SchemaError> {

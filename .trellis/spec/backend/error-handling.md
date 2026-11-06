@@ -333,6 +333,13 @@ provider's own code travels in `CanonicalError::provider_code` for structured lo
 - **422 is a deliberate refinement of the `Client` row above.** The request is well formed, so `400`
   would tell the caller to fix a document with nothing wrong in it. The entry is protocol-neutral —
   it names a capability, not a wire field — so every codec renders it without translating.
+- **A known wire field outside the capability axes is the same refusal.** `CodecError::UnsupportedField`
+  names the field (`n`, `audio`, `logprobs`, `tools[].function.strict`) and maps to the same
+  `unsupported_capability` / `422`: the document is valid, and the canonical model cannot carry what
+  it asks for. Inventing a capability per such field would create an axis the request path can never
+  compute, so the refusal names the field instead of pretending it is a capability. An *unknown*
+  top-level field is preserved in `extensions` instead; refusal is for what the codec knows it
+  cannot serve. Neither refusal carries the field's value.
 - **The status of a failure belongs to the canonical error.** `ClientCodec::encode_error` therefore
   returns only the body, and the exchange takes the status from `CanonicalError::http_status`.
 - **The status of a success belongs to the client codec.** `ClientCodec::encode_response` returns a

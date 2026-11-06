@@ -82,7 +82,11 @@
   "sampling": {
     "temperature": 0.2,
     "top_p": 0.9,
-    "max_tokens": 256
+    "max_tokens": 256,
+    "stop": ["\n\n"],
+    "seed": 7,
+    "presence_penalty": 0.1,
+    "frequency_penalty": -0.2
   },
   "response_format": { "type": "json_object" },
   "stream": true,

@@ -215,11 +215,70 @@ fn sampling_rejects_non_finite_and_out_of_range_values() {
 }
 
 #[test]
+fn sampling_models_the_knobs_every_target_protocol_carries() {
+    let sampling = Sampling::default()
+        .with_temperature(0.2)
+        .expect("temperature in range")
+        .with_stop(vec!["\n\n".to_owned()])
+        .expect("one stop sequence")
+        .with_seed(7)
+        .with_presence_penalty(0.1)
+        .expect("presence penalty in range")
+        .with_frequency_penalty(-0.2)
+        .expect("frequency penalty in range");
+    assert_eq!(sampling.temperature(), Some(0.2));
+    assert_eq!(sampling.stop(), ["\n\n".to_owned()]);
+    assert_eq!(sampling.seed(), Some(7));
+    assert_eq!(sampling.presence_penalty(), Some(0.1));
+    assert_eq!(sampling.frequency_penalty(), Some(-0.2));
+    assert_eq!(
+        Sampling::default()
+            .with_presence_penalty(-2.0)
+            .expect("the lower bound is inclusive")
+            .presence_penalty(),
+        Some(-2.0)
+    );
+}
+
+#[test]
+fn sampling_rejects_stop_sequences_and_penalties_it_cannot_bound() {
+    let five = vec!["a".to_owned(); 5];
+    assert!(matches!(
+        Sampling::default().with_stop(five),
+        Err(SchemaError::OutOfRange {
+            field: "sampling.stop",
+            ..
+        })
+    ));
+    assert_eq!(
+        Sampling::default()
+            .with_stop(vec![String::new()])
+            .expect_err("an empty stop sequence stops nothing"),
+        SchemaError::Empty {
+            field: "sampling.stop"
+        }
+    );
+    assert!(matches!(
+        Sampling::default().with_presence_penalty(2.1),
+        Err(SchemaError::OutOfRange {
+            field: "sampling.presence_penalty",
+            ..
+        })
+    ));
+    assert!(matches!(
+        Sampling::default().with_frequency_penalty(f64::NAN),
+        Err(SchemaError::NotFinite {
+            field: "sampling.frequency_penalty"
+        })
+    ));
+}
+
+#[test]
 fn sampling_rejects_a_field_it_does_not_model() {
     let error =
-        serde_json::from_str::<Sampling>(r#"{"seed":1}"#).expect_err("unknown sampling field");
+        serde_json::from_str::<Sampling>(r#"{"min_p":0.1}"#).expect_err("unknown sampling field");
     assert!(
-        error.to_string().contains("seed"),
+        error.to_string().contains("min_p"),
         "the rejection must name the field: {error}"
     );
 }

@@ -20,29 +20,33 @@ crates/nico-llm/src/
 ├── lib.rs              # //! + pub use schema/contracts; builtin registries
 ├── schema.rs           # canonical 类型根；只做 re-export 与文档
 ├── schema/
-│   ├── request.rs      # ChatRequest / Sampling / ResponseFormat
+│   ├── request.rs      # ChatRequest / ResponseFormat / JsonSchema
 │   ├── conversation.rs # Item / Message / ContentPart / Role
 │   ├── tool.rs         # Tool / ToolCall / ToolResult / ToolChoice
 │   ├── extension.rs    # RawJson / Extensions：唯一的无类型值及其边界
 │   ├── response.rs     # ChatResponse / Choice / AssistantTurn / FinishReason
+│   ├── sampling.rs     # Sampling（temperature/top_p/max_tokens/stop/seed/penalties）
 │   ├── stream.rs       # StreamEvent
 │   ├── usage.rs        # Usage（measured / reported）
 │   ├── error.rs        # CanonicalError
 │   └── model.rs        # ModelId / ModelRef（逻辑名与物理名）
-├── protocol.rs         # ClientCodec trait + ClientReply + ProtocolRegistry + Capabilities
+├── protocol.rs         # ClientCodec / ClientStreamEncoder trait + ClientReply + ProtocolRegistry
 ├── protocol/
+│   ├── capabilities.rs # Capability / Capabilities：两端能表达什么
 │   ├── facts.rs        # RequestFacts / ResponseFacts：框架无关的交换事实，Debug 只印 header 名
 │   └── openai_chat.rs  # 1.4a：OpenAI Chat 客户端 codec
+├── protocol/openai_chat/ # request/declaration/message/response/stream/error/usage：按文档边界拆的 codec 实现
 ├── provider.rs         # Provider/ProviderStream trait + ProviderRegistry
 ├── provider/
 │   ├── route.rs        # ProviderRoute / Credential / ExchangeMode：编译后的路由事实
 │   └── openai.rs       # 1.4a：OpenAI 上游适配（endpoint/encode/decode/stream）
+├── stream.rs           # 声明共享 framing 子模块
 ├── stream/
-│   └── sse.rs          # 共享 SSE framing（事件边界/跨块 UTF-8），无厂商语义
+│   └── sse.rs          # 共享 SSE framing（事件边界/跨块 UTF-8/终止符），无厂商语义
 ├── filter.rs           # 路由交换：endpoint → decode → encode → response/stream
 └── filter/
     ├── error.rs        # ExchangeBuildError / ExchangeError 与 canonical 映射
-    └── stream.rs       # StreamEncoder：每响应一个 provider decoder
+    └── stream.rs       # StreamEncoder：每响应一个 ClientStreamEncoder + provider decoder
 ```
 
 每个文件 ≤ 500 行；`schema.rs` 在接近上限时按上面的数据边界继续拆，不按“工具函数”拆。
@@ -88,9 +92,9 @@ pub enum StreamEvent {
     Start { id: ResponseId, model: ModelId },
     TextDelta(String),
     ReasoningDelta(String),
-    ToolCallStart { id: ToolCallId, name: ToolName },
-    ToolCallDelta { id: ToolCallId, arguments: String },
-    ToolCallEnd { id: ToolCallId },
+    ToolCallStart { id: ToolCallId, name: ToolName, index: u32 },
+    ToolCallDelta { id: ToolCallId, arguments: String, index: u32 },
+    ToolCallEnd { id: ToolCallId, index: u32 },
     Usage(Usage),
     Finish(FinishReason),
     Error(CanonicalError),
@@ -102,7 +106,8 @@ pub enum StreamEvent {
 三个形状决定，分别对应一类“会烂掉”的地方：
 
 - **`Item` 而不是 `messages[]`**：Responses 的 `input` items、Anthropic 的 content blocks、Gemini 的 parts 都能映射到同一组 item；tool call/result 与 reasoning 是一等 item，不用字符串编码。`role` 只保留 system/developer/user/assistant 四个语义值；tool 答案是 `Item::ToolResult`，不是 role，因为只有它能携带所属的 call id。
-- **`StreamEvent` 而不是 OpenAI chunk**：OpenAI `chunk`、Anthropic `content_block_delta`、Responses `response.output_text.delta`、Gemini candidate parts 都归一到同一组增量事件；客户端 codec 再按自己的 wire 编码。否则 OpenAI chunk 会变成事实标准，新增客户端协议时反向污染 provider adapter。
+- **`StreamEvent` 而不是 OpenAI chunk**：OpenAI `chunk`、Anthropic `content_block_delta`、Responses `response.output_text.delta`、Gemini candidate parts 都归一到同一组增量事件；客户端 codec 再按自己的 wire 编码。否则 OpenAI chunk 会变成事实标准，新增客户端协议时反向污染 provider adapter。tool call 的三个事件携带 `index`：按位置寻址的协议在 call id 出现前只能用位置标识一个并行 call，而 id 不提供位置；`index` 由 provider decoder 在 call 开始时分配，后续事件复用。
+- **`Sampling` 而不是各协议的参数表**：canonical 只收两端都能表达的旋钮（temperature、top_p、output ceiling、stop sequences、seed、presence/frequency penalty）；某个协议的私有旋钮落在 `extensions`（无副作用）或被 codec 以 typed error 拒绝（会改变结果）。`Sampling` 没有扩展桶，因此它自成一个数据边界文件。
 - **`RawJson` 而不是到处 `serde_json::Value`**：调用方声明的 JSON 文档（tool parameters、tool arguments、structured-output schema）与未建模字段用显式 newtype 包装（定义在 `schema/extension.rs`），只允许出现在 `schema/tool.rs`、`schema/request.rs`（`JsonSchema`）与 `Extensions`；配置、路由和 `PluginContext` 仍禁止 `Value`。未知字段必须进 `extensions`，不能静默丢。
 
 `Usage` 同时保留 provider-reported 与网关可测量的字段（input/output/cache_read/cache_write/reasoning），1.4a 只定义形状，不做计费/归一化。`CanonicalError` 只带安全 message、稳定 code、类别、`http_status` 与 retryable；provider 原始错误体留在 provider adapter 的日志上下文里。
@@ -117,14 +122,23 @@ pub trait ClientCodec: Send + Sync {
     fn capabilities(&self) -> Capabilities;
     fn decode_request(&self, facts: &RequestFacts, body: &[u8]) -> Result<ChatRequest, CodecError>;
     fn encode_response(&self, response: &ChatResponse) -> Result<ClientReply, CodecError>;
-    fn encode_stream_event(&self, event: &StreamEvent) -> Result<Vec<u8>, CodecError>;
+    fn stream_encoder(&self) -> Box<dyn ClientStreamEncoder>;   // 每响应一个
     fn encode_error(&self, error: &CanonicalError) -> Result<Vec<u8>, CodecError>;
+}
+
+pub trait ClientStreamEncoder: Send {
+    fn push(&mut self, event: &StreamEvent) -> Result<Vec<u8>, CodecError>;
+    fn finish(&mut self) -> Result<Vec<u8>, CodecError>;
 }
 ```
 
 `RequestFacts` 是 owned 的 method/path/headers（不含 Pingora 类型），因为客户端协议可能需要路径或头（例如 Gemini 的模型在 URL 里）；body 已在 `schema` 之外被缓冲。它与 `ResponseFacts` 一起落在 `protocol/facts.rs`：两者都是“交换的事实”，与 codec/provider 的契约分开，`Debug` 只印 header 名。
 
 `ClientReply { status, body }` 也定义在 `protocol.rs`，因为**成功状态属于客户端协议**：一个完整答复在客户端协议里恒为 `200`，而 provider 的 `201`/`206` 描述的是它自己怎么帧化 body，重新编码后对调用方没有意义。失败状态相反：它属于 `CanonicalError::http_status`，所以 `encode_error` 只返回 body。
+
+流的编码器**每响应一个**，与 `Provider::stream_decoder()` 对称：一个分片可能重复 `Start` 事件携带的事实（OpenAI chunk 的 `id`/`model` 在每个 chunk 上都出现），而 codec 单例被所有请求共享，记不住“这是哪一个响应”。`finish()` 负责协议自己的终止符（`[DONE]`），因此即使 provider body 在 `Finish` 之前结束，客户端也总能收到一个完整终止的流。
+
+`CodecError` 有三种请求期拒绝：`InvalidRequest`（文档不合法 → 400）、`Unsupported { feature: Capability }`（需要某个能力轴）、`UnsupportedField { field }`（已知字段落在能力轴之外，canonical 无法承载 → 与能力拒绝同为 422）。第三种存在是因为“请求要了 canonical 表达不了的东西”并不总是某个 `Capability`（`n > 1`、logprobs、audio 输出），而给它们编造能力轴会造出一条 `required()` 永远算不出来的死轴。
 
 ### 4.2 上游 provider
 
@@ -153,7 +167,7 @@ pub trait ProviderStream: Send {
 
 ### 4.3 capability matrix
 
-`Capabilities` 是一组命名能力（streaming/tools/images/files/reasoning/response_format），不是厂商分支。发布期求 codec 与 provider 的交集并记录；**空交集本身不拒绝发布**，因为纯文本不需要任何 capability。请求期由 `Exchange` 计算请求需要的集合（stream、tools、response_format、image/file part、reasoning）并与交集比较，缺一个就返回 `ExchangeError::Unsupported`，客户端得到 422 `unsupported_capability`，不静默丢字段。1.4a 的 OpenAI×OpenAI 支持 streaming/tools/response_format；images/files 先标记为 capability，映射在 1.4b/后续逐个补。
+`Capabilities` 是一组命名能力（streaming/tools/images/files/reasoning/response_format），不是厂商分支。发布期求 codec 与 provider 的交集并记录；**空交集本身不拒绝发布**，因为纯文本不需要任何 capability。请求期由 `Exchange` 计算请求需要的集合（stream、tools、response_format、image/file part、reasoning）并与交集比较，缺一个就返回 `ExchangeError::Unsupported`，客户端得到 422 `unsupported_capability`，不静默丢字段。1.4a 的 OpenAI×OpenAI 支持 streaming/tools/images/reasoning/response_format；codec 只声明自己真的映射过的能力（file 引用没有 canonical 形态，因此不声明 `files`），声明与实际映射一致是这条矩阵的信任基础。
 
 ## 5. 路由与发布
 
@@ -197,7 +211,7 @@ pub trait ResponseTransform: Send {
 ```
 
 - LLM 路由在响应头钩子安装 transform，在 `upstream_response_body_filter` 逐块调用；`response_filter` 仍负责 1xx 保护与预算复核。
-- SSE：每个 provider chunk 交给 `ProviderStream`，产出的 canonical 事件由 `ClientCodec` 编码为客户端 SSE；`content-length` 永远不保留，数据面走 chunked。
+- SSE：每个 provider chunk 交给 `ProviderStream`，产出的 canonical 事件交给该响应的 `ClientStreamEncoder` 编码为客户端 SSE；`content-length` 永远不保留，数据面走 chunked。终止符由 `ClientStreamEncoder::finish()` 在 body 结束时写出，而不是在 `Finish` 事件写出：provider 可以在 finish 之后再用一个 chunk 报 usage，于是 usage chunk 仍然排在终止符之前。
 - 非流式：`push` 在 `request.max_response_bytes` 内累积，`finish` 时 `decode_response` → `encode_response`；超限 502 + `upstream_response_too_large`。
 - provider 非 2xx：`Provider::decode_response` 返回 `ProviderError::Upstream { error }`，`Exchange::respond` 用 `ClientCodec::encode_error` 生成客户端错误体；不转发 provider body。
 - 成功响应：`Exchange::respond` 返回 codec 的 `ClientReply`，状态由 codec 决定（`200`），不是 provider 的 2xx。`Exchange` 只负责 `decode_response`→`validate`→`encode_response`，不拥有任何状态映射。
@@ -248,7 +262,10 @@ pub trait ResponseTransform: Send {
 | 非流式响应缓冲 = `request.max_response_bytes` × 并发 | 新字段，默认 8 MiB，路由只能收紧；SSE 不适用 |
 | Gemini endpoint 的 model 在 path 里，而 model 在请求 body 里 | **1.4b 专门设计**：要么路由/provider 固定物理模型（body model 只校验），要么实现 pre-body exchange（需验证 Pingora 能否在 upstream head 前读 body）；1.4a 不假装已解决 |
 | canonical 无法表达某些厂商字段 | `extensions` + `RawJson` + capability matrix；不支持的能力显式报错；raw passthrough 兜底 |
-| SSE 转换状态跨块 | 每响应一个 `ProviderStream`；不放在 `Provider` 单例或 `Plugin` 里 |
+| `Sampling` 的范围取各协议最宽者（`temperature` 到 2.0），比 Anthropic 的 0.0..=1.0 宽 | canonical 不取交集（否则拒绝 OpenAI 合法的温度），**1.4b** 的 Anthropic codec/provider 在自己协议的范围外拒绝，不 clamp：静默改小温度是在改变调用方要的输出 |
+| SSE 转换状态跨块 | 每响应一个 `ProviderStream` 与一个 `ClientStreamEncoder`；不放在 `Provider`/`ClientCodec` 单例或 `Plugin` 里 |
+| provider 在 finish 之后才报 usage（部分 OpenAI 兼容实现的 `include_usage` 形状） | 终止符推迟到 body 结束写出；usage 事件在 finish 前后都落在正确位置 |
+| 客户端请求了 canonical 表达不了的已知字段（`n > 1`、logprobs、audio、`strict`） | codec 以 `UnsupportedField` 拒绝（422），错误消息只报字段名；需要字节级兼容的路由走 `mode: passthrough` |
 | LLM 路由的 body/response 插件 | 1.4a 发布期拒绝 body 阶段插件；头阶段认证/限流不受影响 |
 | 流式转换的背压/慢客户端 | 沿用 1.2 的写路径与预算；transform 不另建无界队列 |
 | TLS | 1.4a 用明文 mock 验收；真实 https provider 仍需独立 TLS 任务 |

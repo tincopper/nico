@@ -38,6 +38,7 @@ mod extension;
 mod model;
 mod request;
 mod response;
+mod sampling;
 mod stream;
 mod tool;
 mod usage;
@@ -46,8 +47,9 @@ pub use conversation::{ContentPart, ImageSource, Item, Message, Reasoning, Role}
 pub use error::{CanonicalError, SchemaError};
 pub use extension::{Extensions, RawJson};
 pub use model::{ModelId, ModelRef};
-pub use request::{ChatRequest, JsonSchema, ResponseFormat, Sampling};
+pub use request::{ChatRequest, JsonSchema, ResponseFormat};
 pub use response::{AssistantTurn, ChatResponse, Choice, FinishReason, ResponseId};
+pub use sampling::Sampling;
 pub use stream::StreamEvent;
 pub use tool::{Tool, ToolCall, ToolCallId, ToolChoice, ToolName, ToolResult};
 pub use usage::{TokenKind, Usage, UsageCounts};
