@@ -197,3 +197,9 @@ impl PluginFixture {
         }
     }
 }
+
+mod llm;
+
+pub(crate) use llm::{
+    FakeLlmRoute, FakeLlmRoutes, LlmCalls, llm_context, llm_snapshot, llm_snapshot_with,
+};

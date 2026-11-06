@@ -19,129 +19,27 @@
 //! into the same [`Respond`] a built-in failure produces. `code` stays stable and always travels in
 //! `x-nico-error-code`, and the category is carried by the rejection instead of being guessed from
 //! the status a document may have overridden.
+//!
+//! An LLM front-end takes the same route: a converted route answers a failed exchange in the
+//! *client's* protocol, so it supplies an [`LlmRejection`] — the status, code, category and already
+//! encoded document the client codec produced. This crate writes it with the same closed header set;
+//! what differs is only who owns the body.
 
+mod llm;
 mod rejection;
+mod respond;
 
 use std::{borrow::Cow, error::Error, fmt::Write as _, sync::Arc, time::Duration};
 
-use bytes::Bytes;
+pub use llm::{
+    LlmRejection, LlmRejectionError, MAX_REJECTION_CODE_BYTES, MAX_REJECTION_MESSAGE_BYTES,
+};
 use nico_core::ErrorCategory;
 use pingora::http::StatusCode;
 pub use rejection::{BodyFormat, BodyTemplate, MAX_LITERAL_BYTES, Part, Rejection, RejectionError};
+pub use respond::Respond;
 
 use crate::plugin::PluginError;
-
-/// How one failure is rendered, if at all.
-///
-/// Fields are private because the set is a contract: a caller may read it, never assemble a variant
-/// of its own. `code` and `message` are compile-time constants, so the only value that needs escaping
-/// when the body is built is the request's trace id.
-///
-/// This is no longer `Copy`: a policy rejection holds an `Arc<Rejection>` shared by every request it
-/// refuses, and cloning that `Arc` is cheaper than copying the template it points at.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Respond {
-    status: StatusCode,
-    code: &'static str,
-    message: &'static str,
-    challenge: Option<&'static str>,
-    retry_after: Option<Duration>,
-    /// `None` for a built-in failure, whose body is the fixed envelope and whose content type is
-    /// [`Self::JSON`]; `Some` when a policy compiled its own presentation, which then owns the body
-    /// *and* the content type it is written with (a document configures both).
-    rejection: Option<Arc<Rejection>>,
-}
-
-impl Respond {
-    /// The content type of a built-in envelope.
-    const JSON: &'static str = "application/json";
-
-    const fn new(status: StatusCode, code: &'static str, message: &'static str) -> Self {
-        Self {
-            status,
-            code,
-            message,
-            challenge: None,
-            retry_after: None,
-            rejection: None,
-        }
-    }
-
-    /// Builds the response a compiled rejection describes.
-    fn from_rejection(rejection: Arc<Rejection>, retry_after: Option<Duration>) -> Self {
-        Self {
-            status: rejection.status(),
-            code: rejection.code(),
-            message: rejection.message(),
-            challenge: rejection.challenge(),
-            retry_after,
-            rejection: Some(rejection),
-        }
-    }
-
-    /// Returns the HTTP status code to send.
-    #[must_use]
-    pub const fn status(&self) -> StatusCode {
-        self.status
-    }
-
-    /// Returns the stable snake_case error code callers may match on.
-    #[must_use]
-    pub const fn code(&self) -> &'static str {
-        self.code
-    }
-
-    /// Returns the caller-safe message, a fixed sentence with no internal detail.
-    #[must_use]
-    pub const fn message(&self) -> &'static str {
-        self.message
-    }
-
-    /// Returns the content type the body is written with.
-    ///
-    /// Built-in failures answer JSON; a policy's rejection carries whatever its document configured.
-    #[must_use]
-    pub fn content_type(&self) -> &str {
-        match &self.rejection {
-            Some(rejection) => rejection.content_type(),
-            None => Self::JSON,
-        }
-    }
-
-    /// Returns the `www-authenticate` challenge, when the rejection answers an authentication
-    /// failure.
-    #[must_use]
-    pub const fn challenge(&self) -> Option<&'static str> {
-        self.challenge
-    }
-
-    /// Returns how long the caller should wait before retrying, when the rejection is a limit.
-    #[must_use]
-    pub const fn retry_after(&self) -> Option<Duration> {
-        self.retry_after
-    }
-
-    /// Renders the error body.
-    ///
-    /// A built-in failure renders `{"error":{"code","message","trace_id"}}` with `trace_id` escaped;
-    /// a policy rejection renders the template it compiled, which escapes the variables it
-    /// substitutes for the same reason.
-    #[must_use]
-    pub fn body(&self, trace_id: &str) -> Bytes {
-        if let Some(rejection) = &self.rejection {
-            return rejection.render(trace_id);
-        }
-        let mut json = String::with_capacity(96 + trace_id.len());
-        json.push_str(r#"{"error":{"code":""#);
-        json.push_str(self.code);
-        json.push_str(r#"","message":""#);
-        json.push_str(self.message);
-        json.push_str(r#"","trace_id":""#);
-        push_json_string(&mut json, trace_id);
-        json.push_str(r#""}}"#);
-        Bytes::from(json)
-    }
-}
 
 /// A request-path failure, classified once and mapped once.
 ///
@@ -173,6 +71,18 @@ pub enum HttpError {
         /// The effective limit: the smaller of the route override and the document limit.
         limit: u32,
     },
+    /// A buffered upstream response body exceeds the bytes this route allows.
+    ///
+    /// Only a response that is held whole is bounded: an event stream is translated chunk by chunk
+    /// and never counted against this. The one path that can still answer with a status is a
+    /// non-streaming answer that *declares* a length over the ceiling — the head is refused before it
+    /// is written. An answer whose length is unknown is metered while it arrives, by which time the
+    /// status line is downstream; that failure ends the stream instead of becoming this response.
+    #[error("upstream response exceeds the {limit} byte limit")]
+    UpstreamResponseTooLarge {
+        /// The effective limit: the smaller of the route override and the document limit.
+        limit: u32,
+    },
     /// The whole-request deadline expired before the response was committed.
     ///
     /// Two sources produce it: a peer that ran out of the request's budget (Pingora reports it as a
@@ -196,7 +106,11 @@ pub enum HttpError {
     #[error("the request body was still incomplete when the deadline expired")]
     RequestTimeout,
     /// The upstream could not be reached, or failed before a response was committed.
-    #[error("upstream request failed")]
+    ///
+    /// The cause is interpolated, not merely attached: the request record renders this error's
+    /// `Display` and nothing walks `.source()`, so a `#[source]` a caller cannot read is a diagnostic
+    /// that never reaches an operator.
+    #[error("upstream request failed: {source}")]
     UpstreamFailed {
         /// The underlying cause, kept for logs and never rendered to the caller.
         #[source]
@@ -214,7 +128,11 @@ pub enum HttpError {
     ///
     /// Pingora reports failures from its own layers (a broken downstream connection that is still
     /// writable, an internal invariant) that do not fit the caller's or the upstream's vocabulary.
-    #[error("internal data-plane failure")]
+    ///
+    /// The cause is interpolated for the same reason [`Self::UpstreamFailed`]'s is. Build one with
+    /// [`HttpError::internal`] rather than naming the field, so this crate keeps one constructor for
+    /// "this side broke".
+    #[error("internal data-plane failure: {source}")]
     Internal {
         /// The underlying cause, kept for logs and never rendered to the caller.
         #[source]
@@ -237,12 +155,41 @@ pub enum HttpError {
         /// How long the caller should wait before retrying, when the policy knows.
         retry_after: Option<Duration>,
     },
+    /// An LLM front-end refused the request and produced the client protocol's error document.
+    ///
+    /// This is the one variant whose status, stable code and body are decided outside this crate: a
+    /// converted route's failure is rendered by the client codec that decoded the request, and a
+    /// caller that speaks that protocol must receive its error document rather than this data plane's
+    /// envelope. The value still travels through [`HttpError::respond`], so the writer and the closed
+    /// header set are unchanged — `x-nico-error-code` carries the front-end's stable code, and the
+    /// category is the rejection's instead of being derived from a status.
+    #[error("the LLM front-end refused the request")]
+    LlmRejected {
+        /// The presentation the front-end produced, shared by every clone of this error.
+        rejection: Arc<LlmRejection>,
+    },
     /// A response was already committed, so no error response can replace it.
     #[error("response already committed; the failure cannot be rendered as a response")]
     ResponseCommitted,
 }
 
 impl HttpError {
+    /// Reports a defect on this side of the exchange.
+    ///
+    /// The one constructor for "the data plane or a front-end reached a state it could not serve":
+    /// the cause is kept **typed**, so a `CodecError`, an `ExchangeError` or a `LlmRejectionError`
+    /// stays reachable through [`Error::source`] instead of being flattened into its text. Prose with
+    /// no typed owner (`String`, `&'static str`) also converts, which keeps a genuine "this cannot
+    /// happen" invariant reportable without inventing a type for it.
+    ///
+    /// The message is for logs only; [`Self::respond`] still answers a generic `500`.
+    #[must_use]
+    pub fn internal(cause: impl Into<Box<dyn Error + Send + Sync>>) -> Self {
+        Self::Internal {
+            source: cause.into(),
+        }
+    }
+
     /// Returns how this failure is rendered, or `None` when a response is no longer possible.
     ///
     /// This is the single mapping point: status, stable code, headers and body are decided here and
@@ -270,6 +217,11 @@ impl HttpError {
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "body_too_large",
                 "the request body is too large",
+            )),
+            Self::UpstreamResponseTooLarge { .. } => Some(Respond::new(
+                StatusCode::BAD_GATEWAY,
+                "upstream_response_too_large",
+                "the upstream response is too large",
             )),
             Self::DeadlineExceeded { .. } => Some(Respond::new(
                 StatusCode::GATEWAY_TIMEOUT,
@@ -301,6 +253,9 @@ impl HttpError {
                 retry_after,
                 ..
             } => Some(Respond::from_rejection(Arc::clone(rejection), *retry_after)),
+            Self::LlmRejected { rejection } => {
+                Some(Respond::from_llm_rejection(Arc::clone(rejection)))
+            }
             Self::ResponseCommitted => None,
         }
     }
@@ -318,12 +273,15 @@ impl HttpError {
             Self::RouteNotFound | Self::InvalidRequest { .. } | Self::RequestTimeout => {
                 ErrorCategory::Client
             }
-            Self::BodyTooLarge { .. } => ErrorCategory::Limit,
+            Self::BodyTooLarge { .. } | Self::UpstreamResponseTooLarge { .. } => {
+                ErrorCategory::Limit
+            }
             Self::NotReady
             | Self::DeadlineExceeded { .. }
             | Self::UpstreamFailed { .. }
             | Self::ProviderNotConfigured { .. } => ErrorCategory::Upstream,
             Self::Rejected { rejection, .. } => rejection.category(),
+            Self::LlmRejected { rejection } => rejection.category(),
             Self::Internal { .. } | Self::ResponseCommitted => ErrorCategory::Internal,
         }
     }

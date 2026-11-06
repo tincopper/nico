@@ -33,12 +33,12 @@ mod test_support;
 pub use bounds::{Bound, BoundsError, ParseLimits, SchemaBounds};
 pub use document::{API_VERSION, Document};
 pub use error::DocumentError;
-pub use host::{HostError, MAX_HOST_BYTES, validate_host};
+pub use host::{HostError, MAX_HOST_BYTES, host_key, hosts_match, validate_host};
 pub use plugin::{
     BodyValue, DEFAULT_CONTENT_TYPE, ErrorBody, ErrorResponse, PluginSpec, is_json_content_type,
 };
-pub use provider::{Provider, ProviderKind};
-pub use request::RequestBounds;
-pub use route::{Route, RouteTarget};
+pub use provider::Provider;
+pub use request::{DEFAULT_MAX_RESPONSE_BYTES, RequestBounds};
+pub use route::{Route, RouteMode, RouteTarget};
 pub use secret_ref::is_secret_ref;
 pub use upstream::{Scheme, Upstream};

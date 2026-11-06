@@ -8,7 +8,8 @@
 //! 3. snapshot the framing headers, so a plugin cannot decide how the body is framed;
 //! 4. run the **global** chain — it is the only stage a request that matches no route still reaches;
 //! 5. match a route against the headers the global chain left;
-//! 6. record the route, tighten the budget to it, and resolve its chain (fail-closed);
+//! 6. record the route, tighten the budget to it, resolve the LLM front-end a provider route needs, and
+//!    resolve its chain (both fail-closed);
 //! 7. run the **route** chain;
 //! 8. restore the framing headers, and only then answer.
 //!
@@ -19,10 +20,13 @@ use std::time::Instant;
 
 use pingora::{http::RequestHeader, proxy::Session, upstreams::peer::HttpPeer};
 
-use super::super::{
-    HttpApp,
-    failure::abort,
-    forward::{Framing, destination, forwarded_for, peer_ip, set_header},
+use super::{
+    super::{
+        HttpApp,
+        failure::abort,
+        forward::{Framing, destination, forwarded_for, peer_ip, set_header},
+    },
+    llm,
 };
 use crate::{
     budget,
@@ -112,7 +116,17 @@ async fn route_request(session: &mut Session, ctx: &mut HttpContext, state: &Htt
     };
     ctx.bind_route(matched);
 
-    // 3. Resolve the route's chain before anything else can fail: whether the route *names* plugins is
+    // 3. The LLM front-end, before anything else reads the body: a provider route the document published
+    //    without one is refused, never forwarded with the caller's bytes and never resolved against a
+    //    guessed address. The lookup is by route id, so the plan is a publication decision like the
+    //    chain below it.
+    match state::llm_for_route(state, matched) {
+        Ok(Some(front_end)) => ctx.set_llm(front_end),
+        Ok(None) => {}
+        Err(error) => return Verdict::Refuse(error),
+    }
+
+    // 4. Resolve the route's chain before anything else can fail: whether the route *names* plugins is
     //    read inside, because a route that names one and finds no chain must not be forwarded — a
     //    missing entry is an authentication bypass, not "no policy".
     let chain = match state::chain_for_route(state, matched) {
@@ -120,7 +134,7 @@ async fn route_request(session: &mut Session, ctx: &mut HttpContext, state: &Htt
         Err(error) => return Verdict::Refuse(error),
     };
 
-    // 4. A declared length over the route's limit is refused before a plugin runs: the body will never
+    // 5. A declared length over the route's limit is refused before a plugin runs: the body will never
     //    be accepted, so no policy has a decision to make about it.
     let declared = budget::declared_length(session.req_header());
     if let (Some(limit), Some(declared)) = (ctx.body_limit(), declared) {
@@ -129,15 +143,16 @@ async fn route_request(session: &mut Session, ctx: &mut HttpContext, state: &Htt
         }
     }
 
-    // 5. Record what this request runs and how it is framed. Both flags are publication decisions, read
+    // 6. Record what this request runs and how it is framed. Both flags are publication decisions, read
     //    here because the hooks that consume them run per chunk and may not re-read configuration. The
     //    route chain joins the global one recorded above: both come from the same `HttpState`.
     ctx.set_chains(global, chain.clone());
     ctx.set_buffered(state.buffered().contains(matched.id()));
     ctx.set_response_rewrite(state.rewrites_response(matched.id()));
 
-    // 6. The route chain: same generation, after routing, so it sees the route id and the budget the
-    //    route tightened.
+    // 7. The route chain: same generation, after routing, so it sees the route id and the budget the
+    //    route tightened. Only the request stage runs on an LLM route; the body and response stages are
+    //    skipped in their hooks, because those bytes belong to a protocol a policy cannot see.
     let Some(chain) = chain else {
         return Verdict::Forward;
     };
@@ -190,6 +205,11 @@ pub(super) async fn upstream_request_filter(
     let client_host = session.req_header().headers.get("host").cloned();
     let client_addr = peer_ip(session);
 
+    // An LLM route's path and headers were compiled at publication and belong to the provider. They are
+    // written before `Host` and `X-Forwarded-*`, so a route can never choose the peer the request is
+    // written to; `convert` also drops the caller's credential, since the provider's replaces it.
+    llm::apply_upstream_request(request, ctx).map_err(|error| abort(ctx, error))?;
+
     // `upstream_peer` recorded the destination it connected to, so this hook only reads it.
     let Some(destination) = ctx.destination() else {
         return Err(abort(
@@ -224,7 +244,11 @@ pub(super) async fn upstream_request_filter(
     // chosen from the header, bytes a plugin produced on the final call would be dropped or would
     // desynchronise the stream. Chunked framing is valid for an empty body too — it ends with a
     // terminating chunk — so it costs one header and removes the whole class of disagreement.
-    if ctx.buffers_body() {
+    //
+    // A converted LLM body is the same case with a different author: the prepared bytes are encoded
+    // from the caller's document, so the length the client declared describes neither of them.
+    // `passthrough` keeps the client's framing, which is the point of it.
+    if ctx.buffers_body() || ctx.converting().is_some() {
         request.remove_header("content-length");
         set_header(request, "transfer-encoding", "chunked", ctx)?;
     }

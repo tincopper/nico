@@ -6,7 +6,11 @@
 //!    their own error ([`DocumentError::RouteTargetMissing`] /
 //!    [`DocumentError::RouteTargetAmbiguous`]) instead of surfacing as a generic schema failure,
 //!    and the resolved name becomes a [`RouteTarget`] so the illegal states are unrepresentable
-//!    afterwards.
+//!    afterwards. The target kind also owns three fields: a provider route must name a
+//!    [`protocol`](Route::protocol), and neither kind may set a field the other owns. That is
+//!    checked here, with the target, because "which fields does this route have" is exactly the
+//!    question the target answers; a value left on the wrong kind would otherwise be read as a
+//!    default and silently ignored.
 //! 2. **Existence and uniqueness** — route ids are globally unique, upstream, provider and plugin
 //!    names are unique within their collection, and every route target resolves.
 //! 3. **Plugin references** — every name a route lists is a declared plugin, and no route lists the
@@ -29,7 +33,7 @@ use super::{
     plugin::PluginSpec,
     provider::Provider,
     raw::RawRoute,
-    route::{Route, RouteTarget},
+    route::{Route, RouteMode, RouteTarget},
     upstream::Upstream,
 };
 
@@ -47,6 +51,8 @@ use super::{
 ///   name, or for a plugin a route lists twice.
 /// - [`DocumentError::RouteTargetMissing`] when a route names no target.
 /// - [`DocumentError::RouteTargetAmbiguous`] when a route names both kinds of target.
+/// - [`DocumentError::InvalidField`] when a provider route names no `protocol`, or when either route
+///   kind sets a field its target does not own.
 /// - [`DocumentError::ReferenceUnknown`] when a target or plugin name is not defined.
 pub(super) fn validate(
     raw_routes: Vec<RawRoute>,
@@ -129,6 +135,9 @@ fn resolve(
         provider,
         timeout_ms,
         max_body_bytes,
+        protocol,
+        mode,
+        max_response_bytes,
         plugins: raw_plugins,
     } = raw;
 
@@ -144,6 +153,8 @@ fn resolve(
             RouteTarget::Provider(name)
         }
     };
+
+    check_target_fields(&target, protocol.as_deref(), mode, max_response_bytes)?;
 
     let plugins = raw_plugins.unwrap_or_default();
     let mut seen = HashSet::with_capacity(plugins.len());
@@ -164,8 +175,52 @@ fn resolve(
         target,
         timeout_ms,
         max_body_bytes,
+        protocol,
+        mode: mode.unwrap_or_default(),
+        max_response_bytes,
         plugins,
     })
+}
+
+/// Rejects a field that the route's target kind does not own, and a provider route without a
+/// protocol.
+///
+/// The check is per kind rather than per field list so the error names the field the operator wrote:
+/// an upstream route has nothing to convert, so `protocol`, `mode` and `max_response_bytes` would
+/// otherwise be read as defaults and silently dropped, and a provider route has nothing to route on
+/// without the name of the client protocol.
+fn check_target_fields(
+    target: &RouteTarget,
+    protocol: Option<&str>,
+    mode: Option<RouteMode>,
+    max_response_bytes: Option<u32>,
+) -> Result<(), DocumentError> {
+    match target {
+        RouteTarget::Upstream(_) => {
+            let written = [
+                ("routes[].protocol", protocol.is_some()),
+                ("routes[].mode", mode.is_some()),
+                ("routes[].max_response_bytes", max_response_bytes.is_some()),
+            ];
+            for (field, present) in written {
+                if present {
+                    return Err(DocumentError::InvalidField {
+                        field,
+                        reason: "is only valid on a provider route".into(),
+                    });
+                }
+            }
+        }
+        RouteTarget::Provider(_) => {
+            if protocol.is_none() {
+                return Err(DocumentError::InvalidField {
+                    field: "routes[].protocol",
+                    reason: "is required on a provider route".into(),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Rejects a target or plugin name that the collection does not define.

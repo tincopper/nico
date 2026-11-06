@@ -16,6 +16,8 @@ use nico_core::{
 };
 use pingora::{Error, ErrorSource, ErrorType, http::RequestHeader};
 
+mod llm;
+
 use super::{
     failure::{classify, is_downstream_gone},
     forward::{Framing, destination, forwarded_for},
@@ -45,6 +47,9 @@ const PROVIDER_ROUTE: &str = concat!(
     "  - id: ai\n",
     "    path_prefix: /v1/\n",
     "    provider: openai-primary\n",
+    // The document model requires a client protocol on a provider route; this crate still refuses
+    // the target because no filter resolved it.
+    "    protocol: openai.chat\n",
 );
 
 /// Starts a context for the fixture's route, returning it with the instant it began at.

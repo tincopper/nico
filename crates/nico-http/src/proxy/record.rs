@@ -7,7 +7,8 @@
 //!
 //! There is no unit test here on purpose: the subject is the text an operator reads, and the
 //! end-to-end targets assert exactly that (`http_cancel.rs` for `499` + `Cancelled`,
-//! `http_limits.rs` for `408` + `Client`, `http_routing.rs` for a rejected route).
+//! `http_limits.rs` for `408` + `Client`, `http_routing.rs` for a rejected route, and
+//! `llm_convert.rs`/`llm_passthrough.rs` for the `llm.*` fields).
 
 use std::time::Instant;
 
@@ -24,14 +25,22 @@ use crate::context::HttpContext;
 /// never sent on the wire, only reported.
 const CANCELLED_STATUS: u16 = 499;
 
-/// Emits one record, adding `authn` and `plugin` only when those facts exist.
+/// Emits one record, adding `authn`, `plugin` and the LLM facts only when those facts exist.
 ///
 /// `tracing` cannot add a field conditionally inside one invocation, and writing `authn = ""` would
 /// claim "authenticated by nothing" where the truth is "not authenticated" — two different facts for
 /// anyone filtering the log. `plugin` is the instance a failure is attributed to, absent when no
 /// plugin failed, so a 500 caused by a policy can be told apart from one caused by an upstream.
-/// The level stays a literal at each call site, so every expansion still has static callsite metadata.
+///
+/// An LLM route reports its two publication facts (`llm.protocol`, `llm.provider`), and — once its
+/// client body has been decoded — the model pair and the stream flag (`llm.model`, `llm.stream`).
+/// A route that is not an LLM route reports none of them, and a decoded request always reports all
+/// four: an empty `llm.protocol` would claim a protocol whose name is the empty string, and
+/// `llm.stream = false` would claim a caller asked for a complete answer when it asked for nothing
+/// this route decoded. The level stays a literal at each call site, so every expansion still has
+/// static callsite metadata.
 macro_rules! record {
+    // A route that is not an LLM route: none of the `llm.*` fields exists.
     ($level:expr, $ctx:expr, $message:literal, $($fields:tt)*) => {
         match ($ctx.identity(), $ctx.failed_plugin()) {
             (Some(identity), Some(plugin)) => tracing::event!(
@@ -44,6 +53,101 @@ macro_rules! record {
                 $level, plugin = %plugin, $($fields)* $message
             ),
             (None, None) => tracing::event!($level, $($fields)* $message),
+        }
+    };
+
+    // An LLM route whose client body was decoded: the model pair and the stream flag as well.
+    ($level:expr, $ctx:expr, llm = $llm:ident, prepared, $message:literal, $($fields:tt)*) => {
+        match ($ctx.identity(), $ctx.failed_plugin()) {
+            (Some(identity), Some(plugin)) => tracing::event!(
+                $level,
+                authn = %identity.source(),
+                plugin = %plugin,
+                llm.protocol = %$llm.protocol(),
+                llm.provider = %$llm.provider(),
+                llm.model = ?$llm.model().unwrap_or_default(),
+                llm.stream = $llm.streaming().unwrap_or_default(),
+                $($fields)* $message
+            ),
+            (Some(identity), None) => tracing::event!(
+                $level,
+                authn = %identity.source(),
+                llm.protocol = %$llm.protocol(),
+                llm.provider = %$llm.provider(),
+                llm.model = ?$llm.model().unwrap_or_default(),
+                llm.stream = $llm.streaming().unwrap_or_default(),
+                $($fields)* $message
+            ),
+            (None, Some(plugin)) => tracing::event!(
+                $level,
+                plugin = %plugin,
+                llm.protocol = %$llm.protocol(),
+                llm.provider = %$llm.provider(),
+                llm.model = ?$llm.model().unwrap_or_default(),
+                llm.stream = $llm.streaming().unwrap_or_default(),
+                $($fields)* $message
+            ),
+            (None, None) => tracing::event!(
+                $level,
+                llm.protocol = %$llm.protocol(),
+                llm.provider = %$llm.provider(),
+                llm.model = ?$llm.model().unwrap_or_default(),
+                llm.stream = $llm.streaming().unwrap_or_default(),
+                $($fields)* $message
+            ),
+        }
+    };
+
+    // An LLM route whose body was never decoded: a passthrough route, or a provider that answered
+    // before the client finished sending. Only the two publication facts are known.
+    ($level:expr, $ctx:expr, llm = $llm:ident, $message:literal, $($fields:tt)*) => {
+        match ($ctx.identity(), $ctx.failed_plugin()) {
+            (Some(identity), Some(plugin)) => tracing::event!(
+                $level,
+                authn = %identity.source(),
+                plugin = %plugin,
+                llm.protocol = %$llm.protocol(),
+                llm.provider = %$llm.provider(),
+                $($fields)* $message
+            ),
+            (Some(identity), None) => tracing::event!(
+                $level,
+                authn = %identity.source(),
+                llm.protocol = %$llm.protocol(),
+                llm.provider = %$llm.provider(),
+                $($fields)* $message
+            ),
+            (None, Some(plugin)) => tracing::event!(
+                $level,
+                plugin = %plugin,
+                llm.protocol = %$llm.protocol(),
+                llm.provider = %$llm.provider(),
+                $($fields)* $message
+            ),
+            (None, None) => tracing::event!(
+                $level,
+                llm.protocol = %$llm.protocol(),
+                llm.provider = %$llm.provider(),
+                $($fields)* $message
+            ),
+        }
+    };
+}
+
+/// Chooses the record shape the request's facts allow.
+///
+/// The `llm.model` guard is the decoded-body guard: [`LlmExchange::record_prepared`] sets the model
+/// label and the stream flag together, and a passthrough route never calls it. A front-end that
+/// reports a stream flag without a model label is recorded with the two publication facts only — an
+/// absent field is honest, and an empty one would be a value the front-end never reported.
+macro_rules! emit {
+    ($level:expr, $ctx:expr, $message:literal, $($fields:tt)*) => {
+        match $ctx.llm() {
+            Some(llm) if llm.model().is_some() => {
+                record!($level, $ctx, llm = llm, prepared, $message, $($fields)*)
+            }
+            Some(llm) => record!($level, $ctx, llm = llm, $message, $($fields)*),
+            None => record!($level, $ctx, $message, $($fields)*),
         }
     };
 }
@@ -77,7 +181,7 @@ pub(super) fn emit(session: &Session, error: Option<&Error>, ctx: &HttpContext) 
     // belongs at `debug!` rather than in the error stream.
     if cancelled {
         match ctx.error() {
-            Some(failure) => record!(
+            Some(failure) => emit!(
                 Level::DEBUG,
                 ctx,
                 "request cancelled",
@@ -92,7 +196,7 @@ pub(super) fn emit(session: &Session, error: Option<&Error>, ctx: &HttpContext) 
                 error.category = ?ErrorCategory::Cancelled,
                 error = %failure,
             ),
-            None => record!(
+            None => emit!(
                 Level::DEBUG,
                 ctx,
                 "request cancelled",
@@ -115,7 +219,7 @@ pub(super) fn emit(session: &Session, error: Option<&Error>, ctx: &HttpContext) 
         // act on. Neither `info!` nor a per-request level above these is allowed on the request
         // path.
         match failure.category() {
-            ErrorCategory::Client | ErrorCategory::Limit => record!(
+            ErrorCategory::Client | ErrorCategory::Limit => emit!(
                 Level::WARN,
                 ctx,
                 "request rejected",
@@ -130,7 +234,7 @@ pub(super) fn emit(session: &Session, error: Option<&Error>, ctx: &HttpContext) 
                 error.category = ?failure.category(),
                 error = %failure,
             ),
-            _ => record!(
+            _ => emit!(
                 Level::ERROR,
                 ctx,
                 "request failed",
@@ -149,7 +253,7 @@ pub(super) fn emit(session: &Session, error: Option<&Error>, ctx: &HttpContext) 
         return;
     }
 
-    record!(
+    emit!(
         Level::DEBUG,
         ctx,
         "request completed",

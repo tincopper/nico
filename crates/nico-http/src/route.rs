@@ -71,7 +71,7 @@ pub fn match_route<'a>(header: &RequestHeader, routes: &'a [Route]) -> Option<&'
         let is_host_specific = match route.host() {
             // A route tied to a host is not a candidate for any other host.
             Some(expected) => match request_host {
-                Some(actual) if actual.eq_ignore_ascii_case(expected) => true,
+                Some(actual) if nico_core::hosts_match(actual, expected) => true,
                 _ => continue,
             },
             None => false,

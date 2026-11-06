@@ -38,13 +38,20 @@ nico/
 │   └── resources.yaml          # gateway resources when using the local config source
 └── crates/
     ├── nico-server/         # the only binary crate (binary `nico`): wiring, reload pipeline
-    │   └── src/
-    │       ├── main.rs         # thin: parse args, call lib::run, map error to exit code
-    │       ├── lib.rs          # //! doc + pub fn run(...); makes wiring integration-testable
-    │       ├── bootstrap.rs
-    │       ├── reload.rs       # watch loop, debounce, single flight, one publication
-    │       └── reload/         # error.rs, pacing.rs, publish.rs, startup.rs (one concern each)
+    │   ├── src/
+    │   │   ├── main.rs         # thin: parse args, call lib::run, map error to exit code
+    │   │   ├── lib.rs          # //! doc + pub fn run(...); makes wiring integration-testable
+    │   │   ├── bootstrap.rs
+    │   │   ├── reload.rs       # watch loop, debounce, single flight, one publication
+    │   │   ├── reload/         # error.rs, pacing.rs, publish.rs, startup.rs (one concern each)
+    │   │   ├── llm.rs          # the LLM plan one document compiles into
+    │   │   └── llm/            # credentials.rs (a `credential_ref` read once per publication), error.rs (LlmBuildError), plan.rs (per-route front-ends, the phase/mode checks), runtime.rs (registries + resolver, created once per process)
     │   └── tests/              # integration tests reach the wiring through lib.rs
+    │       ├── support/        # one server per test binary: bootstrap, source, client, mock upstream
+    │       ├── llm_convert.rs  # OpenAI client → OpenAI provider: conversion, SSE, refusals, llm.* record
+    │       ├── llm_convert/    # fixtures.rs: the documents and wire bodies the conversion scenarios share
+    │       ├── llm_passthrough.rs # byte-for-byte forwarding through the published endpoint
+    │       └── llm_publication.rs # the plan a document publishes, and what a refused one leaves alone
     ├── nico-core/           # small kernel shared by every data plane
     │   └── src/
     │       ├── lib.rs          # //! crate doc + #![deny(missing_docs)]
@@ -56,9 +63,9 @@ nico/
     │       ├── lib.rs          # //! + the public contract (HttpError, Plugin, Destination, …)
     │       ├── budget.rs       # crate-private: body and time budget arithmetic
     │       ├── context.rs      # HttpContext: snapshot, route, identity, destination, deadline, framing flags
-    │       ├── context/         # identity.rs, buffer.rs, tests.rs: one data structure per file
+    │       ├── context/         # identity.rs, buffer.rs, llm.rs, tests.rs: one data structure per file
     │       ├── error.rs        # HttpError + the single (status, code) mapping
-    │       ├── error/          # rejection.rs: compiled refusal (status, template, category)
+    │       ├── error/          # rejection.rs (compiled policy refusal), llm.rs (a front-end's error document), respond.rs (how one failure renders)
     │       ├── plugin.rs       # Plugin trait + Outcome/PluginInfo; re-exports ResponseData; the closed context contract
     │       ├── plugin/
     │       │   ├── chain.rs    # PluginChain/PluginEntry: the five stages under the remaining budget
@@ -74,17 +81,21 @@ nico/
     │       ├── proxy.rs        # HttpApp + the unified rejection path
     │       ├── proxy/          # the Pingora contract
     │       │   ├── hooks.rs    # the ProxyHttp impl: delegation only, one block per trait
-    │       │   ├── hooks/      # {request,body,response}.rs: per-hook delegation
+    │       │   ├── hooks/      # {request,body,response,llm}.rs: per-hook delegation
     │       │   │   ├── request.rs
     │       │   │   ├── body.rs
-    │       │   │   └── response.rs
+    │       │   │   ├── response.rs
+    │       │   │   └── llm.rs  # an AI route's two bodies: buffered once, translated per response
     │       │   ├── failure.rs  # classify + write_respond + write_synthetic, the only writers
     │       │   ├── forward.rs  # destination, Host/X-Forwarded-*, and the framing guard
     │       │   └── record.rs   # the request's one log record
     │       ├── route.rs        # match_route(header, routes)
     │       ├── service.rs      # ServerConf derivation + ProxyServiceBuilder + listener
     │       ├── settings.rs     # HttpSettings: bootstrap `http` defaults and ranges
-    │       ├── state.rs        # HttpState/HttpStateHandle: snapshot + chains + llm routes + the two framing sets, one store
+    │       ├── state.rs        # HttpState/HttpStateHandle: snapshot + plan + llm routes, one store
+    │       ├── state/          # plan.rs: the chains and the two per-route framing decisions
+    │       ├── llm.rs          # the byte-level LLM seam: LlmRoutes/LlmRoute/ResponseTransform
+    │       ├── llm/            # request.rs, response.rs, routes.rs: one data structure per file
     │       └── upstream.rs     # crate-private: Destination → HttpPeer
     ├── nico-llm/            # canonical LLM model + client codecs + provider adapters
     │   └── src/
@@ -95,14 +106,16 @@ nico/
     │       ├── protocol/        # capabilities.rs (what a side can express), facts.rs (framework-free exchange facts), then openai_chat, openai_responses, anthropic, gemini
     │       ├── protocol/openai_chat/  # one codec's documents: {request,declaration,message,response,stream,error,usage}.rs
     │       ├── provider.rs      # Provider/ProviderStream traits + registry
-    │       ├── provider/        # route.rs (compiled route facts), then openai, anthropic, gemini: wire ↔ canonical
+    │       ├── provider/        # endpoint.rs (one request's address and bytes), route.rs (compiled route facts), then openai, anthropic, gemini: wire ↔ canonical
     │       ├── provider/openai/  # one adapter's documents: {url,request,request/message,response,stream,error,usage,base64}.rs
     │       ├── stream.rs        # declares the shared framing submodule
     │       ├── stream/
     │       │   └── sse.rs       # shared SSE framing (event boundaries, cross-chunk UTF-8, terminator), no vendor semantics
     │       ├── diagnostic.rs    # crate-private: what a refusal may quote (a bounded name, never a payload)
     │       ├── filter.rs        # route exchange: endpoint → decode → encode → response/stream
-    │       └── filter/          # error.rs (failure vocabulary), stream.rs (one client encoder + one provider decoder per response); model map lives on provider/route.rs
+    │       ├── filter/          # error.rs (failure vocabulary), stream.rs (one client encoder + one provider decoder per response); model map lives on provider/route.rs
+    │       ├── route.rs         # the published front-ends as `nico_http::llm::LlmRoute`: ConvertRoute and PassthroughRoute
+    │       └── route/           # convert.rs, passthrough.rs, transform.rs (one response's translation)
     ├── nico-config/         # ConfigSource trait, local source, LKG cache, fakes
     │   └── src/
     │       ├── lib.rs
@@ -170,6 +183,7 @@ submodules. Name modules after the capability (`debounce`, `publish`, `cache`), 
 | HTTP/Pingora lifecycle, route matching, the `Plugin` contract, upstream TLS policy | `nico-http` |
 | Signals, runtime ownership, shutdown token, drain wiring | `nico-server` |
 | LLM canonical schema, client protocol codecs, provider adapters, SSE translation | `nico-llm` |
+| The byte-level seam an LLM front-end implements (destination, wire body, per-response transform) | `nico-http/src/llm.rs` |
 | Config source protocol (etcd/Nacos clients) | `nico-config-*` (own crate, own feature) |
 | Built-in HTTP policy (auth, rate limit) | `nico-plugins` |
 | Wiring, feature selection, reload pipeline, shutdown | `nico-server` |
@@ -205,15 +219,20 @@ Hard rules:
 - `nico-http` must not import `nico-llm`. LLM support arrives through byte-level `LlmRoutes` and
   `ResponseTransform` traits: `nico-llm` produces a destination, a wire request and a per-request
   response transform; canonical types never cross into the data plane. This crate owns how to reach a
-  peer, not what a provider speaks.
+  peer, not what a provider speaks. `llm.rs` therefore names no vendor: a front-end answers with a
+  `Destination`, a path, header pairs, opaque body bytes and the status it chose, and those trait
+  methods are the only vocabulary the two crates share.
   For the same reason it must not import `nico-plugins`: a policy implements `Plugin` and reaches the
   request through `PluginContext` — a value type it never sees a framework type in — so the dependency
   edge points the other way.
 - `nico-http` re-exports **no** Pingora type. The `Plugin` / `PluginContext` contract names only
-  `String`, `Vec<u8>`, `u16`, `bool` and `u64` (`PluginContext::client_ip_hash() -> Option<u64>`),
+  `String`, `&[u8]`, `Vec<u8>`, `u16`, `bool` and `u64` (`PluginContext::client_ip_hash() -> Option<u64>`),
   so a crate that implements a policy never depends on the HTTP framework: upgrading Pingora is one
   crate's task, and a WASM guest can mirror the same trait. `PluginChain` is the framework-facing
-  driver and does name Pingora header types.
+  driver and does name Pingora header types. The request target is `&[u8]` and not text on purpose: a
+  policy that authorized on a lossily decoded target would be reading a target the router did not
+  match, so the gateway hands over the bytes it routed on and a stage decides what undecodable ones
+  mean.
 - `nico-http` must not install signal handlers or build a runtime; that is process assembly, and
   it lives in `nico-server`.
 - Config-center clients are never in the default dependency tree; they arrive only with their
@@ -264,14 +283,24 @@ unless the type really manages several lifecycles or algorithms.
 - Adding an LLM provider: new module in `crates/nico-llm/src/provider/`, implement `Provider` and
   `ProviderStream` (canonical ↔ vendor wire), register in `builtin_registry()`. No changes to
   `schema/`, `protocol/`, `nico-core` or `nico-http`.
+- Wiring an LLM route into the data plane: `nico-llm` implements `nico_http::llm::LlmRoute` (one per
+  route, publishing its endpoint as a `Destination`, a path, header pairs and a per-response
+  `ResponseTransform`) and `nico-server::llm` compiles the plan: `LlmPlan::compile` resolves each
+  provider route against `ProtocolRegistry`/`ProviderRegistry`, materializes its credential and refuses
+  an unknown protocol or kind, an unimplemented mode, a passthrough pair whose protocols differ, a
+  plugin body/response stage, a double-buffered route and an unaddressable endpoint — all as
+  publication failures. `Reloader::publish_state` then hands the snapshot, the plugin plan and the LLM
+  plan to `HttpStateHandle::publish_with_llm` in one store. Nothing in `nico-http` learns a vendor, a
+  protocol name or a canonical type.
 - Adding a client protocol: new module in `crates/nico-llm/src/protocol/`, implement `ClientCodec`
   (client wire ↔ canonical), register in `builtin_registry()`. No changes to `provider/`.
 - A vendor name or a `match` on a provider kind is allowed only in `provider/<vendor>` and
   `protocol/<vendor>`; `schema/`, `filter.rs` and `stream/sse.rs` must not learn vendors. The
-  canonical schema is the only vocabulary the two sides share. The one repetition is a module
-  declaration: `protocol.rs` and `provider.rs` must name `protocol/<vendor>.rs` for the compiler, so
-  `crates/nico-llm/tests/structure.rs` allows a vendor name on a module-wiring line of those two
-  registry roots and nowhere else.
+  canonical schema is the only vocabulary the two sides share. Two places may name a vendor, and
+  only two: `protocol.rs` and `provider.rs` name their modules for the compiler, and
+  `lib.rs::builtin_registry()` names each built-in once because assembling the set cannot be done
+  without naming the types. `crates/nico-llm/tests/structure.rs` enforces the rule everywhere it
+  matters — the canonical model, the exchange, the data plane — and records both exceptions.
 - Adding an auth plugin: add `<kind>.rs` for the `Plugin` implementation and `<kind>/` with
   `{config,factory,json,tests}.rs` for its config, factory, helpers and tests, registered by
   `builtin_registry()`. No changes to `nico-llm`, and none to `nico-core` or `nico-http`.
@@ -308,7 +337,10 @@ that refuses one already exists and every producer applies it rather than a subs
 A credential reference is materialized when the document is compiled, not per request: `env:VAR`
 reads the variable and `file:/path` reads the file **byte for byte**, so a trailing newline written
 by `echo` is part of the key. An unreadable or empty credential rejects the whole document and the
-last known good generation keeps serving.
+last known good generation keeps serving. That covers every plugin instance the document declares
+(even one no route names, whose line reports `scope = unused`) and every provider a route forwards
+to; a provider entry no route references is not read at all, because an endpoint listed ahead of the
+route that will use it cannot serve anything and must not be able to fail an unrelated publication.
 
 ---
 

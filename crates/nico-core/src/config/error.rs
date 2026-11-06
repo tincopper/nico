@@ -67,7 +67,7 @@ pub enum DocumentError {
     /// A collection holds more entries than the schema bound allows.
     #[error("too many {kind}: {count} > {limit}")]
     TooMany {
-        /// Collection kind: `routes`, `upstreams` or `providers`.
+        /// Collection kind: `routes`, `upstreams`, `providers` or `plugins`.
         kind: &'static str,
         /// Number of entries found.
         count: usize,

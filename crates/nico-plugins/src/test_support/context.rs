@@ -91,11 +91,11 @@ impl PluginContext for TestContext {
         "GET".to_owned()
     }
 
-    fn uri(&self) -> String {
-        "/api/items".to_owned()
+    fn uri(&self) -> &[u8] {
+        b"/api/items"
     }
 
-    fn set_uri(&mut self, _uri: &str) -> Result<(), PluginError> {
+    fn set_uri(&mut self, _uri: &[u8]) -> Result<(), PluginError> {
         Err(PluginError::PhaseViolation(
             "the test double does not support rewriting the request target",
         ))

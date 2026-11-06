@@ -8,7 +8,10 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use super::{ContentPart, RawJson, SchemaError};
+use super::{
+    ContentPart, RawJson, SchemaError,
+    error::{MAX_TOKEN_BYTES, validate_bounded},
+};
 
 /// A non-empty tool name.
 ///
@@ -22,12 +25,14 @@ impl ToolName {
     /// Builds a tool name.
     ///
     /// # Errors
-    /// Returns [`SchemaError::Empty`] when the name is empty or only whitespace.
+    /// Returns [`SchemaError::Empty`] when the name is empty or only whitespace, and
+    /// [`SchemaError::TooLong`] when it exceeds the wire-token bound.
     pub fn try_new(value: impl Into<String>) -> Result<Self, SchemaError> {
         let value = value.into();
         if value.trim().is_empty() {
             return Err(SchemaError::Empty { field: "tool.name" });
         }
+        validate_bounded("tool.name", &value, MAX_TOKEN_BYTES)?;
         Ok(Self(value))
     }
 
@@ -64,7 +69,8 @@ impl ToolCallId {
     /// Builds a tool-call id.
     ///
     /// # Errors
-    /// Returns [`SchemaError::Empty`] when the id is empty or only whitespace.
+    /// Returns [`SchemaError::Empty`] when the id is empty or only whitespace, and
+    /// [`SchemaError::TooLong`] when it exceeds the wire-token bound.
     pub fn try_new(value: impl Into<String>) -> Result<Self, SchemaError> {
         let value = value.into();
         if value.trim().is_empty() {
@@ -72,6 +78,7 @@ impl ToolCallId {
                 field: "tool_call.id",
             });
         }
+        validate_bounded("tool_call.id", &value, MAX_TOKEN_BYTES)?;
         Ok(Self(value))
     }
 

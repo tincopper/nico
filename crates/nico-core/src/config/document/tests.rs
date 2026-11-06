@@ -3,15 +3,16 @@
 //! Kept beside the module rather than inline because the fixtures alone are longer than the model:
 //! every case here starts from a complete document and asserts the error variant, which is the
 //! behavior a caller depends on.
-
-use std::path::Path;
+//!
+//! The shipped example document is checked by [`llm`], next to the other assertions about the LLM
+//! route it contains.
 
 use super::*;
 use crate::{
     config::{
         bounds::{Bound, SchemaBounds},
-        provider::ProviderKind,
-        route::RouteTarget,
+        request::DEFAULT_MAX_RESPONSE_BYTES,
+        route::{RouteMode, RouteTarget},
         test_support::{NO_ENTRIES, UPSTREAM},
         upstream::Scheme,
     },
@@ -90,6 +91,7 @@ routes:
   - id: llm-chat
     path_prefix: /v1/chat/
     provider: openai-primary
+    protocol: openai.chat
     timeout_ms: 120000
 ";
         let document =
@@ -97,10 +99,14 @@ routes:
 
         let provider = &document.providers()[0];
         assert_eq!(provider.name(), "openai-primary");
-        assert_eq!(provider.kind(), ProviderKind::OpenAi);
+        assert_eq!(provider.kind(), "openai");
         assert_eq!(provider.base_url(), "https://api.openai.com");
         assert_eq!(provider.credential_ref(), "env:OPENAI_API_KEY");
         assert!(provider.model_allowlist().is_empty());
+        assert!(
+            provider.model_map().is_empty(),
+            "without a map the caller's model name is sent unchanged"
+        );
         assert_eq!(provider.timeout_ms(), None);
 
         let upstream = &document.upstreams()[0];
@@ -121,6 +127,14 @@ routes:
         assert_eq!(routes[1].target().name(), "openai-primary");
         assert_eq!(routes[1].timeout_ms(), Some(120_000));
         assert_eq!(routes[1].max_body_bytes(), None);
+        assert_eq!(routes[1].protocol(), Some("openai.chat"));
+        assert_eq!(routes[1].mode(), RouteMode::Convert);
+        assert_eq!(routes[1].max_response_bytes(), None);
+        // A route that writes no response bound inherits the document's, not an unlimited one.
+        assert_eq!(
+            document.request().max_response_bytes(),
+            DEFAULT_MAX_RESPONSE_BYTES
+        );
     }
 
     #[test]
@@ -149,7 +163,10 @@ routes: []
     }
 
     #[test]
-    fn parse_rejects_an_unknown_provider_kind() {
+    fn parse_does_not_decide_which_provider_kinds_exist() {
+        // A kind is an opaque registry key: the document carries the word, and the crate that
+        // assembles the adapters answers whether it names one. Deciding here would make adding a
+        // provider a change to this crate, which is exactly what the dependency rule forbids.
         let document = "\
 apiVersion: gateway/v1
 request:
@@ -164,11 +181,38 @@ providers:
 upstreams: []
 routes: []
 ";
+        let parsed = Document::parse(document.as_bytes(), ParseLimits::new(4096))
+            .expect("an unknown kind is a registry question, not a schema error");
+        assert_eq!(
+            parsed.providers()[0].kind(),
+            "anthropic",
+            "the word the operator wrote is the key the registry is asked for"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_a_provider_kind_that_is_not_a_token() {
+        // Shape is this crate's business: the word travels in a log field and is used as a key, so it
+        // is one line of printable ASCII with no spaces, whatever it names.
+        let document = "\
+apiVersion: gateway/v1
+request:
+  max_body_bytes: 1024
+  timeout_ms: 1000
+plugins: []
+providers:
+  - name: openai-primary
+    kind: \"two words\"
+    base_url: https://api.openai.com
+    credential_ref: env:OPENAI_API_KEY
+upstreams: []
+routes: []
+";
         let error = Document::parse(document.as_bytes(), ParseLimits::new(4096))
-            .expect_err("only `openai` is a known provider kind");
+            .expect_err("a kind with a space is not a token");
         assert!(
-            matches!(error, DocumentError::Yaml { .. }),
-            "expected Yaml error, got {error:?}"
+            matches!(error, DocumentError::InvalidField { .. }),
+            "expected InvalidField, got {error:?}"
         );
         assert_eq!(error.category(), ErrorCategory::Client);
     }
@@ -377,21 +421,6 @@ routes: []
     }
 
     #[test]
-    fn parse_accepts_the_shipped_resources_document() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/resources.yaml");
-        let bytes = std::fs::read(&path).expect("the shipped resources document is readable");
-        let document = Document::parse(&bytes, ParseLimits::new(1024 * 1024))
-            .expect("the shipped resources document is valid");
-
-        assert_eq!(document.providers().len(), 1);
-        assert_eq!(document.upstreams().len(), 1);
-        // Two plugin entries plus the buffered upload guard the example documents.
-        assert_eq!(document.plugins().len(), 3);
-        // The API, the provider route, and the buffered upload route.
-        assert_eq!(document.routes().len(), 3);
-    }
-
-    #[test]
     fn parse_never_returns_more_routes_than_the_bound_allows() {
         let routes = concat!(
             "  - id: api-public-v1\n",
@@ -421,4 +450,6 @@ routes: []
     }
 }
 
+mod bounds;
+mod llm;
 mod plugins;

@@ -13,6 +13,7 @@
 //! [`MockUpstream::wait_for_request`] and [`MockUpstream::wait_until_closed`] wait on those
 //! observations, so a test never sleeps to "give it a moment" — it waits for the event it asserts.
 
+mod reply;
 mod wire;
 
 use std::{
@@ -29,49 +30,11 @@ use tokio::{
     time::timeout,
 };
 
+pub(crate) use self::reply::Reply;
 use self::wire::{
-    Wire, chunked_head, header_value, parse_headers, render_head, write_chunk, write_response,
+    Wire, chunked_head, chunked_head_with, header_value, parse_headers, render_head, write_chunk,
+    write_declared, write_response, write_response_with,
 };
-
-/// How one accepted connection answers.
-#[derive(Debug, Clone)]
-pub(crate) enum Reply {
-    /// Reads the request body and echoes it back with a `200`.
-    Echo,
-    /// Reads the request body, then answers with `body` written in `chunk`-sized pieces.
-    Body {
-        /// The complete response body.
-        body: Vec<u8>,
-        /// How many bytes one write carries.
-        chunk: usize,
-    },
-    /// Sends a chunked `200` head, then writes `events` this far apart, then closes.
-    ///
-    /// Chunked framing is what makes an event stream measurable: Pingora 0.9.1 flushes the
-    /// downstream socket after every chunk of a chunked response, but only when a
-    /// `Content-Length` body is complete (see `design.md` §7). A real event stream is chunked for
-    /// the same reason — it has no known end.
-    Stream {
-        /// The response body pieces, in order.
-        events: Vec<Vec<u8>>,
-        /// Delay before each piece after the first.
-        gap: Duration,
-    },
-    /// Sends a chunked `200` head and no chunk at all, then holds the connection.
-    StallAfterHead,
-    /// Sends a chunked `200` head and one chunk, then holds the connection.
-    StallMidStream {
-        /// The body bytes sent before the stall.
-        first_chunk: Vec<u8>,
-    },
-    /// Sends `100 Continue`, then reads the request body, then sends the final response.
-    ContinueThen {
-        /// The complete final response body.
-        body: Vec<u8>,
-    },
-    /// Reads the request head, then holds the connection without answering.
-    StallBeforeHead,
-}
 
 /// What one connection did, as far as the mock could observe it.
 #[derive(Debug, Clone)]
@@ -323,6 +286,49 @@ impl Shared {
             Reply::Body { body, chunk } => {
                 read_request_body(&mut wire, &headers, &self).await;
                 let _written = write_response(&mut wire, &body, chunk).await;
+            }
+            Reply::Response {
+                status,
+                headers: response_headers,
+                body,
+                chunk,
+            } => {
+                read_request_body(&mut wire, &headers, &self).await;
+                let _written =
+                    write_response_with(&mut wire, status, &response_headers, &body, chunk).await;
+            }
+            Reply::Declared {
+                status,
+                content_length,
+                body,
+                chunk,
+            } => {
+                read_request_body(&mut wire, &headers, &self).await;
+                let _written =
+                    write_declared(&mut wire, status, content_length, &body, chunk).await;
+            }
+            Reply::StreamWithHeaders {
+                headers: response_headers,
+                events,
+                gap,
+            } => {
+                read_request_body(&mut wire, &headers, &self).await;
+                if wire
+                    .write(&chunked_head_with(&response_headers))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                for (index, event) in events.iter().enumerate() {
+                    if index > 0 {
+                        tokio::time::sleep(gap).await;
+                    }
+                    if write_chunk(&mut wire, event).await.is_err() {
+                        return;
+                    }
+                }
+                let _finished = wire.write(b"0\r\n\r\n").await;
             }
             Reply::Stream { events, gap } => {
                 read_request_body(&mut wire, &headers, &self).await;

@@ -2,16 +2,24 @@
 //!
 //! Every rule here is local to one entry — a name, a host, a path prefix, a port, a timeout — so a
 //! failure names the field it came from instead of the reference that led there. Whether a target
-//! exists and whether ids are unique is [`super::reference`]'s job.
+//! exists, whether ids are unique, and which fields a target kind owns is [`super::reference`]'s job.
 //!
-//! `Scheme` and `ProviderKind` are not re-validated here: they are closed enums whose serde
+//! `Scheme` and `RouteMode` are not re-validated here: they are closed enums whose serde
 //! implementation rejects an unknown spelling while the document is decoded, so "unknown scheme" is
 //! reported as a schema error before this stage runs.
 //!
 //! `path_prefix` is checked for syntax only. Whether `/api/` is equivalent to a directory prefix,
 //! and how two matching prefixes are ranked, is match semantics and belongs to the data plane.
+//!
+//! A `protocol` and a provider `kind` are checked for shape only. Which of either exists is known to
+//! the registry that compiles them at publication, so an unknown name is that registry's rejection,
+//! not a document error: this crate would have to learn every vendor to answer the question here, and
+//! adding a provider would then be a change to the kernel.
 
-use std::{borrow::Cow, collections::HashSet};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, HashSet},
+};
 
 use super::{
     error::DocumentError, host, plugin::PluginSpec, provider::Provider, request::RequestBounds,
@@ -24,6 +32,10 @@ const MAX_TIMEOUT_MS: u32 = 600_000;
 const MAX_NAME_BYTES: usize = 63;
 /// Upper bound for `routes[].path_prefix`.
 const MAX_PATH_PREFIX_BYTES: usize = 256;
+/// Upper bound for `routes[].protocol`.
+const MAX_PROTOCOL_BYTES: usize = 64;
+/// Upper bound for `providers[].kind`.
+const MAX_PROVIDER_KIND_BYTES: usize = 64;
 /// Upper bound for a rejection `content-type`.
 const MAX_CONTENT_TYPE_BYTES: usize = 128;
 /// Inclusive bounds of a configurable rejection status.
@@ -40,9 +52,9 @@ const REJECTION_STATUS: std::ops::RangeInclusive<u16> = 400..=499;
 ///
 /// # Errors
 /// - [`DocumentError::InvalidField`] for a malformed name, host, path prefix, base URL, credential
-///   reference, upstream host or port.
-/// - [`DocumentError::LimitOutOfRange`] for a timeout outside `1..=600_000` or a route body bound
-///   above `request.max_body_bytes`.
+///   reference, upstream host or port, protocol id or model map entry.
+/// - [`DocumentError::LimitOutOfRange`] for a timeout outside `1..=600_000`, a route body bound
+///   above `request.max_body_bytes`, or a route response bound above `request.max_response_bytes`.
 /// - [`DocumentError::DuplicateId`] when two routes share the same `(host, path_prefix)` pair.
 pub(super) fn validate(
     routes: &[Route],
@@ -61,9 +73,10 @@ pub(super) fn validate(
     validate_routes(routes, request)
 }
 
-/// Checks one provider: name, base URL, credential reference and optional timeout.
+/// Checks one provider: name, kind, base URL, credential reference, model map and optional timeout.
 fn validate_provider(provider: &Provider) -> Result<(), DocumentError> {
     validate_name("providers[].name", provider.name())?;
+    validate_token("providers[].kind", provider.kind(), MAX_PROVIDER_KIND_BYTES)?;
 
     const BASE_URL: &str = "providers[].base_url";
     if !(provider.base_url().starts_with("http://") || provider.base_url().starts_with("https://"))
@@ -85,6 +98,37 @@ fn validate_provider(provider: &Provider) -> Result<(), DocumentError> {
     if let Some(timeout_ms) = provider.timeout_ms() {
         validate_timeout("providers[].timeout_ms", timeout_ms)?;
     }
+    validate_model_map(provider.model_map())?;
+    Ok(())
+}
+
+/// Checks a logical → physical model map: both sides of every entry must be a name a caller can
+/// spell.
+///
+/// A model name travels in a URL, a header or a JSON string depending on the vendor, so whitespace
+/// and control characters are refused rather than escaped. Nothing beyond that is imposed: a vendor's
+/// naming scheme is the vendor's, and the same holds for `model_allowlist`, which is deliberately
+/// not narrowed here. The message names the side that broke, never the value: a mapping value is
+/// endpoint configuration, and an invalid one is usually a copy-paste accident worth fixing without
+/// being echoed into a log.
+fn validate_model_map(map: &BTreeMap<String, String>) -> Result<(), DocumentError> {
+    const FIELD: &str = "providers[].model_map";
+    for (logical, physical) in map {
+        for (side, name) in [("keys", logical), ("values", physical)] {
+            if name.is_empty() {
+                return Err(invalid(FIELD, format!("{side} must not be empty")));
+            }
+            if name
+                .chars()
+                .any(|character| character.is_whitespace() || character.is_control())
+            {
+                return Err(invalid(
+                    FIELD,
+                    format!("{side} must not contain whitespace or control characters"),
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -102,7 +146,7 @@ fn validate_upstream(upstream: &Upstream) -> Result<(), DocumentError> {
 
 /// Checks every route and rejects a repeated `(host, path_prefix)` match combination.
 fn validate_routes(routes: &[Route], request: RequestBounds) -> Result<(), DocumentError> {
-    let mut matches: HashSet<(Option<&str>, &str)> = HashSet::new();
+    let mut matches: HashSet<(Option<String>, &str)> = HashSet::new();
 
     for route in routes {
         validate_name("routes[].id", route.id())?;
@@ -117,8 +161,18 @@ fn validate_routes(routes: &[Route], request: RequestBounds) -> Result<(), Docum
         if let Some(max_body_bytes) = route.max_body_bytes() {
             validate_body_bound(request, max_body_bytes)?;
         }
+        if let Some(protocol) = route.protocol() {
+            validate_token("routes[].protocol", protocol, MAX_PROTOCOL_BYTES)?;
+        }
+        if let Some(max_response_bytes) = route.max_response_bytes() {
+            validate_response_bound(request, max_response_bytes)?;
+        }
 
-        if !matches.insert((route.host(), route.path_prefix())) {
+        // The key is the router's own comparison, canonicalised: `host_key` and `hosts_match` are one
+        // rule, so a document cannot list `API.example` and `api.example` as two routes while the
+        // router serves them as one.
+        let key = (route.host().map(host::host_key), route.path_prefix());
+        if !matches.insert(key) {
             // A route without a host matches any host; `*` spells that in the reported id.
             return Err(DocumentError::DuplicateId {
                 kind: "route-match",
@@ -200,7 +254,7 @@ fn validate_timeout(field: &'static str, timeout_ms: u32) -> Result<(), Document
     Ok(())
 }
 
-/// Checks that a route body bound stays within the document bound.
+/// Checks a route body bound stays within the document bound.
 ///
 /// A route may only tighten: `0` is legal (the route accepts no request body at all) and equals what
 /// the document bound means at `0`, but a route can never widen the document ceiling.
@@ -210,6 +264,39 @@ fn validate_body_bound(request: RequestBounds, max_body_bytes: u32) -> Result<()
             field: "routes[].max_body_bytes",
             value: u64::from(max_body_bytes),
         });
+    }
+    Ok(())
+}
+
+/// Checks a route response bound stays within the document bound.
+///
+/// The same rule as [`validate_body_bound`], for the same reason: the document-wide value is the
+/// budget an operator sized for the process, so a route may narrow its exposure and never widen it.
+fn validate_response_bound(
+    request: RequestBounds,
+    max_response_bytes: u32,
+) -> Result<(), DocumentError> {
+    if max_response_bytes > request.max_response_bytes() {
+        return Err(DocumentError::LimitOutOfRange {
+            field: "routes[].max_response_bytes",
+            value: u64::from(max_response_bytes),
+        });
+    }
+    Ok(())
+}
+
+/// Checks a protocol id: printable ASCII, no spaces, at most 64 bytes.
+///
+/// It becomes a registry lookup key and a log field, so a control character or a space would either
+/// address nothing or split the line it is written into. The shape is the whole rule: which ids
+/// exist is decided by the codec registry at publication.
+fn validate_token(field: &'static str, token: &str, limit: usize) -> Result<(), DocumentError> {
+    let printable = token.bytes().all(|byte| byte.is_ascii_graphic());
+    if token.is_empty() || token.len() > limit || !printable {
+        return Err(invalid(
+            field,
+            format!("must be 1..={limit} printable ASCII bytes with no spaces"),
+        ));
     }
     Ok(())
 }

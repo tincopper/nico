@@ -36,23 +36,25 @@ impl PluginContext for ContextState<'_> {
         }
     }
 
-    fn uri(&self) -> String {
+    fn uri(&self) -> &[u8] {
         match self.request.as_deref() {
-            Some(request) => String::from_utf8_lossy(request.raw_path()).into_owned(),
+            // The bytes the router matched, never a decoded copy: a substitution here would let a
+            // policy authorize a target the request does not name.
+            Some(request) => request.raw_path(),
             // Without a request header the context still has the path routing matched; it does not
             // keep the query string, so that is what a response stage gets to see.
-            None => self.http.path().unwrap_or_default().to_owned(),
+            None => self.http.path().map_or(&[][..], str::as_bytes),
         }
     }
 
-    fn set_uri(&mut self, uri: &str) -> Result<(), PluginError> {
+    fn set_uri(&mut self, uri: &[u8]) -> Result<(), PluginError> {
         if self.phase != Phase::Request {
             return Err(PluginError::PhaseViolation(
                 "set_uri is only available in on_request",
             ));
         }
         self.as_request_mut()?
-            .set_raw_path(uri.as_bytes())
+            .set_raw_path(uri)
             .map_err(|_| PluginError::Execute("the URI is not a valid request target"))
     }
 

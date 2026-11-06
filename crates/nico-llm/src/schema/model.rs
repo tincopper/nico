@@ -9,12 +9,17 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use super::SchemaError;
+use super::{
+    SchemaError,
+    error::{MAX_TOKEN_BYTES, validate_bounded},
+};
 
 /// A non-empty model name.
 ///
-/// The type is the invariant: an empty model selects nothing, so neither a constructor nor serde
-/// can produce one.
+/// The type is the invariant: an empty model selects nothing, and a name long enough to be a payload
+/// is not a name a provider serves, so neither a constructor nor serde can produce one. The bound is
+/// the same kind a stable error code and message carry, because a model name is a wire token and a
+/// log field rather than content.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String")]
 pub struct ModelId(String);
@@ -23,12 +28,14 @@ impl ModelId {
     /// Builds a model name.
     ///
     /// # Errors
-    /// Returns [`SchemaError::Empty`] when the name is empty or only whitespace.
+    /// Returns [`SchemaError::Empty`] when the name is empty or only whitespace, and
+    /// [`SchemaError::TooLong`] when it exceeds [`MAX_TOKEN_BYTES`](super::error::MAX_TOKEN_BYTES).
     pub fn try_new(value: impl Into<String>) -> Result<Self, SchemaError> {
         let value = value.into();
         if value.trim().is_empty() {
             return Err(SchemaError::Empty { field: "model" });
         }
+        validate_bounded("model", &value, MAX_TOKEN_BYTES)?;
         Ok(Self(value))
     }
 

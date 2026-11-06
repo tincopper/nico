@@ -19,6 +19,9 @@ serde.workspace = true
 # parameters, tool arguments, a structured-output schema) and unmodelled fields.
 serde_json.workspace = true
 thiserror.workspace = true
+# A duplicate registration is reported, not asserted: this crate is assembled by the process, and a
+# panic there would be worse than a kind that was registered once.
+tracing.workspace = true
 
 [lints]
 workspace = true

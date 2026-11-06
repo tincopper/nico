@@ -99,8 +99,22 @@ The gateway is a read-only consumer of its own config.
   construction succeeds.
 - Bounds are enforced during parse: document size, nesting depth, route count, upstream count,
   compile time. Config is an untrusted input boundary.
+- A byte ceiling is enforced **by the read**, never by a preceding `stat`: `metadata` and `open` are
+  two syscalls on a name, the name may be replaced between them, and it may address no regular file at
+  all (a FIFO reports length zero, a device reports whatever it likes). `nico_config::read_bounded` is
+  the one reader: it refuses a non-regular file, reads at most `limit + 1` bytes, and reports a size
+  that is a lower bound. Every reader of a document or a key file goes through it.
+- A validator and a consumer must share one definition of identity. `routes[].host` is compared with
+  `nico_core::hosts_match` by both the duplicate check and the router, and deduplicated under
+  `host_key`; two spellings of that comparison is how a document gets refused for a duplicate the
+  router would serve as one route.
 - Secrets appear only as **references** (`env:VAR`, `file:/path`), never as literal values in the
   document.
+- A field the schema accepts but no consumer reads is a field an operator will believe is in force.
+  `providers[].model_allowlist` is parsed and carried today and enforced by nothing, so a document that
+  sets it is accepted and the models it names are still served. Either give a carried field a consumer
+  in the same change that accepts it, or refuse it with `InvalidField` until one exists; leaving it
+  silently inert is the one option that is wrong.
 
 ---
 

@@ -132,6 +132,10 @@ impl SnapshotHandle {
     }
 
     /// Applies `update` to the current status.
+    ///
+    /// The closure runs while the status lock is held, so a closure that calls back into this handle
+    /// deadlocks on a non-reentrant mutex. Every caller in this workspace sets fields and nothing else;
+    /// a caller that needs to read the status first reads it into a local and decides outside.
     pub fn update_status(&self, update: impl FnOnce(&mut ConfigStatus)) {
         let mut guard = self.lock_status();
         update(&mut guard);

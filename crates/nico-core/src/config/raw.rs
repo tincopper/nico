@@ -6,9 +6,11 @@
 //! `serde(default)` at document level — a missing section is an error, not an empty one, because a
 //! truncated document must not look like a working configuration.
 
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
 
-use super::{provider::ProviderKind, upstream::Scheme};
+use super::{route::RouteMode, upstream::Scheme};
 
 /// The document exactly as written.
 #[derive(Debug, Deserialize)]
@@ -34,6 +36,10 @@ pub(super) struct RawDocument {
 #[serde(deny_unknown_fields)]
 pub(super) struct RawRequest {
     pub(super) max_body_bytes: u32,
+    /// Absent means the 8 MiB default; the field exists so a document can lower it, not so every
+    /// document has to restate it. An `Option` already means "absent", so no `serde` default is
+    /// needed — and a strict document type is not where a default belongs.
+    pub(super) max_response_bytes: Option<u32>,
     pub(super) timeout_ms: u32,
 }
 
@@ -42,12 +48,16 @@ pub(super) struct RawRequest {
 #[serde(deny_unknown_fields)]
 pub(super) struct RawProvider {
     pub(super) name: String,
-    pub(super) kind: ProviderKind,
+    pub(super) kind: String,
     pub(super) base_url: String,
     pub(super) credential_ref: String,
     /// `None` and `[]` mean the same thing — no model restriction — so the empty case does not have
     /// to be written out; the field is still rejected when it contains the wrong type.
     pub(super) model_allowlist: Option<Vec<String>>,
+    /// Logical model name → the name this provider expects. `None` and `{}` mean the same thing —
+    /// send the caller's name unchanged — so an unmapped provider does not have to write an empty
+    /// mapping out.
+    pub(super) model_map: Option<BTreeMap<String, String>>,
     pub(super) timeout_ms: Option<u32>,
 }
 
@@ -74,6 +84,16 @@ pub(super) struct RawRoute {
     pub(super) provider: Option<String>,
     pub(super) timeout_ms: Option<u32>,
     pub(super) max_body_bytes: Option<u32>,
+    /// The client protocol a provider route converts, kept as written: whether a codec exists for it
+    /// is a publication decision of the crate that owns the registry, not a document rule.
+    ///
+    /// Required on a provider route and refused on an upstream one, so the pair is checked where the
+    /// target is resolved rather than here.
+    pub(super) protocol: Option<String>,
+    /// Absent means [`RouteMode::Convert`].
+    pub(super) mode: Option<RouteMode>,
+    /// Only a provider route has a response to convert, so this is refused on an upstream one.
+    pub(super) max_response_bytes: Option<u32>,
     /// Plugin names this route runs, in document order. Absent and `[]` mean the same thing — no
     /// plugins — so a route without a policy does not have to spell the empty list out.
     pub(super) plugins: Option<Vec<String>>,

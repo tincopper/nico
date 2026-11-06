@@ -13,63 +13,10 @@ use std::net::SocketAddr;
 
 // --- resources document ------------------------------------------------------
 
-/// What a route forwards to: exactly one of the two, like the document itself.
-#[derive(Debug, Clone)]
-enum Target {
-    Upstream(String),
-    Provider(String),
-}
+mod route;
 
-/// One `routes` entry of a fixture document.
-#[derive(Debug, Clone)]
-pub(crate) struct Route {
-    id: String,
-    host: Option<String>,
-    path_prefix: String,
-    target: Target,
-    timeout_ms: Option<u32>,
-    max_body_bytes: Option<u32>,
-    plugins: Vec<String>,
-}
-
-impl Route {
-    /// A route for every host that forwards `path_prefix` to an upstream.
-    pub(crate) fn new(id: &str, path_prefix: &str, upstream: &str) -> Self {
-        Self {
-            id: id.to_owned(),
-            host: None,
-            path_prefix: path_prefix.to_owned(),
-            target: Target::Upstream(upstream.to_owned()),
-            timeout_ms: None,
-            max_body_bytes: None,
-            plugins: Vec::new(),
-        }
-    }
-
-    /// Restricts the route to one exact `Host`.
-    pub(crate) fn host(mut self, host: &str) -> Self {
-        self.host = Some(host.to_owned());
-        self
-    }
-
-    /// Adds the route-level timeout override, which may only tighten the document limit.
-    pub(crate) fn timeout_ms(mut self, timeout_ms: u32) -> Self {
-        self.timeout_ms = Some(timeout_ms);
-        self
-    }
-
-    /// Adds the route-level body bound, which may only tighten the document limit.
-    pub(crate) fn max_body_bytes(mut self, max_body_bytes: u32) -> Self {
-        self.max_body_bytes = Some(max_body_bytes);
-        self
-    }
-
-    /// Names the plugins the route runs, in the order the document lists them.
-    pub(crate) fn plugins(mut self, names: &[&str]) -> Self {
-        self.plugins = names.iter().map(|name| (*name).to_owned()).collect();
-        self
-    }
-}
+pub(crate) use self::route::Route;
+use self::route::Target;
 
 /// One entry of the document's `plugins` collection, rendered from parts.
 ///
@@ -203,6 +150,21 @@ impl Plugin {
     }
 }
 
+/// One entry of the document's `providers` collection, rendered from parts.
+///
+/// A provider entry is an endpoint's configuration, not a policy: the kind is the adapter's registry
+/// key, the base URL is where the adapter compiles its endpoint from, and the credential is a
+/// reference the publication resolves. The HTTP scenarios all use the OpenAI adapter, so the kind is
+/// fixed here; a second adapter would add a constructor rather than a field every scenario spells.
+#[derive(Debug, Clone)]
+struct ProviderEntry {
+    name: String,
+    kind: &'static str,
+    base_url: String,
+    credential_ref: String,
+    model_map: Vec<(String, String)>,
+}
+
 /// A complete resources document, rendered from parts.
 ///
 /// The defaults describe a usable document: a 1 MiB body bound, a 30 s whole-request budget, and no
@@ -210,8 +172,9 @@ impl Plugin {
 #[derive(Debug, Clone)]
 pub(crate) struct Resources {
     max_body_bytes: u32,
+    max_response_bytes: Option<u32>,
     timeout_ms: u32,
-    providers: Vec<String>,
+    providers: Vec<ProviderEntry>,
     upstreams: Vec<(String, SocketAddr)>,
     routes: Vec<Route>,
     plugins: Vec<Plugin>,
@@ -230,6 +193,12 @@ impl Resources {
         self
     }
 
+    /// Sets `request.max_response_bytes`; a route may only tighten this value.
+    pub(crate) fn response_limit(mut self, bytes: u32) -> Self {
+        self.max_response_bytes = Some(bytes);
+        self
+    }
+
     /// Sets `request.timeout_ms`.
     pub(crate) fn timeout_ms(mut self, timeout_ms: u32) -> Self {
         self.timeout_ms = timeout_ms;
@@ -237,8 +206,41 @@ impl Resources {
     }
 
     /// Adds the provider a provider route can name.
-    pub(crate) fn provider(mut self, name: &str) -> Self {
-        self.providers.push(name.to_owned());
+    ///
+    /// `base_url` and `credential_ref` are the scenario's: the publication materializes the reference,
+    /// so a fixture that names an `env:` variable nothing sets would be refused — and setting one is
+    /// `unsafe` in the 2024 edition and shared with every test in the binary. A scenario therefore
+    /// writes a `file:` fixture and points the base URL at a loopback address, which also keeps a test
+    /// from depending on a name resolving.
+    pub(crate) fn provider(mut self, name: &str, base_url: &str, credential_ref: &str) -> Self {
+        self.providers.push(ProviderEntry {
+            name: name.to_owned(),
+            kind: "openai",
+            base_url: base_url.to_owned(),
+            credential_ref: credential_ref.to_owned(),
+            model_map: Vec::new(),
+        });
+        self
+    }
+
+    /// Adds the provider a provider route can name, with a logical → physical model map.
+    pub(crate) fn provider_with_model_map(
+        mut self,
+        name: &str,
+        base_url: &str,
+        credential_ref: &str,
+        model_map: &[(&str, &str)],
+    ) -> Self {
+        self.providers.push(ProviderEntry {
+            name: name.to_owned(),
+            kind: "openai",
+            base_url: base_url.to_owned(),
+            credential_ref: credential_ref.to_owned(),
+            model_map: model_map
+                .iter()
+                .map(|(logical, physical)| ((*logical).to_owned(), (*physical).to_owned()))
+                .collect(),
+        });
         self
     }
 
@@ -270,17 +272,12 @@ impl Resources {
     }
 
     /// Adds a route that forwards to a provider instead of an upstream.
+    ///
+    /// The route serves `openai.chat` in `convert` mode, which is the document's default for a
+    /// provider route; [`Route::protocol`] and [`Route::mode`] vary those facts through
+    /// [`Resources::route`].
     pub(crate) fn provider_route(mut self, id: &str, path_prefix: &str, provider: &str) -> Self {
-        let route = Route {
-            id: id.to_owned(),
-            host: None,
-            path_prefix: path_prefix.to_owned(),
-            target: Target::Provider(provider.to_owned()),
-            timeout_ms: None,
-            max_body_bytes: None,
-            plugins: Vec::new(),
-        };
-        self.routes.push(route);
+        self.routes.push(Route::provider(id, path_prefix, provider));
         self
     }
 
@@ -291,11 +288,16 @@ impl Resources {
 apiVersion: gateway/v1
 request:
   max_body_bytes: {body}
-  timeout_ms: {timeout}
 ",
             body = self.max_body_bytes,
-            timeout = self.timeout_ms,
         );
+        if let Some(max_response_bytes) = self.max_response_bytes {
+            yaml.push_str(&format!("  max_response_bytes: {max_response_bytes}\n"));
+        }
+        yaml.push_str(&format!(
+            "  timeout_ms: {timeout}\n",
+            timeout = self.timeout_ms
+        ));
         if self.plugins.is_empty() {
             yaml.push_str("plugins: []\n");
         } else {
@@ -318,10 +320,20 @@ request:
             yaml.push_str("providers: []\n");
         } else {
             yaml.push_str("providers:\n");
-            for name in &self.providers {
+            for provider in &self.providers {
                 yaml.push_str(&format!(
-                    "  - name: {name}\n    kind: openai\n    base_url: https://api.example.test\n    credential_ref: env:FIXTURE_KEY\n"
+                    "  - name: {name}\n    kind: {kind}\n    base_url: {base_url}\n    credential_ref: {credential_ref}\n",
+                    name = provider.name,
+                    kind = provider.kind,
+                    base_url = provider.base_url,
+                    credential_ref = provider.credential_ref,
                 ));
+                if !provider.model_map.is_empty() {
+                    yaml.push_str("    model_map:\n");
+                    for (logical, physical) in &provider.model_map {
+                        yaml.push_str(&format!("      {logical}: {physical}\n"));
+                    }
+                }
             }
         }
 
@@ -353,7 +365,20 @@ request:
                 }
                 match &route.target {
                     Target::Upstream(name) => yaml.push_str(&format!("    upstream: {name}\n")),
-                    Target::Provider(name) => yaml.push_str(&format!("    provider: {name}\n")),
+                    // The document model requires a client protocol on a provider route, and `mode`
+                    // and `max_response_bytes` exist on a provider route alone. The builder keeps
+                    // the protocol on the provider target so an upstream route cannot name one by
+                    // accident; `mode` and the response bound are written below when set.
+                    Target::Provider(name) => {
+                        let protocol = route.protocol.as_deref().unwrap_or("openai.chat");
+                        yaml.push_str(&format!("    provider: {name}\n    protocol: {protocol}\n"));
+                    }
+                }
+                if let Some(mode) = &route.mode {
+                    yaml.push_str(&format!("    mode: {mode}\n"));
+                }
+                if let Some(max_response_bytes) = route.max_response_bytes {
+                    yaml.push_str(&format!("    max_response_bytes: {max_response_bytes}\n"));
                 }
                 if let Some(timeout_ms) = route.timeout_ms {
                     yaml.push_str(&format!("    timeout_ms: {timeout_ms}\n"));
@@ -378,6 +403,7 @@ impl Default for Resources {
     fn default() -> Self {
         Self {
             max_body_bytes: 1024 * 1024,
+            max_response_bytes: None,
             timeout_ms: 30_000,
             providers: Vec::new(),
             upstreams: Vec::new(),

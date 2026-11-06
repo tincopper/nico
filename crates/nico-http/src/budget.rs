@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use nico_core::{RequestBounds, Route};
-use pingora::http::RequestHeader;
+use pingora::http::{HMap, RequestHeader, ResponseHeader};
 
 /// Returns the request body limit: the smaller of the route override and the document limit.
 #[must_use]
@@ -16,6 +16,23 @@ pub(crate) fn body_limit(route: &Route, request: RequestBounds) -> u32 {
     let document_limit = request.max_body_bytes();
     route
         .max_body_bytes()
+        .map_or(document_limit, |route_limit| {
+            route_limit.min(document_limit)
+        })
+}
+
+/// Returns the ceiling on a buffered response body: the smaller of the route override and the
+/// document limit.
+///
+/// The same "inner may tighten, never widen" rule as the two request limits, applied to the third
+/// bound. It is read by the response-head hook, which refuses a response that declares more than this
+/// before the head is written, and passed to the response transform, which holds a chunked answer to
+/// the same number while it buffers it.
+#[must_use]
+pub(crate) fn response_limit(route: &Route, request: RequestBounds) -> u32 {
+    let document_limit = request.max_response_bytes();
+    route
+        .max_response_bytes()
         .map_or(document_limit, |route_limit| {
             route_limit.min(document_limit)
         })
@@ -29,8 +46,22 @@ pub(crate) fn body_limit(route: &Route, request: RequestBounds) -> u32 {
 /// number it refused to validate would be worse than metering what actually arrives.
 #[must_use]
 pub(crate) fn declared_length(header: &RequestHeader) -> Option<u64> {
-    header
-        .headers
+    declared_length_in(&header.headers)
+}
+
+/// Returns the body length the response declares in `Content-Length`, when it declares one.
+///
+/// The response-side counterpart of [`declared_length`], used by the one check that can still answer
+/// `502`: a non-streaming answer whose declared size is over the route's ceiling is refused before its
+/// head is written. A chunked answer declares nothing and is metered by the transform instead.
+#[must_use]
+pub(crate) fn declared_response_length(header: &ResponseHeader) -> Option<u64> {
+    declared_length_in(&header.headers)
+}
+
+/// Reads `Content-Length` out of a header map, refusing anything that is not a plain number.
+fn declared_length_in(headers: &HMap) -> Option<u64> {
+    headers
         .get("content-length")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok())

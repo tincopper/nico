@@ -16,9 +16,12 @@ typed errors over `anyhow`, explicit bounds and deadlines, snapshots over locks,
 that enforces what review would otherwise have to.
 
 > **Status**: `nico-core`, `nico-config`, `nico-http`, `nico-plugins` and `nico-server` exist with a
-> green baseline. `nico-llm` is built up to its canonical model, the two contracts, the exchange and
-> the OpenAI Chat Completions client codec; its provider adapters and `builtin_registry()` are the
-> next step. These files are the binding conventions for new code.
+> green baseline. `nico-llm` is built up to its canonical model, the two contracts, the exchange, the
+> OpenAI Chat Completions client codec and the OpenAI provider adapter, registered in
+> `builtin_registry()` and published as a plan per generation (`nico-server::llm`). `nico-http`
+> carries the byte-level seam a front-end implements (`llm.rs`: destination, prepared body,
+> per-response transform), the AI-route hold-back and the `request.max_response_bytes` ceiling. These files are the binding
+> conventions for new code.
 > Architecture rationale is in `.trellis/tasks/11-03-unified-gateway-analysis/design.md`;
 > the empirically verified Pingora behaviour that constrains `nico-http` is in
 > `.trellis/tasks/archive/2026-11/11-03-phase0-tech-verification/research/phase0-capability-report.md` §6.

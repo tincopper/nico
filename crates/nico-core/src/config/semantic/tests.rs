@@ -55,11 +55,26 @@ fn route(id: &str, path_prefix: &str) -> String {
     )
 }
 
+/// A route that forwards to the fixture provider, which is the kind that owns a protocol and a
+/// response bound.
+fn provider_route(id: &str, path_prefix: &str) -> String {
+    format!(
+        concat!(
+            "  - id: {}\n",
+            "    path_prefix: {}\n",
+            "    provider: openai-primary\n",
+            "    protocol: openai.chat\n",
+        ),
+        id, path_prefix
+    )
+}
+
 mod hosts;
 mod matches;
 mod names;
 mod numeric;
 mod paths;
 mod plugins;
+mod protocol;
 mod providers;
 mod upstreams;

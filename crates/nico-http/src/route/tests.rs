@@ -141,20 +141,18 @@ fn an_authority_in_the_request_target_is_used_when_no_host_header_is_sent() {
 }
 
 #[test]
-fn equal_rank_and_prefix_length_keep_the_first_document_entry() {
-    // Two spellings of the same host: the pair `(host, path_prefix)` differs as text, so the
-    // reference check accepts both, and both match the request. Document order decides.
+fn a_route_host_matches_whatever_its_case() {
+    // The validator and the router compare a host with one rule (`nico_core::hosts_match`), so a
+    // document cannot carry two entries the router would serve as one. That leaves the earlier
+    // document-order tie-break unreachable for a validated document — which is the point: the refusal
+    // is what protects it, not the ranking.
     let document = document(concat!(
         "  - id: first\n",
         "    host: api.example.com\n",
         "    path_prefix: /\n",
         "    upstream: api-backend\n",
-        "  - id: second\n",
-        "    host: API.example.com\n",
-        "    path_prefix: /\n",
-        "    upstream: api-backend\n",
     ));
-    let request = request_to("api.example.com", "/items");
+    let request = request_to("API.Example.COM", "/items");
 
     let matched = match_route(&request, document.routes()).expect("a route matches");
 

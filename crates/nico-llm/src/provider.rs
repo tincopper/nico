@@ -19,17 +19,18 @@
 use std::{borrow::Cow, collections::BTreeMap, fmt, sync::Arc};
 
 use nico_core::ErrorCategory;
-use nico_http::Destination;
 
 use crate::{
-    protocol::{Capabilities, Capability, RegistryError, ResponseFacts, header_names},
+    protocol::{Capabilities, Capability, ProtocolId, RegistryError, ResponseFacts},
     schema::{CanonicalError, ChatRequest, ChatResponse, StreamEvent},
 };
 
+mod endpoint;
 mod route;
 
 pub mod openai;
 
+pub use endpoint::{Endpoint, EndpointError, WireRequest};
 pub use openai::OpenAiProvider;
 pub use route::{Credential, ExchangeMode, ProviderRoute, RouteError};
 
@@ -58,151 +59,6 @@ impl ProviderKind {
 impl fmt::Display for ProviderKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.0)
-    }
-}
-
-/// Why an [`Endpoint`] could not be built.
-///
-/// The checks exist because the parts can come from a configuration document and a credential file:
-/// a path that is not absolute, a header name that is not a token, or a header value holding a line
-/// break would let a value the gateway carries split one request into two on the wire.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
-pub enum EndpointError {
-    /// The path is not an absolute request target, or holds a control character.
-    #[error("the endpoint path must be absolute and free of control characters")]
-    Path,
-    /// A route's `base_url` is not an absolute `http(s)` URL an adapter can address.
-    ///
-    /// The adapter refuses the forms it would otherwise have to reinterpret: a missing or unsupported
-    /// scheme, user information (a credential belongs in `credential_ref`), a query or fragment, an
-    /// empty host, a host that is not a name (see [`nico_core::validate_host`]), a port that is not a
-    /// number, is zero, or is out of range, and whitespace or a control character anywhere. `reason`
-    /// is a description of the rule that broke, never the value itself: a rejected URL can carry user
-    /// information, and a diagnostic must not quote it.
-    #[error("`{field}` is not an addressable URL: {reason}")]
-    BaseUrl {
-        /// Dotted path of the configuration field.
-        field: &'static str,
-        /// The rule the value broke, as a diagnostic.
-        reason: Cow<'static, str>,
-    },
-    /// A header name is not an HTTP token.
-    #[error("`{name}` is not a valid header name")]
-    HeaderName {
-        /// The rejected name.
-        name: String,
-    },
-    /// A header value holds a control character.
-    #[error("the value of header `{name}` holds a control character")]
-    HeaderValue {
-        /// The header whose value was rejected.
-        name: String,
-    },
-}
-
-/// Where one upstream request goes and what it presents: destination, path and headers.
-///
-/// A chat exchange is always a `POST`; the data plane owns the method and the framing, so an endpoint
-/// carries only what the provider decides. That ownership is also why a provider must not set
-/// `host`, `content-length`, `transfer-encoding` or a hop-by-hop header here: the data plane derives
-/// them from the destination and the body it actually writes. The path is absolute and is derived
-/// from route facts, so the data plane can send the head before the request body is available.
-#[derive(Clone, PartialEq, Eq)]
-pub struct Endpoint {
-    destination: Destination,
-    path: String,
-    headers: Vec<(String, String)>,
-}
-
-impl fmt::Debug for Endpoint {
-    /// Names the headers and never prints their values: one of them is the provider credential.
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("Endpoint")
-            .field("destination", &self.destination)
-            .field("path", &self.path)
-            .field("headers", &header_names(&self.headers))
-            .finish()
-    }
-}
-
-impl Endpoint {
-    /// Builds an endpoint and checks that the data plane may put it on the wire.
-    ///
-    /// # Errors
-    /// Returns [`EndpointError::Path`] for a path that is not absolute or holds a control character,
-    /// [`EndpointError::HeaderName`] for a name that is not a token, and
-    /// [`EndpointError::HeaderValue`] for a value that holds a control character.
-    pub fn try_new(
-        destination: Destination,
-        path: impl Into<String>,
-        headers: Vec<(String, String)>,
-    ) -> Result<Self, EndpointError> {
-        let path = path.into();
-        validate_path(&path)?;
-        validate_headers(&headers)?;
-        Ok(Self {
-            destination,
-            path,
-            headers,
-        })
-    }
-
-    /// Returns the peer to connect to; TLS policy and budgets stay with the data plane.
-    #[must_use]
-    pub const fn destination(&self) -> &Destination {
-        &self.destination
-    }
-
-    /// Returns the absolute request path.
-    #[must_use]
-    pub fn path(&self) -> &str {
-        &self.path
-    }
-
-    /// Returns the headers the provider adds to the request.
-    #[must_use]
-    pub fn headers(&self) -> &[(String, String)] {
-        &self.headers
-    }
-}
-
-/// One provider request exactly as the data plane will send it.
-#[derive(Clone, PartialEq, Eq)]
-pub struct WireRequest {
-    endpoint: Endpoint,
-    body: Vec<u8>,
-}
-
-impl fmt::Debug for WireRequest {
-    /// Prints the body's length, never the body: it is the caller's prompt.
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("WireRequest")
-            .field("endpoint", &self.endpoint)
-            .field("body_len", &self.body.len())
-            .finish()
-    }
-}
-
-impl WireRequest {
-    /// Pairs an endpoint with the body the adapter encoded.
-    #[must_use]
-    pub fn new(endpoint: Endpoint, body: Vec<u8>) -> Self {
-        Self { endpoint, body }
-    }
-
-    /// Returns where the request goes.
-    #[must_use]
-    pub const fn endpoint(&self) -> &Endpoint {
-        &self.endpoint
-    }
-
-    /// Returns the encoded body.
-    #[must_use]
-    pub fn body(&self) -> &[u8] {
-        &self.body
     }
 }
 
@@ -323,6 +179,15 @@ pub trait Provider: Send + Sync {
     /// Returns the provider kind this adapter serves; the value is also its registry key.
     fn kind(&self) -> ProviderKind;
 
+    /// Returns the wire protocol this provider speaks natively.
+    ///
+    /// A route may be served by any client protocol, so this value is not the route's `protocol`:
+    /// it names the provider's own wire format. Publication reads it to decide whether a
+    /// `passthrough` route is legal — bytes may only skip the canonical model when both sides already
+    /// speak the same protocol — and it uses the adapter's own answer rather than a vendor table, so
+    /// adding a provider never adds a branch to the plan compiler.
+    fn native_protocol(&self) -> ProtocolId;
+
     /// Returns what this provider can express.
     fn capabilities(&self) -> Capabilities;
 
@@ -371,6 +236,20 @@ pub trait Provider: Send + Sync {
         head: &ResponseFacts,
         body: &[u8],
     ) -> Result<ChatResponse, ProviderError>;
+
+    /// Maps a provider failure status into the canonical error **without reading its body**.
+    ///
+    /// A response's head is written before its body is read, so the client status a failure produces
+    /// must be known from the status alone. The exchange uses this while translating a response: a
+    /// failure status becomes the client's error answer here, and a buffered body over the route's
+    /// ceiling is refused with the status this same table would have produced. The mapping is the
+    /// adapter's closed table — the one [`Provider::decode_response`] uses for the same status — so the
+    /// two paths cannot disagree about which failure a status means.
+    ///
+    /// The provider's own error code is only available from its body, so a value produced here carries
+    /// none. The caller-visible status, code, category and retryability are unaffected: all four are
+    /// decided by the status.
+    fn error_for_status(&self, status: u16) -> CanonicalError;
 
     /// Creates a decoder for one streamed response.
     ///
@@ -448,37 +327,4 @@ impl fmt::Debug for ProviderRegistry {
             .entries(self.providers.keys().copied())
             .finish()
     }
-}
-
-fn validate_path(path: &str) -> Result<(), EndpointError> {
-    if !path.starts_with('/') {
-        return Err(EndpointError::Path);
-    }
-    if path
-        .bytes()
-        .any(|byte| byte.is_ascii_control() || byte == b' ')
-    {
-        return Err(EndpointError::Path);
-    }
-    Ok(())
-}
-
-fn validate_headers(headers: &[(String, String)]) -> Result<(), EndpointError> {
-    for (name, value) in headers {
-        if !is_token(name) {
-            return Err(EndpointError::HeaderName { name: name.clone() });
-        }
-        if value.bytes().any(|byte| byte.is_ascii_control()) {
-            return Err(EndpointError::HeaderValue { name: name.clone() });
-        }
-    }
-    Ok(())
-}
-
-/// Returns whether `name` is an HTTP token (RFC 9110 `tchar`), the only form a header name may take.
-fn is_token(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
 }

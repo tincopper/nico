@@ -11,12 +11,22 @@ use nico_core::{ConfigDigest, Generation, Revision, RuntimeSnapshot};
 
 use super::{
     BufferedRoutes, HttpStateHandle, PublishedChains, ResponseRewrites, RouteChains,
-    chain_for_route,
+    chain_for_route, llm_for_route,
 };
+
+/// Publishes a generation that serves no LLM route, which is what an upstream-only document compiles
+/// to. The production path always has a plan; a test that wants the empty one says so.
+fn publish(handle: &HttpStateHandle, snapshot: Arc<RuntimeSnapshot>, chains: PublishedChains) {
+    handle.publish_with_llm(snapshot, chains, Arc::new(NoLlmRoutes));
+}
 use crate::{
     Plugin, PluginChain, PluginEntry, PluginInfo,
     error::HttpError,
-    test_support::{document, route, snapshot, snapshot_with_plugins},
+    llm::NoLlmRoutes,
+    test_support::{
+        FakeLlmRoute, FakeLlmRoutes, LlmCalls, document, llm_context, llm_snapshot, route,
+        snapshot, snapshot_with_plugins,
+    },
 };
 
 /// A plugin with no behaviour: only its name matters here.
@@ -111,7 +121,8 @@ const POLICY_ROUTES: &str = concat!(
 #[test]
 fn a_route_without_plugins_runs_no_chain() {
     let handle = HttpStateHandle::new();
-    handle.publish(
+    publish(
+        &handle,
         snapshot_with_plugins(POLICY, POLICY_ROUTES),
         PublishedChains::empty(),
     );
@@ -128,7 +139,8 @@ fn a_route_without_plugins_runs_no_chain() {
 #[test]
 fn a_route_that_names_a_plugin_runs_the_published_chain() {
     let handle = HttpStateHandle::new();
-    handle.publish(
+    publish(
+        &handle,
         snapshot_with_plugins(POLICY, POLICY_ROUTES),
         plan(&[("api", chain())], &[]),
     );
@@ -146,7 +158,8 @@ fn a_route_that_names_a_plugin_without_a_chain_is_refused() {
     // The compiler that produced this publication skipped the route. Forwarding the request would
     // serve it with no policy at all, so the answer is a 500 rather than "no policy".
     let handle = HttpStateHandle::new();
-    handle.publish(
+    publish(
+        &handle,
         snapshot_with_plugins(POLICY, POLICY_ROUTES),
         PublishedChains::empty(),
     );
@@ -172,7 +185,7 @@ fn publish_exposes_every_part_of_the_generation_together() {
     let handle = HttpStateHandle::new();
     let published = snapshot(TWO_ROUTES);
 
-    handle.publish(Arc::clone(&published), full_plan());
+    publish(&handle, Arc::clone(&published), full_plan());
 
     let state = handle.current().expect("the state is published");
     assert_eq!(state.snapshot().generation(), published.generation());
@@ -245,10 +258,14 @@ fn two_routes_that_reference_the_same_plugins_share_one_chain() {
 #[test]
 fn a_held_state_keeps_the_generation_and_the_policies_it_was_read_at() {
     let handle = HttpStateHandle::new();
-    handle.publish(snapshot_at(1, TWO_ROUTES), full_plan());
+    publish(&handle, snapshot_at(1, TWO_ROUTES), full_plan());
     let held = handle.current().expect("the first state is published");
 
-    handle.publish(snapshot_at(2, TWO_ROUTES), PublishedChains::empty());
+    publish(
+        &handle,
+        snapshot_at(2, TWO_ROUTES),
+        PublishedChains::empty(),
+    );
 
     assert_eq!(
         held.snapshot().generation(),
@@ -276,8 +293,8 @@ fn a_held_state_keeps_the_generation_and_the_policies_it_was_read_at() {
 #[test]
 fn a_new_publication_replaces_the_whole_plan() {
     let handle = HttpStateHandle::new();
-    handle.publish(snapshot(TWO_ROUTES), full_plan());
-    handle.publish(snapshot(TWO_ROUTES), PublishedChains::empty());
+    publish(&handle, snapshot(TWO_ROUTES), full_plan());
+    publish(&handle, snapshot(TWO_ROUTES), PublishedChains::empty());
 
     let state = handle.current().expect("the state is published");
     assert!(
@@ -293,5 +310,100 @@ fn a_new_publication_replaces_the_whole_plan() {
     assert!(
         !state.rewrites_response("api"),
         "nor the previous response framing"
+    );
+}
+
+/// A publication carrying one route's LLM front-end, as the compiler that builds the plan would.
+fn llm_plan() -> Arc<dyn crate::llm::LlmRoutes> {
+    let calls = Arc::new(std::sync::Mutex::new(LlmCalls::default()));
+    FakeLlmRoutes::one("ai", Arc::new(FakeLlmRoute::new(&calls)))
+}
+
+#[test]
+fn a_provider_route_without_a_published_front_end_is_refused() {
+    let handle = HttpStateHandle::new();
+    publish(&handle, llm_snapshot(), PublishedChains::empty());
+    let state = handle.current().expect("the state is published");
+
+    let error = llm_for_route(&state, route(state.snapshot().document(), "ai"))
+        .err()
+        .expect("a provider this crate cannot address is never guessed");
+    assert!(
+        matches!(&error, HttpError::ProviderNotConfigured { name } if name == "openai-primary"),
+        "expected ProviderNotConfigured, got {error:?}"
+    );
+    assert_eq!(
+        error.respond().map(|respond| respond.status().as_u16()),
+        Some(502)
+    );
+}
+
+#[test]
+fn a_provider_route_is_served_by_the_front_end_its_generation_published() {
+    let handle = HttpStateHandle::new();
+    handle.publish_with_llm(llm_snapshot(), PublishedChains::empty(), llm_plan());
+    let state = handle.current().expect("the state is published");
+
+    let front_end = llm_for_route(&state, route(state.snapshot().document(), "ai"))
+        .expect("the plan covers the route")
+        .expect("the route targets a provider");
+
+    assert_eq!(front_end.protocol(), "openai.chat");
+    assert_eq!(front_end.provider(), "openai");
+}
+
+#[test]
+fn an_upstream_route_has_no_llm_front_end() {
+    let handle = HttpStateHandle::new();
+    publish(&handle, snapshot(TWO_ROUTES), PublishedChains::empty());
+    let state = handle.current().expect("the state is published");
+
+    let front_end = llm_for_route(&state, route(state.snapshot().document(), "api"))
+        .expect("an upstream route is not refused");
+
+    assert!(
+        front_end.is_none(),
+        "an upstream route forwards bytes and never consults the plan"
+    );
+}
+
+#[test]
+fn publish_stores_no_front_end() {
+    let handle = HttpStateHandle::new();
+
+    publish(&handle, llm_snapshot(), PublishedChains::empty());
+
+    let state = handle.current().expect("the state is published");
+    assert!(state.llm().is_empty());
+    assert_eq!(state.llm().len(), 0);
+    assert!(format!("{state:?}").contains("llm_routes: 0"));
+}
+
+#[test]
+fn a_held_state_keeps_the_front_ends_its_generation_published() {
+    let handle = HttpStateHandle::new();
+    handle.publish_with_llm(llm_snapshot(), PublishedChains::empty(), llm_plan());
+    let held = handle.current().expect("the first state is published");
+
+    handle.publish_with_llm(
+        llm_snapshot(),
+        PublishedChains::empty(),
+        FakeLlmRoutes::empty(),
+    );
+
+    assert!(
+        held.llm().route("ai").is_some(),
+        "a request that already read a state keeps the endpoint it was routed with"
+    );
+    assert!(
+        held.llm()
+            .route("ai")
+            .is_some_and(|front_end| llm_context(held.snapshot(), front_end).llm().is_some()),
+        "the front-end a held generation answers with is the one its routes were published for"
+    );
+    let current = handle.current().expect("the second state is published");
+    assert!(
+        current.llm().route("ai").is_none(),
+        "the newer publication carries the plan compiled with it"
     );
 }

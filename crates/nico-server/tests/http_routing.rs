@@ -8,14 +8,17 @@
 
 mod support;
 
-use support::http::{
-    RunningServer,
-    client::{Request, get},
-    free_port,
-    resources::{Resources, Route},
-    source::TestSource,
-    upstream::{MockUpstream, Reply},
-    wait_for_status, write_bootstrap,
+use support::{
+    http::{
+        RunningServer,
+        client::{Request, get},
+        free_port,
+        resources::{Resources, Route},
+        source::TestSource,
+        upstream::{MockUpstream, Reply},
+        wait_for_status, write_bootstrap,
+    },
+    token,
 };
 
 #[tokio::test(flavor = "current_thread")]
@@ -41,6 +44,11 @@ async fn routing_ranks_host_before_prefix_and_answers_404_and_503() {
     .await;
     // Nothing listens on this port, so the route that names it can only fail to connect.
     let closed = free_port();
+    // A published provider route addresses the endpoint its adapter compiled at publication, so the
+    // fixture needs a readable credential and an address of its own. Nothing listens on this port
+    // either: the scenario is about routing to the front-end, not about a provider's answer.
+    let provider_address = format!("http://127.0.0.1:{}", free_port());
+    let provider_key = token::secret_file(directory.path(), "provider.key", "sk-fixture");
 
     let source = TestSource::holding();
     let server = RunningServer::start(directory.path(), source.clone()).await;
@@ -65,7 +73,7 @@ async fn routing_ranks_host_before_prefix_and_answers_404_and_503() {
     );
 
     let document = Resources::new()
-        .provider("openai")
+        .provider("openai", &provider_address, &provider_key)
         .upstream("broad", broad.address())
         .upstream("narrow", narrow.address())
         .upstream("hosted", hosted.address())
@@ -131,18 +139,26 @@ async fn routing_ranks_host_before_prefix_and_answers_404_and_503() {
     assert_eq!(response.json_code().as_deref(), Some("route_not_found"));
     assert_eq!(response.json_trace_id().as_deref(), Some("no-route"));
 
-    // A provider target has no front-end in this build, and the data plane must not guess one.
-    let response = get(address, "/provider/chat", "a.test").await;
+    // A provider target reaches the front-end that was published for it, and the request goes to the
+    // endpoint the adapter compiled with the credential the provider entry materialized. Nothing
+    // listens there, so the answer is the connection failure — not `provider_unavailable`, which would
+    // mean the route reached no front-end, and not a route further down the table. Whether the body was
+    // translated is the translation scenarios' subject, not this one's.
+    let chat = br#"{"model":"chat-small","messages":[{"role":"user","content":"hi"}]}"#;
+    let request = Request::post("/provider/chat", "a.test").body(chat.to_vec(), usize::MAX);
+    let response = support::http::client::exchange(address, &request).await;
     assert_eq!(
         response.status(),
         502,
-        "a provider route without a provider filter must be 502, not {}: {}",
+        "a provider route forwards to the endpoint it published; the fixture's peer is closed, so \
+         the forwarded request fails to connect, not {}: {}",
         response.status(),
         response.text()
     );
     assert_eq!(
         response.json_code().as_deref(),
-        Some("provider_unavailable")
+        Some("upstream_unreachable"),
+        "the answer is the connection failure, not `provider_unavailable`"
     );
 
     // An upstream that refuses the connection is a bad gateway, not a server error.

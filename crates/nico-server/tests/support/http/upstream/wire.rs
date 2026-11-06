@@ -156,14 +156,25 @@ pub(super) fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> O
 
 /// Renders a chunked `200` head, which is what an event stream uses.
 pub(super) fn chunked_head() -> Vec<u8> {
-    render_head(
+    chunked_head_with(&[("content-type".to_owned(), "text/event-stream".to_owned())])
+}
+
+/// Renders a chunked `200` head carrying the caller's headers, then the framing headers.
+pub(super) fn chunked_head_with(headers: &[(String, String)]) -> Vec<u8> {
+    // `x-mock-upstream` stays on every chunked answer so a scenario can tell "forwarded verbatim"
+    // from "translated and re-headed" without relying on the status, which both can share.
+    render(
         200,
-        &[
-            ("content-type", "text/event-stream"),
-            ("transfer-encoding", "chunked"),
-            ("connection", "close"),
-            ("x-mock-upstream", "yes"),
-        ],
+        headers
+            .iter()
+            .cloned()
+            .chain([
+                ("transfer-encoding".to_owned(), "chunked".to_owned()),
+                ("connection".to_owned(), "close".to_owned()),
+                ("x-mock-upstream".to_owned(), "yes".to_owned()),
+            ])
+            .collect::<Vec<_>>()
+            .into_iter(),
     )
 }
 
@@ -194,17 +205,96 @@ fn response_head(content_length: usize) -> Vec<u8> {
 /// The interim response carries only the headers named here, so the client-side assertion can state
 /// exactly what a `1xx` is allowed to contain.
 pub(super) fn render_head(status: u16, headers: &[(&str, &str)]) -> Vec<u8> {
-    let reason = match status {
-        100 => "Continue",
-        200 => "OK",
-        _ => "",
-    };
+    render(
+        status,
+        headers
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned())),
+    )
+}
+
+/// Renders one response head from owned header pairs.
+fn render(status: u16, headers: impl Iterator<Item = (String, String)>) -> Vec<u8> {
+    let reason = reason_phrase(status);
     let mut head = format!("HTTP/1.1 {status} {reason}\r\n");
     for (name, value) in headers {
         head.push_str(&format!("{name}: {value}\r\n"));
     }
     head.push_str("\r\n");
     head.into_bytes()
+}
+
+/// Returns the standard reason phrase for a status the fixtures use.
+///
+/// The phrase is not part of any assertion; an unknown code gets an empty phrase, which HTTP/1.1
+/// permits and Pingora's parser accepts.
+fn reason_phrase(status: u16) -> &'static str {
+    match status {
+        100 => "Continue",
+        200 => "OK",
+        207 => "Multi-Status",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        _ => "",
+    }
+}
+
+/// Writes a complete response with the caller's status, headers and body.
+///
+/// `content-length` is derived from `body` unless the caller supplied one, and `connection: close`
+/// is added unless the caller supplied it: the scenario that translates an answer owns the status
+/// and the end-to-end headers, while the framing is the origin's obligation to a client.
+pub(super) async fn write_response_with(
+    wire: &mut Wire,
+    status: u16,
+    headers: &[(String, String)],
+    body: &[u8],
+    chunk: usize,
+) -> io::Result<()> {
+    let mut all: Vec<(String, String)> = headers.to_vec();
+    if !has_header(&all, "content-length") {
+        all.push(("content-length".to_owned(), body.len().to_string()));
+    }
+    if !has_header(&all, "connection") {
+        all.push(("connection".to_owned(), "close".to_owned()));
+    }
+    wire.write(&render(status, all.into_iter())).await?;
+    for piece in body.chunks(chunk.max(1)) {
+        wire.write(piece).await?;
+    }
+    Ok(())
+}
+
+/// Writes a head that declares `content_length` and then fewer bytes than it promised.
+///
+pub(super) async fn write_declared(
+    wire: &mut Wire,
+    status: u16,
+    content_length: usize,
+    body: &[u8],
+    chunk: usize,
+) -> io::Result<()> {
+    let headers = [
+        ("content-length".to_owned(), content_length.to_string()),
+        ("connection".to_owned(), "close".to_owned()),
+    ];
+    wire.write(&render(status, headers.into_iter())).await?;
+    for piece in body.chunks(chunk.max(1)) {
+        wire.write(piece).await?;
+    }
+    Ok(())
+}
+
+/// Returns whether `headers` already names `name`.
+fn has_header(headers: &[(String, String)], name: &str) -> bool {
+    headers
+        .iter()
+        .any(|(existing, _value)| existing.eq_ignore_ascii_case(name))
 }
 
 /// Writes a complete `200` response: head, then the body in `chunk`-sized pieces.

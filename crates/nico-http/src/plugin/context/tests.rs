@@ -33,13 +33,30 @@ fn the_request_facts_are_the_same_in_every_stage() {
         assert_eq!(state.plugin_name(), "fake", "{phase:?}");
         assert_eq!(state.trace_id(), "trace-1", "{phase:?}");
         assert_eq!(state.method(), "GET", "{phase:?}");
-        assert_eq!(state.uri(), "/api/items?page=2", "{phase:?}");
+        assert_eq!(state.uri(), b"/api/items?page=2", "{phase:?}");
         assert_eq!(state.route_id(), Some("api"), "{phase:?}");
         assert_eq!(state.target(), Some("api-backend"), "{phase:?}");
         assert_eq!(state.config(), r#"{"header":"x-api-key"}"#, "{phase:?}");
         assert!(!state.is_websocket(), "{phase:?}");
         assert!(state.client_ip_hash().is_some(), "{phase:?}");
     }
+}
+
+#[test]
+fn a_target_that_is_not_utf8_is_reported_unchanged() {
+    // The bytes are what the router matched, so a policy deciding on the target must see them as they
+    // arrived: a lossy decode would turn `%FF` into three replacement bytes and authorize a path the
+    // request does not name.
+    let mut fixture = PluginFixture::started();
+    let mut state = fixture.state(Phase::Request);
+    state
+        .set_uri(b"/api/\xff/items")
+        .expect("a non-UTF-8 target is still a request target");
+    assert_eq!(state.uri(), b"/api/\xff/items");
+    assert!(
+        std::str::from_utf8(state.uri()).is_err(),
+        "the bytes are not text, and the contract says so rather than inventing text"
+    );
 }
 
 #[test]
@@ -57,9 +74,9 @@ fn set_uri_works_in_on_request_and_nowhere_else() {
     let mut fixture = PluginFixture::started();
     let mut state = fixture.state(Phase::Request);
     state
-        .set_uri("/v2/items?page=3")
+        .set_uri(b"/v2/items?page=3")
         .expect("a request target is writable in on_request");
-    assert_eq!(state.uri(), "/v2/items?page=3");
+    assert_eq!(state.uri(), b"/v2/items?page=3");
     drop(state);
 
     for phase in [
@@ -72,7 +89,7 @@ fn set_uri_works_in_on_request_and_nowhere_else() {
         let mut state = fixture.state(phase);
         assert!(
             matches!(
-                state.set_uri("/v2/items"),
+                state.set_uri(b"/v2/items"),
                 Err(PluginError::PhaseViolation(_))
             ),
             "{phase:?} must not rewrite the target"
@@ -83,7 +100,7 @@ fn set_uri_works_in_on_request_and_nowhere_else() {
     let mut state = fixture.state(Phase::Request);
     assert!(
         matches!(
-            state.set_uri("/items with space"),
+            state.set_uri(b"/items with space"),
             Err(PluginError::Execute(
                 "the URI is not a valid request target"
             ))

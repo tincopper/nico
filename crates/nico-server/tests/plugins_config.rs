@@ -78,7 +78,7 @@ async fn a_document_whose_credential_cannot_be_read_leaves_the_published_one_ser
     std::fs::remove_file(&secret_path).expect("the credential fixture is removed");
     source.publish(&document(&secret, upstream.address(), "/api/", 2048));
     let refused = log::wait_for_line_matching(&logs, LOG_BUDGET, |line| {
-        line.contains("plugin compilation failed")
+        line.contains("configuration refused") && line.contains("error.stage")
     })
     .await;
     assert!(

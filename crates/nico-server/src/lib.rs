@@ -6,6 +6,9 @@
 //!   how far the process may trust its cache.
 //! - [`reload`] — the pipeline that loads, validates, de-bounces and publishes configuration
 //!   snapshots, keeping the last known good one in service when anything fails.
+//! - [`llm`] — the LLM plan one document compiles into: the client codecs, provider adapters and
+//!   materialized credentials a converted route is served with, published with the snapshot it was
+//!   compiled from.
 //! - [`serve`] — wires one source to one publication handle and runs the pipeline until shutdown.
 //! - [`server`] — assembles the process: Pingora's server, the pipeline on its runtime, and the
 //!   HTTP data plane that reads the published snapshots.
@@ -34,10 +37,14 @@ use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
 pub mod bootstrap;
+pub mod llm;
 pub mod reload;
 pub mod server;
 
 pub use bootstrap::{BootstrapConfig, BootstrapError};
+pub use llm::{
+    CredentialError, CredentialResolver, EnvFileCredentials, LlmBuildError, LlmPlan, LlmRuntime,
+};
 pub use reload::{Publication, ReloadError, ReloadLimits, ReloadSettings, Reloader};
 
 /// Exit code used when the command line is missing or not understood.
@@ -64,6 +71,10 @@ pub const USAGE: &str = "usage: nico --bootstrap <path>";
 /// compiles here cannot be refused there for a missing kind. It takes no registry parameter because it
 /// publishes into a handle nothing serves from — a kind a test registers would have no request to
 /// observe. [`server::serve_with`] is the seam that carries one.
+///
+/// The LLM plan is compiled with the built-in runtime for the same reason: `Reloader::new` assembles
+/// `LlmRuntime::builtin()`, so a provider route that compiles here is one the assembled process could
+/// serve, and a document whose AI route cannot be served is refused in both places alike.
 ///
 /// # Errors
 /// Returns [`ReloadError::NotReady`] when no snapshot could be published and no cache fallback was

@@ -100,6 +100,26 @@ fn a_trailing_carriage_return_terminates_the_last_line() {
 }
 
 #[test]
+fn a_carriage_return_the_scan_left_behind_still_terminates_a_line() {
+    // The scan's high-water mark never includes a trailing `\r`: that byte is not conclusively
+    // searched until the byte after it is known. A mark that swallowed it would drop the terminator
+    // for a stream that trickles `data: a` / `\r` / `\n` / `\r` / `\n`.
+    let mut decoder = Decoder::new();
+    let mut events = Vec::new();
+    for chunk in [
+        b"data: a".as_slice(),
+        b"\r".as_slice(),
+        b"\n".as_slice(),
+        b"\r".as_slice(),
+        b"\n".as_slice(),
+    ] {
+        events.extend(decoder.push(chunk).expect("every chunk is valid"));
+    }
+
+    assert_eq!(events, vec![event(None, "a")]);
+}
+
+#[test]
 fn a_frame_needs_a_blank_line_to_be_dispatched() {
     let mut decoder = Decoder::new();
     assert!(

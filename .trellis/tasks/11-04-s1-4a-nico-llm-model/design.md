@@ -38,15 +38,21 @@ crates/nico-llm/src/
 ├── protocol/openai_chat/ # request/declaration/message/response/stream/error/usage：按文档边界拆的 codec 实现
 ├── provider.rs         # Provider/ProviderStream trait + ProviderRegistry
 ├── provider/
+│   ├── endpoint.rs     # Endpoint / WireRequest：数据面写出的一段请求
 │   ├── route.rs        # ProviderRoute / Credential / ExchangeMode：编译后的路由事实
 │   └── openai.rs       # 1.4a：OpenAI 上游适配（endpoint/encode/decode/stream）
 ├── stream.rs           # 声明共享 framing 子模块
 ├── stream/
 │   └── sse.rs          # 共享 SSE framing（事件边界/跨块 UTF-8/终止符），无厂商语义
 ├── filter.rs           # 路由交换：endpoint → decode → encode → response/stream
-└── filter/
-    ├── error.rs        # ExchangeBuildError / ExchangeError 与 canonical 映射
-    └── stream.rs       # StreamEncoder：每响应一个 ClientStreamEncoder + provider decoder
+├── filter/
+│   ├── error.rs        # ExchangeBuildError / ExchangeError 与 canonical 映射
+│   └── stream.rs       # StreamEncoder：每响应一个 ClientStreamEncoder + provider decoder
+├── route.rs            # 发布给数据面的 front-end：ConvertRoute / PassthroughRoute（实现 `nico_http::llm::LlmRoute`）
+└── route/
+    ├── convert.rs      # convert 路由：prepare（decode→encode）与拒绝（客户端 codec 的错误正文）
+    ├── passthrough.rs  # passthrough 路由：构造期校验 + endpoint，不解码也不翻译
+    └── transform.rs    # ConvertTransform：每响应新建；2xx 流式/缓冲，非 2xx 一律缓冲
 ```
 
 每个文件 ≤ 500 行；`schema.rs` 在接近上限时按上面的数据边界继续拆，不按“工具函数”拆。
@@ -147,10 +153,12 @@ pub trait ClientStreamEncoder: Send {
 ```rust
 pub trait Provider: Send + Sync {
     fn kind(&self) -> ProviderKind;                    // "openai" ...
+    fn native_protocol(&self) -> ProtocolId;           // provider 自己的 wire 协议，"openai.chat"
     fn capabilities(&self) -> Capabilities;
     fn endpoint(&self, route: &ProviderRoute) -> Result<Endpoint, ProviderError>;
     fn encode(&self, route: &ProviderRoute, request: &ChatRequest) -> Result<Vec<u8>, ProviderError>;
     fn decode_response(&self, head: &ResponseFacts, body: &[u8]) -> Result<ChatResponse, ProviderError>;
+    fn error_for_status(&self, status: u16) -> CanonicalError; // 只读状态，不读 body
     fn stream_decoder(&self) -> Box<dyn ProviderStream>;
 }
 
@@ -162,7 +170,9 @@ pub trait ProviderStream: Send {
 
 - `endpoint()` 只依赖路由/provider 配置（base_url、协议、固定 path），**不依赖请求体**。`Exchange::try_new` 在发布期调用它一次，结果成为 `Exchange` 的一部分：上游请求头在请求到达时就已确定（远早于 body 解码），不可寻址的 base_url 是发布失败（保留 LKG），而不是该路由每个请求的 500。`encode()` 在 body 缓冲后生成 wire body。OpenAI/Anthropic/Responses 的 endpoint 是固定路径，满足这一条；Gemini 的 path 含模型名，是 1.4b 的专门设计项（见 §10）。
 - `encode(route, request)` 接收路由，因为物理模型来自 `route.model()` 对编译后 `model_map` 的解析；adapter 因此保持单例无 per-request 状态。canonical 请求保留逻辑名，重试或换路由时重新解析。
-- `Endpoint { destination, path, headers }` 与 `encode()` 的 body 由 `Exchange` 组装成 `WireRequest { endpoint, body }`。method 不在其中：chat 交换恒为 `POST`，由数据面写出。将来出现非 POST 能力时，动词是 `Provider` 契约的显式扩展，不会从 path/header 里猜。
+- `Endpoint { destination, path, headers }` 与 `encode()` 的 body 由 `Exchange` 组装成 `WireRequest { endpoint, body }`。method 不在其中：请求行由数据面写出，动词沿用调用方（chat 请求按客户端协议本就是 `POST`；passthrough 必须字节一致），adapter 对动词的第二个意见只可能与它据以编码的请求相矛盾。将来出现需要不同动词的能力时，动词是 `Provider` 契约的显式扩展，不会从 path/header 里猜。
+- `native_protocol()` 是 provider 自己的 wire 协议，不是路由的 `protocol`：发布期用它判断 `mode: passthrough` 是否合法，因此 plan 编译器不需要一张厂商表。
+- `error_for_status(status)` 与 `decode_response` 的失败路径共用同一张状态表：响应头在 body 之前写出，所以失败状态必须在没有 body 时就能映射成客户端答案；两条路径对同一状态给出相同的类别、code、状态与 retryable，provider 自己的 `error.code` 只来自 body，只进日志。
 - provider 不拥有连接、TLS、超时、重试或帧化；这些仍归数据面。
 
 ### 4.3 capability matrix
@@ -175,7 +185,8 @@ pub trait ProviderStream: Send {
 - `providers[]` 增加可选 `model_map: BTreeMap<String, String>`；凭证仍在发布期 materialize，provider 适配器只拿到已解析的值。
 - `LlmPlan` 在 `nico-server` 的 reload 中与快照同一函数编译：按 `protocol` 查 codec、按 `provider.kind` 查 provider、检查 route 的 `mode`、检查 `buffers_body` 冲突、记录 codec 与 provider 的交集；失败保留 LKG。
 - `HttpState` 通过 `nico-http` 定义的字节级 `LlmRoutes` trait 持有一份发布值；`nico-http` 不依赖 `nico-llm`。发布期对每个 convert 路由构建 `Arc<Exchange>`（codec/adapter 共享，`Exchange` 只持有指针与能力交集）；路由匹配后数据面克隆该指针，`Exchange::prepare` 产生请求自己的值。`mode: passthrough` 的路由不构建 `Exchange`，只发布字节直通所需的目的地与协议事实。
-- 未知 protocol/provider kind 是发布失败，不是请求期 500；`mode: passthrough` 要求 codec.protocol 与 provider 原生协议一致，否则发布失败。
+- 未知 protocol/provider kind 是发布失败，不是请求期 500；`mode: passthrough` 要求路由的 `protocol` 与 `provider.native_protocol()` 一致，否则发布失败。
+- 两条 front-end 由发布期构造，失败都是 `ExchangeBuildError`：convert 路由的 `Exchange::try_new` 拒绝 protocol/kind 不符与 passthrough 路由；`PassthroughRoute::try_new` 拒绝 convert 路由（`NotPassthrough`）、kind 不符（`ProviderMismatch`）、协议不符（`NativeProtocolMismatch`）与不可寻址的 base_url（`Endpoint`）。构造成功即代表该路由的不变量成立，请求期不再重复判断。
 
 ## 6. 数据面交换
 
@@ -189,7 +200,7 @@ EOS: Exchange::prepare
        ClientCodec::decode_request once   # 有界缓冲的 body
        ChatRequest::validate → capability gate → ProviderRoute::model
        Provider::encode(route, &request)  # wire body
-     data plane sends POST WireRequest { endpoint, body }; response head/body follow
+     data plane sends WireRequest { endpoint, body }, keeping the caller's verb; response head/body follow
 ```
 
 - convert 路由在 `request_body_filter` 里把 chunk 扣住并累加；上限 `request.max_body_bytes`，超限 413。EOS 后只调用一次 `decode_request`，canonical 请求可重放。
@@ -204,7 +215,7 @@ EOS: Exchange::prepare
 
 ```rust
 pub trait ResponseTransform: Send {
-    fn head(&mut self, provider: &ResponseFacts) -> ResponseFacts; // 客户端状态/头
+    fn head(&mut self, status: u16, headers: &[(String, String)]) -> Result<LlmResponseHead, HttpError>;
     fn push(&mut self, chunk: &[u8]) -> Result<Vec<u8>, HttpError>;
     fn finish(&mut self) -> Result<Vec<u8>, HttpError>;
 }
@@ -212,7 +223,8 @@ pub trait ResponseTransform: Send {
 
 - LLM 路由在响应头钩子安装 transform，在 `upstream_response_body_filter` 逐块调用；`response_filter` 仍负责 1xx 保护与预算复核。
 - SSE：每个 provider chunk 交给 `ProviderStream`，产出的 canonical 事件交给该响应的 `ClientStreamEncoder` 编码为客户端 SSE；`content-length` 永远不保留，数据面走 chunked。终止符由 `ClientStreamEncoder::finish()` 在 body 结束时写出，而不是在 `Finish` 事件写出：provider 可以在 finish 之后再用一个 chunk 报 usage，于是 usage chunk 仍然排在终止符之前。provider 流的完整性标记是 finish reason：`[DONE]` 是冗余终止符，缺失不视为截断（兼容端点会省略），但 body 在 finish reason 之前结束是 `upstream_protocol_error`（502）——不能把没人宣布过的结束告诉调用方。
-- 非流式：`push` 在 `request.max_response_bytes` 内累积，`finish` 时 `decode_response` → `encode_response`；超限 502 + `upstream_response_too_large`。
+- 转换的 head 由 `ConvertTransform` 决定：2xx + 客户端要求流 → `200` + `text/event-stream`，每响应一个 `StreamEncoder`；2xx + 非流式 → `200` + `application/json`，`push` 只累积；**非 2xx 一律缓冲**（即使客户端要求流：失败文档不是事件流，事件流也不能早于它的请求开始），状态与 `x-nico-error-code` 来自 `Exchange::error_for_status(status)`，正文在 `finish` 时由 `respond` 生成，且必须与 head 声明的状态一致，否则按网关缺陷结束流。
+- 非流式：`push` 在 `request.max_response_bytes` 内累积，`finish` 时 `decode_response` → `encode_response`。**超限的时机决定答案**：provider 声明了 `content-length` 且超过上限时，响应头还没写出，`upstream_response_filter` 直接拒绝为 502 `upstream_response_too_large`；长度未知（chunked）时超限只在 body 阶段被发现，此时状态行已经提交，数据面结束流并把请求记为 cancelled——不写第二个状态，也不伪造一个看起来完整的答复。
 - provider 非 2xx：`Provider::decode_response` 返回 `ProviderError::Upstream { error }`，`Exchange::respond` 用 `ClientCodec::encode_error` 生成客户端错误体；不转发 provider body。
 - 成功响应：`Exchange::respond` 返回 codec 的 `ClientReply`，状态由 codec 决定（`200`），不是 provider 的 2xx。`Exchange` 只负责 `decode_response`→`validate`→`encode_response`，不拥有任何状态映射。
 - 首字节提交后不重试、不换 provider（与 1.2/1.3 的 committed 规则一致）。
@@ -228,10 +240,13 @@ pub trait ResponseTransform: Send {
 | 来源 | canonical | 客户端 | 说明 |
 |---|---|---|---|
 | 客户端 body 超限 | — | 413 | 数据面在 decode 前拒绝 |
+| 非流式响应**声明**的长度超限 | — | 502 `upstream_response_too_large` | 写头之前拒绝，provider 未被写出任何字节 |
+| 长度未知的响应在 body 阶段超限 | — | 结束流 | 状态行已提交；请求记为 cancelled，不写第二个状态 |
 | 不支持的 protocol/provider kind | — | 发布失败 | 未知注册项不进入请求路径；保留 LKG |
 | 请求需要的能力超出交集 | `CanonicalError`（`unsupported_capability`） | 422 | 发布期记录交集；请求体声明的需求在 `Exchange::prepare` 拒绝 |
 | canonical 值在该协议里没有位置（image 在非 user 轮次、signed reasoning、failed tool result） | `CanonicalError`（`unsupported_capability`） | 422 | `ProviderError::UnsupportedField` 命名字段；文档合法、路由不能服务，不是网关缺陷 |
 | 客户端文档不合法 | `CanonicalError`（`invalid_request`） | 400 | codec 的 `InvalidRequest`；诊断只进日志 |
+| 转换路由在请求期拒绝 | `CanonicalError` | 422/400/500 由 canonical 决定 | front-end 把 `Exchange::error_reply` 的 `ClientReply` 装进 `HttpError::LlmRejected`：状态、code、类别来自 canonical，正文是客户端 codec 自己的错误文档（原样写回，不重新包一层网关 envelope）；`error_reply` 本身失败才是 500 |
 | 网关编码/canonical 不变量失败 | `CanonicalError`（`client_encode_failed` / `provider_encode_failed` / `internal_error`） | 500 | 网关缺陷；诊断只进日志 |
 | provider 4xx/5xx | `CanonicalError`（类别/稳定 code） | 客户端协议错误体 | 不泄露 provider body |
 | provider 连不上/超时 | `Upstream`/`Deadline` | 502/504 | 沿用 `HttpError` 映射 |
@@ -260,7 +275,7 @@ pub trait ResponseTransform: Send {
 | 风险 / 缺口 | 处置 |
 |---|---|
 | convert 路由请求体缓冲 = `request.max_body_bytes` × 并发 | 与 buffered 插件同一算术；文档写明，passthrough 不缓冲 |
-| 非流式响应缓冲 = `request.max_response_bytes` × 并发 | 新字段，默认 8 MiB，路由只能收紧；SSE 不适用 |
+| 非流式响应缓冲 = `request.max_response_bytes` × 并发 | 新字段，默认 8 MiB，路由只能收紧；SSE 不适用。声明长度的超限在写头前 502，未知长度的超限只能结束已提交的流（§6.2），因此路由的响应上限只对非流式答复构成"可回答的"拒绝 |
 | Gemini endpoint 的 model 在 path 里，而 model 在请求 body 里 | **1.4b 专门设计**：要么路由/provider 固定物理模型（body model 只校验），要么实现 pre-body exchange（需验证 Pingora 能否在 upstream head 前读 body）；1.4a 不假装已解决 |
 | canonical 无法表达某些厂商字段 | `extensions` + `RawJson` + capability matrix；不支持的能力显式报错；raw passthrough 兜底 |
 | OpenAI adapter 无法在某个位置承载 canonical 值（image 只在 user 轮次可表达；signed reasoning、failed tool result 无字段） | `ProviderError::UnsupportedField` 命名 canonical 字段，exchange 报 `unsupported_capability` 422：文档合法、路由不能服务，不是网关缺陷。OpenAI client codec 本来就接受任意 role 的 image part，所以这条路径是**可达**的，不能报 500。`provider_encode_failed` 500 只留给 adapter 无法序列化的值（编码器缺陷）。1.4b 的新形状复用同一变体，不需要新的状态决策 |
@@ -275,8 +290,8 @@ pub trait ResponseTransform: Send {
 
 ## 11. 交付边界
 
-- **`nico-llm`**：`schema/`、`protocol/openai_chat.rs`、`provider/{route,openai}.rs`、`stream/sse.rs`、`filter.rs` + `filter/{error,stream}.rs`；`builtin_registry()` 注册 codec/provider。
-- **`nico-http`**：字节级 `LlmRoutes`/`ResponseTransform` trait、AI route mode、响应头映射、请求 hold-back 复用；不 import `nico-llm`。
+- **`nico-llm`**：`schema/`、`protocol/openai_chat.rs`、`provider/{endpoint,route,openai}.rs`、`stream/sse.rs`、`filter.rs` + `filter/{error,stream}.rs`、`route.rs` + `route/{convert,passthrough,transform}.rs`；`builtin_registry()` 注册 codec/provider。
+- **`nico-http`**：字节级 `LlmRoutes`/`ResponseTransform` trait、AI route mode、响应头映射、请求 hold-back 复用；`HttpError::LlmRejected` + `LlmRejection` 让 front-end 交出自己的错误正文，`Respond` 支持的动态 code/body 仍由唯一 writer 写出；不 import `nico-llm`。
 - **`nico-core`**：`routes[].protocol`/`mode`、`request.max_response_bytes`、`providers[].model_map`；只做文档模型/校验，不含厂商语义。
 - **`nico-server`**：注册 codec/provider、编译 `LlmPlan`、与快照同一发布；日志。
 - **spec**：`directory-structure.md` 的 `nico-llm` 模块树；“无 vendor switch”的结构规则；`pingora-guidelines.md` 的 AI 缓冲/转换；`logging-guidelines.md` 的 `llm.*`；`error-handling.md` 的 canonical error。

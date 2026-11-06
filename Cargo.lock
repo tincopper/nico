@@ -984,6 +984,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]
@@ -1020,9 +1021,11 @@ dependencies = [
  "nico-config",
  "nico-core",
  "nico-http",
+ "nico-llm",
  "nico-plugins",
  "pingora",
  "serde",
+ "serde_json",
  "serde_norway",
  "sha2",
  "tempfile",

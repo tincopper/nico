@@ -3,7 +3,9 @@ use std::{io, sync::Arc};
 use nico_core::ErrorCategory;
 use pingora::http::StatusCode;
 
-use super::{BodyTemplate, HttpError, Rejection};
+use super::{BodyTemplate, HttpError, LlmRejection, Rejection};
+
+mod llm;
 
 /// One upstream failure whose cause names a host and a port, so a leak would be visible.
 fn upstream_failure() -> HttpError {
@@ -37,6 +39,18 @@ fn internal_failure() -> HttpError {
     }
 }
 
+/// A client codec's error document, as a converted LLM route reports it.
+fn llm_failure(status: u16, code: &str, category: ErrorCategory) -> LlmRejection {
+    LlmRejection::new(
+        status,
+        code,
+        "the route does not support a capability this request needs",
+        br#"{"error":{"code":"x","message":"BODY-MARKER"}}"#.to_vec(),
+        category,
+    )
+    .expect("the fixture is a valid front-end rejection")
+}
+
 #[test]
 fn every_failing_variant_maps_to_its_documented_status_code_and_category() {
     let cases = [
@@ -64,6 +78,14 @@ fn every_failing_variant_maps_to_its_documented_status_code_and_category() {
             HttpError::BodyTooLarge { limit: 1024 },
             StatusCode::PAYLOAD_TOO_LARGE,
             "body_too_large",
+            ErrorCategory::Limit,
+        ),
+        (
+            HttpError::UpstreamResponseTooLarge {
+                limit: 8 * 1024 * 1024,
+            },
+            StatusCode::BAD_GATEWAY,
+            "upstream_response_too_large",
             ErrorCategory::Limit,
         ),
         (
@@ -107,6 +129,18 @@ fn every_failing_variant_maps_to_its_documented_status_code_and_category() {
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",
             ErrorCategory::Limit,
+        ),
+        (
+            HttpError::LlmRejected {
+                rejection: Arc::new(llm_failure(
+                    422,
+                    "unsupported_capability",
+                    ErrorCategory::Client,
+                )),
+            },
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "unsupported_capability",
+            ErrorCategory::Client,
         ),
     ];
 
@@ -232,6 +266,22 @@ fn a_display_message_quotes_the_limit_the_check_applied() {
     assert_eq!(
         error.to_string(),
         "request body exceeds the 1048576 byte limit"
+    );
+}
+
+#[test]
+fn a_response_limit_is_a_gateway_ceiling_not_a_provider_status() {
+    // The provider answered successfully; it was the gateway's own ceiling that refused the answer,
+    // so the code is this crate's and the status is a `502` rather than a `413` (which would blame
+    // the caller's request body) or the provider's status (which would claim it failed).
+    let error = HttpError::UpstreamResponseTooLarge { limit: 4096 };
+    let respond = error.respond().expect("the refusal is renderable");
+
+    assert_eq!(respond.status().as_u16(), 502);
+    assert_eq!(respond.code(), "upstream_response_too_large");
+    assert_eq!(
+        error.to_string(),
+        "upstream response exceeds the 4096 byte limit"
     );
 }
 

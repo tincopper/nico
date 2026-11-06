@@ -84,6 +84,19 @@ Requirements for every public error enum:
   they are one variant.
 - `#[source]` for the underlying cause; `#[from]` only when the conversion is unambiguous
   (1:1 mapping with no extra context).
+- A `#[source]` is a diagnostic only if something renders it. The request record prints the error's
+  `Display` and never walks the chain, so a variant whose message omits its cause hides that cause
+  from every operator: interpolate it (`#[error("upstream request failed: {source}")]`) rather than
+  attaching it and hoping a caller expands it.
+  The exception is a cause the layer cannot vouch for. `ConfigSourceError::Unavailable` keeps its
+  boxed cause out of `Display` because `source.rs` is shared by every source, and a config-center
+  client's error may quote the endpoint it failed on; a layer that knows its own cause is safe
+  reports it in its own words instead. Silent is a decision, not an oversight — write down which one
+  applies.
+- A typed cause stays typed. Wrapping a `CodecError` or an `LlmRejectionError` in
+  `io::Error::other(reason.to_string())` flattens it into prose and loses both the variant and the
+  chain; `HttpError::internal(cause)` takes anything that converts to `Box<dyn Error + Send + Sync>`,
+  so the conversion is never necessary.
 - Messages are lowercase, no trailing period, and never contain secrets or full payloads.
 - `PartialEq` when practical, so tests can assert the exact variant instead of a string.
 - A message that quotes a limit is **derived from the constant the check applied**, never written as
@@ -264,7 +277,7 @@ Mapping happens **once**, at the edge layer:
 | `Client` (bad input) | 400 | Include a stable machine-readable error code, not internal detail |
 | `Client` (incomplete request) | 408 | The caller stopped sending before its budget expired |
 | `Client` (auth) | 401 / 403 | Never echo the presented credential |
-| `Limit` | 429 / 413 | Include `Retry-After` only when a real budget is known |
+| `Limit` | 429 / 413, and 502 for a gateway response ceiling | Include `Retry-After` only when a real budget is known. The one `502` is `upstream_response_too_large`: the ceiling is the gateway's, so the status belongs to the bad-gateway family while the category still says which knob the operator would raise |
 | `Upstream` | 502 / 504 | Distinguish "peer unreachable" from "peer timed out" |
 | `Internal` | 500 | Generic body; details go to logs only |
 | `Cancelled` | 499 (client disconnect) | Do not log as `error`; do not emit a 500 |
@@ -330,6 +343,14 @@ provider's own code travels in `CanonicalError::provider_code` for structured lo
 | the provider answered a failure status | the adapter's `CanonicalError` | the adapter's status | the provider body is not forwarded |
 | a canonical invariant fails after a codec or adapter produced a value | `internal_error` | 500 | gateway defect: a value crossed the boundary without its constructors |
 
+Two failures belong to the data plane rather than to an exchange, because they are decided from byte
+counts the data plane keeps:
+
+| Source | `HttpError` | Status / code | Decision |
+|---|---|---|---|
+| the client body crosses the route's `max_body_bytes` | `BodyTooLarge { limit }` | `413 body_too_large` | refused before the body is decoded; the upstream is never contacted |
+| a **buffered** provider answer crosses the route's `max_response_bytes` | `UpstreamResponseTooLarge { limit }` | `502 upstream_response_too_large` | the ceiling is the gateway's, not the provider's, so it is a gateway-side `502` with a stable code of its own — an exchange error would have to invent a provider status. Only reachable where the answer's size is known before the head is written: a response that is not an event stream (a success without a requested stream, and **any** failure document — a failure is a document even when the request asked for a stream) and that declares its length. Otherwise the head is already committed and the stream ends instead. |
+
 - **422 is a deliberate refinement of the `Client` row above.** The request is well formed, so `400`
   would tell the caller to fix a document with nothing wrong in it. The entry is protocol-neutral —
   it names a capability, not a wire field — so every codec renders it without translating.
@@ -349,6 +370,18 @@ provider's own code travels in `CanonicalError::provider_code` for structured lo
   understood and could not place.
 - **The status of a failure belongs to the canonical error.** `ClientCodec::encode_error` therefore
   returns only the body, and the exchange takes the status from `CanonicalError::http_status`.
+- **A converted route's refusal is written in the client's protocol, not this crate's envelope.** A
+  front-end asks the exchange for its canonical error, has the client codec encode it, and hands the
+  result to the data plane as `HttpError::LlmRejected { rejection: Arc<LlmRejection> }`. The rejection
+  carries the status, the stable code, the category and the already encoded body; `HttpError::respond`
+  turns it into the same `Respond` every refusal uses, so the one writer still writes the closed header
+  set and `x-nico-error-code`. Re-encoding the failure as the generic JSON envelope would tell a caller
+  that speaks the client's protocol to parse a document it does not know, and would replace a
+  legitimate `400`/`422` with a shape that names no field. A codec that cannot encode its own error
+  document is a gateway defect and answers `500`; the generic envelope is never used as a fallback for
+  a refusal that did happen. `LlmRejection::new` validates the same bounds the canonical error
+  enforces — a `400..=599` status, a bounded snake_case code, a bounded message — because those values
+  travel in a header and a log record.
 - **The status of a success belongs to the client codec.** `ClientCodec::encode_response` returns a
   `ClientReply { status, body }`: a complete answer is a success in the client's own vocabulary, and
   a provider's 2xx variant describes that provider's framing, not the caller's request. Forwarding it

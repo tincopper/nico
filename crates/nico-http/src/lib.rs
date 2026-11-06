@@ -11,8 +11,10 @@
 //! - [context] — the per-request state the data plane keeps, including its identity and the peer the
 //!   request goes to. A plugin reaches it only through `PluginContext`.
 //! - [state] — the one published value the request path reads: a snapshot, the global and per-route
-//!   chains compiled from it, and the two per-route framing decisions (buffered request body,
-//!   rewritten response body).
+//!   chains compiled from it, the two per-route framing decisions (buffered request body, rewritten
+//!   response body), and the LLM front-ends of the generations that have provider routes.
+//! - [llm] — the byte-level seam an LLM front-end implements: where a provider route goes, how its two
+//!   bodies are translated, and the per-response transform that does it.
 //! - [proxy] — the Pingora hook contract that ties the above together, and [mod@service] — the
 //!   process-level assembly (server configuration, listener).
 //! - [settings] — the validated bootstrap knobs this data plane is configured with.
@@ -28,9 +30,10 @@
 //!
 //! The crate depends on `nico-core` and `pingora`, and on nothing else in the workspace. It must
 //! never import `nico-llm` or `nico-plugins`: those depend on this crate, and LLM/provider
-//! semantics reach the data plane the other way round — a filter that owns a provider target
-//! resolves it and records a [`Destination`] in the [`HttpContext`], so provider configuration stays
-//! in the crate that understands it while TLS policy, budgets and header rewriting stay here.
+//! semantics reach the data plane the other way round — [llm] states them as a byte-level seam in which
+//! a front-end answers a destination, a wire body and a per-response transform, so provider
+//! configuration stays in the crate that understands it while TLS policy, budgets and header rewriting
+//! stay here.
 //!
 //! # Invariants
 //!
@@ -88,6 +91,7 @@
 
 pub mod context;
 pub mod error;
+pub mod llm;
 pub mod plugin;
 pub mod proxy;
 pub mod route;
@@ -103,8 +107,8 @@ mod test_support;
 
 pub use context::{HttpContext, Identity};
 pub use error::{
-    BodyFormat, BodyTemplate, HttpError, MAX_LITERAL_BYTES, Part, Rejection, RejectionError,
-    Respond, escape_json_string,
+    BodyFormat, BodyTemplate, HttpError, LlmRejection, LlmRejectionError, MAX_LITERAL_BYTES, Part,
+    Rejection, RejectionError, Respond, escape_json_string,
 };
 pub use plugin::{
     LogLevel, Outcome, Plugin, PluginBuildError, PluginChain, PluginContext, PluginEntry,

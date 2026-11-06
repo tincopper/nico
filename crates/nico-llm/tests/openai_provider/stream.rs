@@ -3,7 +3,7 @@
 use nico_core::ErrorCategory;
 use nico_llm::{
     FinishReason, ModelId, Provider, ProviderError, ResponseId, StreamEvent, TokenKind, Usage,
-    UsageCounts,
+    UsageCounts, provider::openai::MAX_TOOL_CALLS,
 };
 use serde_json::{Value, json};
 
@@ -391,4 +391,26 @@ fn a_partial_frame_dies_with_its_response() {
         .expect("a partial frame is buffered, not refused");
     let events = events(&[start(), text("hi"), finish("stop"), done()]);
     assert_eq!(events[1], StreamEvent::TextDelta("hi".to_owned()));
+}
+
+#[test]
+fn more_open_tool_calls_than_the_bound_is_refused() {
+    // Every fragment names its own `index`, so the number of open calls is the peer's choice and the
+    // table is retained for the life of the response. The adapter caps it rather than growing on
+    // demand; the first fragment past the bound is what reports it.
+    let mut chunks = vec![start()];
+    for index in 0..=MAX_TOOL_CALLS {
+        chunks.push(tool_call(json!({
+            "index": index,
+            "id": format!("call_{index}"),
+            "type": "function",
+            "function": {"name": "lookup", "arguments": ""},
+        })));
+    }
+
+    let error = push_err(&chunks);
+    assert!(
+        matches!(error, ProviderError::Malformed { .. }),
+        "expected Malformed, got {error:?}"
+    );
 }

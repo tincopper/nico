@@ -23,7 +23,7 @@ use crate::{
         Capabilities, Capability, ClientCodec, ClientReply, CodecError, RequestFacts, ResponseFacts,
     },
     provider::{Endpoint, ExchangeMode, Provider, ProviderError, ProviderRoute, WireRequest},
-    schema::{ChatRequest, ContentPart, Item, ModelRef, ResponseFormat},
+    schema::{CanonicalError, ChatRequest, ContentPart, Item, ModelRef, ResponseFormat},
 };
 
 mod error;
@@ -113,6 +113,18 @@ impl Exchange {
     #[must_use]
     pub fn endpoint(&self) -> &Endpoint {
         &self.endpoint
+    }
+
+    /// Returns the canonical failure a provider failure status describes, without its body.
+    ///
+    /// A response head is written before the body is read, so the caller's failure status must be
+    /// known from the status alone. This is the adapter's closed status table — the same one
+    /// [`Exchange::respond`] reaches through [`Provider::decode_response`] — so the two paths cannot
+    /// disagree about which failure a status means. The provider's own error code is only available
+    /// from its body and is therefore absent here; it never affects the client-visible status.
+    #[must_use]
+    pub fn error_for_status(&self, status: u16) -> CanonicalError {
+        self.provider.error_for_status(status)
     }
 
     /// Decodes the buffered client body once and encodes it for the provider.
@@ -257,6 +269,15 @@ impl PreparedExchange {
     #[must_use]
     pub fn wire(&self) -> &WireRequest {
         &self.wire
+    }
+
+    /// Consumes the prepared request and returns the wire request to send.
+    ///
+    /// A front-end needs the bytes, not the canonical value it came from, and taking them avoids
+    /// copying a body that may be megabytes long.
+    #[must_use]
+    pub fn into_wire(self) -> WireRequest {
+        self.wire
     }
 }
 

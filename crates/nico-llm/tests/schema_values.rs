@@ -16,6 +16,47 @@ fn an_empty_model_is_rejected() {
 }
 
 #[test]
+fn a_wire_token_longer_than_the_bound_is_rejected() {
+    // The name travels in a URL or a header and is recorded in the request log, so a caller-chosen
+    // megabyte of it is an amplification vector rather than a model.
+    let at_bound = "m".repeat(nico_llm::MAX_TOKEN_BYTES);
+    ModelId::try_new(at_bound).expect("the bound is inclusive");
+
+    let error = ModelId::try_new("m".repeat(nico_llm::MAX_TOKEN_BYTES + 1))
+        .expect_err("one byte over the bound is refused");
+    assert_eq!(
+        error,
+        SchemaError::TooLong {
+            field: "model",
+            limit: nico_llm::MAX_TOKEN_BYTES,
+            actual: nico_llm::MAX_TOKEN_BYTES + 1,
+        }
+    );
+}
+
+#[test]
+fn a_tool_name_and_a_tool_call_id_meet_the_same_token_bound() {
+    // A tool name and a call id are provider- or caller-chosen identifiers retained for the life of
+    // the request, so they are held to the bound a model name is held to: one number, because the
+    // failure mode is the same one.
+    let at_bound = "t".repeat(nico_llm::MAX_TOKEN_BYTES);
+    ToolName::try_new(at_bound.clone()).expect("the bound is inclusive");
+    ToolCallId::try_new(at_bound).expect("the bound is inclusive");
+
+    for error in [
+        ToolName::try_new("t".repeat(nico_llm::MAX_TOKEN_BYTES + 1))
+            .expect_err("a tool name over the bound is refused"),
+        ToolCallId::try_new("t".repeat(nico_llm::MAX_TOKEN_BYTES + 1))
+            .expect_err("a tool-call id over the bound is refused"),
+    ] {
+        assert!(
+            matches!(error, SchemaError::TooLong { .. }),
+            "expected TooLong, got {error:?}"
+        );
+    }
+}
+
+#[test]
 fn names_that_address_something_must_not_be_empty() {
     assert_eq!(
         ToolName::try_new("").expect_err("empty tool name"),

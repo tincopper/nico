@@ -24,7 +24,7 @@ use super::{
     provider::Provider,
     raw::RawDocument,
     reference,
-    request::RequestBounds,
+    request::{DEFAULT_MAX_RESPONSE_BYTES, RequestBounds},
     semantic,
     upstream::Upstream,
 };
@@ -57,7 +57,13 @@ pub(super) fn assemble(
         return Err(DocumentError::WrongApiVersion { found: api_version });
     }
 
-    let request = RequestBounds::new(raw_request.max_body_bytes, raw_request.timeout_ms);
+    let request = RequestBounds::new(
+        raw_request.max_body_bytes,
+        raw_request
+            .max_response_bytes
+            .unwrap_or(DEFAULT_MAX_RESPONSE_BYTES),
+        raw_request.timeout_ms,
+    );
     request.validate()?;
 
     let providers = raw_providers
@@ -68,6 +74,7 @@ pub(super) fn assemble(
             base_url: raw.base_url,
             credential_ref: raw.credential_ref,
             model_allowlist: raw.model_allowlist.unwrap_or_default(),
+            model_map: raw.model_map.unwrap_or_default(),
             timeout_ms: raw.timeout_ms,
         })
         .collect::<Vec<_>>();

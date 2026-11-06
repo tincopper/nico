@@ -84,6 +84,11 @@ pub type ConfigWatch =
 #[non_exhaustive]
 pub enum ConfigSourceError {
     /// The source could not be reached or read: missing file, permission denied, disconnected.
+    ///
+    /// The cause is attached, never interpolated: a source's foreign error may quote the path or the
+    /// connection string it failed on, and `source.rs` is shared by every source, including the
+    /// config-center clients whose endpoint carries a credential. A source that knows its own cause is
+    /// safe reports it in its own words instead.
     #[error("config source `{source_name}` is unavailable")]
     Unavailable {
         /// Source name, as returned by [`ConfigSource::name`].

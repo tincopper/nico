@@ -5,3 +5,6 @@ node_modules/
 poc/target/
 .tmp/
 poc/.tmp/
+
+.qoder/
+.rust-review-results/

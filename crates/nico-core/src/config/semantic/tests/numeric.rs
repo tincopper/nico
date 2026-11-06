@@ -91,3 +91,45 @@ fn a_route_body_bound_at_the_document_bound_is_accepted() {
     let document = with_routes(&routes).expect("a bound equal to the document bound is legal");
     assert_eq!(document.routes()[0].max_body_bytes(), Some(1_048_576));
 }
+
+#[test]
+fn a_route_response_bound_above_the_document_bound_is_rejected() {
+    // The fixture document writes no `request.max_response_bytes`, so its ceiling is the 8 MiB
+    // default; one byte past it is the first value a route may not ask for.
+    let routes = format!(
+        "{}    max_response_bytes: 8388609\n",
+        provider_route("llm-chat", "/v1/chat/")
+    );
+    let error = with_routes(&routes).expect_err("above request.max_response_bytes");
+    assert!(
+        matches!(
+            error,
+            DocumentError::LimitOutOfRange {
+                field: "routes[].max_response_bytes",
+                value: 8_388_609
+            }
+        ),
+        "expected LimitOutOfRange for routes[].max_response_bytes, got {error:?}"
+    );
+    assert_eq!(error.category(), ErrorCategory::Limit);
+}
+
+#[test]
+fn a_route_response_bound_at_the_document_bound_is_accepted() {
+    let routes = format!(
+        "{}    max_response_bytes: 8388608\n",
+        provider_route("llm-chat", "/v1/chat/")
+    );
+    let document = with_routes(&routes).expect("a bound equal to the document bound is legal");
+    assert_eq!(document.routes()[0].max_response_bytes(), Some(8_388_608));
+}
+
+#[test]
+fn a_zero_route_response_bound_is_accepted() {
+    let routes = format!(
+        "{}    max_response_bytes: 0\n",
+        provider_route("llm-chat", "/v1/chat/")
+    );
+    let document = with_routes(&routes).expect("0 is the tightest legal bound: no buffered body");
+    assert_eq!(document.routes()[0].max_response_bytes(), Some(0));
+}

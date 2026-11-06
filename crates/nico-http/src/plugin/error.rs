@@ -132,10 +132,19 @@ mod tests {
             StatusCode::INTERNAL_SERVER_ERROR
         );
         assert_eq!(error.category(), ErrorCategory::Internal);
+        // The response body stays generic, and the log line carries the cause: the request record
+        // renders this `Display` and never walks `.source()`, so a cause that is only attached is a
+        // cause no operator ever reads.
         assert_eq!(
-            error.to_string(),
-            "internal data-plane failure",
+            error.respond().expect("internal errors answer").message(),
+            "the gateway failed to process the request",
             "the caller-safe message stays generic"
+        );
+        assert!(
+            error
+                .to_string()
+                .starts_with("internal data-plane failure: "),
+            "the log spelling names the cause, got {error}"
         );
         let cause = error.source().map(ToString::to_string).unwrap_or_default();
         assert!(

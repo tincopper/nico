@@ -9,12 +9,17 @@
 //! - **De-duplication and ordering run before compilation.** A document already in service is not
 //!   compiled twice, and a revision a source proves older is not compiled at all.
 //! - **A rejected document leaves the last known good one serving.** Whether the document model
-//!   refused the bytes or the plugin compiler refused the plan, the outcome is the same: nothing is
-//!   published, the pipeline is marked degraded, and the caller retries.
+//!   refused the bytes, the plugin compiler refused the plan, or the LLM compiler refused a provider
+//!   route, the outcome is the same: nothing is published, the pipeline is marked degraded, and the
+//!   caller retries.
 //! - **One generation number per publish.** The counter is advanced once and stored only after both
 //!   readers were written.
+//!
+//! The LLM plan is compiled here rather than lazily on the first AI request: a document whose provider
+//! route cannot be served is a document this process must not publish, because the alternative is a
+//! request path that answers `502` for every request of a route the operator believes is live.
 
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use nico_config::{CacheMeta, ConfigVersion};
 use nico_core::{
@@ -23,6 +28,7 @@ use nico_core::{
 use nico_http::PublishedChains;
 
 use super::{Reloader, pacing::unix_now};
+use crate::llm::LlmPlan;
 
 /// What happened to one candidate document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,19 +69,7 @@ impl Reloader {
 
         let document = match nico_core::Document::parse(version.bytes(), self.parse_limits) {
             Ok(document) => document,
-            Err(error) => {
-                let category = error.category();
-                self.handle.mark_degraded(category);
-                tracing::warn!(
-                    source = self.source.name(),
-                    error = %error,
-                    error.category = ?category,
-                    config.revision = %version.revision(),
-                    size = version.bytes().len(),
-                    "configuration document rejected; serving the last-known-good snapshot"
-                );
-                return Ok(PublishOutcome::Rejected(category));
-            }
+            Err(error) => return self.refuse(&error, error.category(), "document", &version),
         };
 
         // Compiling the policies is part of validating the document, not a separate step after it: a
@@ -84,21 +78,20 @@ impl Reloader {
         // generation in service exactly like a refused document does.
         let plan = match self.runtime.compile(&document) {
             Ok(plan) => plan,
-            Err(error) => {
-                let category = error.category();
-                self.handle.mark_degraded(category);
-                tracing::warn!(
-                    source = self.source.name(),
-                    error = %error,
-                    error.category = ?category,
-                    config.revision = %version.revision(),
-                    "plugin compilation failed; serving the last-known-good snapshot"
-                );
-                return Ok(PublishOutcome::Rejected(category));
-            }
+            Err(error) => return self.refuse(&error, error.category(), "plugin", &version),
+        };
+
+        // The LLM plan is compiled from the same document and the same plugin plan: a provider route's
+        // body ownership is one decision, so the two cannot be built from different generations. A
+        // refusal here is a publication failure like any other — the last-known-good generation keeps
+        // serving, and no caller meets a route this process cannot serve.
+        let llm = match self.llm.compile(&document, &plan) {
+            Ok(llm) => llm,
+            Err(error) => return self.refuse(&error, error.category(), "llm", &version),
         };
 
         let generation = self.generation.next()?;
+        let llm_routes = llm.route_ids().count();
         self.publish_state(
             Arc::new(RuntimeSnapshot::new(
                 generation,
@@ -108,6 +101,7 @@ impl Reloader {
                 self.source.name(),
             )),
             plan,
+            llm,
         );
         self.handle.mark_ready();
         // `mark_ready` clears `degraded`, which a stale snapshot must keep; it does not clear
@@ -124,6 +118,7 @@ impl Reloader {
             config.revision = %version.revision(),
             digest = %digest,
             size = version.bytes().len(),
+            llm.routes = llm_routes,
             "runtime snapshot published"
         );
 
@@ -137,16 +132,51 @@ impl Reloader {
     /// path has not loaded; a request path that reads slightly earlier keeps serving the previous
     /// generation, which is a complete and consistent pair.
     ///
-    /// `plan` is compiled from `snapshot`'s document; passing a plan from another generation would
-    /// pair a route table with policies that do not belong to it, which is the one thing
-    /// [`HttpStateHandle`] exists to prevent. It carries the global chain, the per-route chains and the
-    /// buffered route set together, so the request path can never read one of them from an older
-    /// publication.
+    /// `plan` and `llm` are compiled from `snapshot`'s document; passing a plan from another generation
+    /// would pair a route table with policies that do not belong to it, which is the one thing
+    /// [`HttpStateHandle`] exists to prevent. `plan` carries the global chain, the per-route chains and
+    /// the buffered route set together, `llm` the front-ends of every provider route, so the request
+    /// path can never read one of them from an older publication.
     ///
     /// [`HttpStateHandle`]: nico_http::HttpStateHandle
-    pub(super) fn publish_state(&self, snapshot: Arc<RuntimeSnapshot>, plan: PublishedChains) {
+    pub(super) fn publish_state(
+        &self,
+        snapshot: Arc<RuntimeSnapshot>,
+        plan: PublishedChains,
+        llm: Arc<LlmPlan>,
+    ) {
         self.handle.store(Arc::clone(&snapshot));
-        self.state.publish(snapshot, plan);
+        // Keep a handle on the plan so the report can be emitted after the store, which is the only
+        // point at which "published" is true.
+        let report = Arc::clone(&llm);
+        self.state.publish_with_llm(snapshot, plan, llm);
+        report.log_published();
+    }
+
+    /// Refuses a candidate document at whichever stage refused it.
+    ///
+    /// The three stages answer the same way — mark the generation degraded, report which stage and
+    /// which revision, keep the last known good snapshot serving — so they share one path. A fourth
+    /// stage cannot forget the degradation, and `error.stage` is what tells an operator which check
+    /// said no; the message is one sentence for the same reason.
+    fn refuse(
+        &self,
+        error: &dyn fmt::Display,
+        category: ErrorCategory,
+        stage: &'static str,
+        version: &ConfigVersion,
+    ) -> Result<PublishOutcome, super::ReloadError> {
+        self.handle.mark_degraded(category);
+        tracing::warn!(
+            source = self.source.name(),
+            error = %error,
+            error.category = ?category,
+            error.stage = stage,
+            config.revision = %version.revision(),
+            size = version.bytes().len(),
+            "configuration refused; serving the last-known-good snapshot"
+        );
+        Ok(PublishOutcome::Rejected(category))
     }
 
     /// Handles the case where the document in service is exactly the document just received.

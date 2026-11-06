@@ -18,6 +18,10 @@ async-trait.workspace = true
 nico-config.workspace = true
 nico-core.workspace = true
 nico-http.workspace = true
+# The binary is the one crate that assembles concrete implementations, and the LLM codecs and
+# provider adapters are two of them: the process publishes one plan per generation, built from these
+# registries.
+nico-llm.workspace = true
 # The binary is the one crate that assembles concrete implementations, and the plugin compiler is one
 # of them: it is constructed here once per process and handed to the reload pipeline.
 nico-plugins.workspace = true
@@ -43,6 +47,10 @@ hmac.workspace = true
 # upstream on loopback sockets. No HTTP library is added on purpose: the wire bytes are the subject,
 # so a crate that frames them for us would hide the behaviour under test.
 sha2.workspace = true
+# The converted-request scenarios assert on the provider document the adapter produced: the mock
+# received JSON, and parsing it is the only way to state "the physical model reached the origin"
+# without matching on key order or whitespace.
+serde_json.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "test-util", "time"] }
 

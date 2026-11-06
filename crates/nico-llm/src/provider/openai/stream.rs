@@ -31,7 +31,7 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 
 use super::{
-    error, finish_reason, malformed, parse, reject_extra,
+    MAX_TOOL_CALLS, error, finish_reason, malformed, parse, reject_extra,
     usage::{self, UsageWire},
 };
 use crate::{
@@ -244,6 +244,12 @@ impl Decoder {
         let name = function
             .name
             .ok_or_else(|| malformed("a tool call fragment starts without a name"))?;
+        // A fragment may name any `index`, so the number of open calls is the peer's choice.
+        if self.calls.len() >= MAX_TOOL_CALLS {
+            return Err(malformed(
+                "the stream opened more tool calls than this build serves",
+            ));
+        }
         let id = ToolCallId::try_new(id).map_err(super::schema_failure)?;
         let name = ToolName::try_new(name).map_err(super::schema_failure)?;
         self.calls.insert(

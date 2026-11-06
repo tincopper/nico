@@ -35,12 +35,19 @@ impl HttpState {
     pub fn chains(&self) -> &RouteChains;
     pub fn buffered(&self) -> &BufferedRoutes;
     pub fn rewrites_response(&self, route_id: &str) -> bool;
+    pub fn llm(&self) -> &dyn LlmRoutes;
 }
 impl HttpStateHandle {
     pub fn new() -> Arc<Self>;
     pub fn current(&self) -> Option<Arc<HttpState>>;
     // One atomic store, so no reader sees the snapshot with another document's plan.
     pub fn publish(&self, snapshot: Arc<RuntimeSnapshot>, plan: PublishedChains);
+    pub fn publish_with_llm(
+        &self,
+        snapshot: Arc<RuntimeSnapshot>,
+        plan: PublishedChains,
+        llm: Arc<dyn LlmRoutes>,
+    );
 }
 // Everything one publication carries, built by the plugin compiler and stored unchanged: the chain that
 // runs before routing, the chain each route runs, and the two per-route framing decisions — whose request
@@ -84,6 +91,32 @@ pub struct Destination { /* scheme, host, port */ }
 impl HttpContext {
     pub fn set_destination(&mut self, destination: Destination);
     pub fn destination(&self) -> Option<&Destination>;
+    pub fn response_limit(&self) -> Option<u32>;
+}
+
+// nico-http::llm: the byte-level seam an LLM front-end implements. No vendor name, no canonical
+// type and no `Session` crosses it — the front-end answers a destination, a path, header pairs, the
+// bytes to send and a per-response translator.
+pub enum LlmMode { Convert, Passthrough }
+pub trait LlmRoutes: Send + Sync {
+    fn route(&self, route_id: &str) -> Option<Arc<dyn LlmRoute>>;
+    fn len(&self) -> usize;
+}
+pub trait LlmRoute: Send + Sync {
+    fn mode(&self) -> LlmMode;
+    fn protocol(&self) -> &str;                         // reported, never matched on
+    fn provider(&self) -> &str;                         // reported, never matched on
+    fn destination(&self) -> &Destination;
+    fn path(&self) -> &str;
+    fn headers(&self) -> &[(String, String)];
+    fn prepare(&self, request: &LlmRequest<'_>) -> Result<LlmPrepared, HttpError>;
+    fn transform(&self, streaming: bool, max_response_bytes: u32)
+        -> Result<Box<dyn ResponseTransform>, HttpError>;
+}
+pub trait ResponseTransform: Send {
+    fn head(&mut self, status: u16, headers: &[(String, String)]) -> Result<LlmResponseHead, HttpError>;
+    fn push(&mut self, chunk: &[u8]) -> Result<Vec<u8>, HttpError>;
+    fn finish(&mut self) -> Result<Vec<u8>, HttpError>;
 }
 
 // nico-server — process assembly owns signals, runtime and shutdown
@@ -135,6 +168,62 @@ zero-byte buffer while a chunked body's terminator or trailers are still being p
 then skips the stage instead of handing a plugin a buffer with no bytes, and keeps the request-side
 `Some(empty)` (there `None` means end-of-body, so dropping it would truncate the upload).
 
+### An AI route (`RouteTarget::Provider`)
+
+An AI route's bytes belong to a client protocol and a provider, neither of which this crate knows. It
+reaches the data plane through `llm.rs` and changes four of the rules above:
+
+| Step | What happens |
+|---|---|
+| routing | after `bind_route`, `state::llm_for_route` looks the route id up in the published plan. A provider route with no front-end is refused `502 provider_unavailable` — never forwarded and never resolved against a guessed address |
+| upstream head | `hooks::llm::apply_upstream_request` writes the front-end's path and headers over the client's. `Host` and `X-Forwarded-*` are written after it, so a route can never choose the peer. `convert` drops the caller's `authorization` and its content codings — `accept-encoding` is removed, and a `content-encoding` other than `identity` is refused `400`: the answer's head is rewritten from the front-end's own headers, so a coding negotiated here would describe bytes this data plane never decodes and arrive as a parse failure behind a committed status — then the head is framed `transfer-encoding: chunked` because the body is re-encoded; `passthrough` keeps the caller's framing, coding and credential, except that a route presenting its own credential replaces the caller's: a route that materializes a key is the gateway authenticating to that peer |
+| request body | `convert` holds every chunk back like a buffered route, then calls `prepare` **once** at end of stream and writes the returned bytes as the final chunk. A request with no body still reaches it (`None` + end), so an empty document is a `400` from the codec, not a request forwarded half-encoded. `passthrough` writes the bytes as they arrive. Neither runs a plugin body stage |
+| response head | `hooks::llm::install_transform` creates one transform per response and calls `head(provider_status, provider_headers)`. The returned head **replaces** the provider's: every provider header is removed (they describe bytes the caller never receives), its status and headers are written, and `x-nico-trace-id` is added. `content-length` is never carried, so the framework frames the body chunked. A response that cannot carry a body (`HEAD`, `204`/`304`, `content-length: 0`) is not translated: nothing will be decoded, and a client envelope cannot be invented. An answer that arrives before the client's body ends — a provider refusing a credential it never had to read a body for — is translated as a **buffered** answer: no event stream begins before its request finishes, and answering `500` would report the provider's own `401` as this side's defect. `passthrough` forwards the provider head untouched |
+| response body | `hooks::llm::transform_response_body` drives `push` per provider chunk and `finish` at end of body, writing what they return. A returned empty vector writes nothing for that task (an event may span chunks) and is not the end of the body. No plugin body stage runs |
+| plugin stages | the request stages still run (authentication and rate limiting are header decisions) and so does logging. The body and response stages do not: a policy cannot see the document it would have to describe. Publication rejects the combination; the hooks skip the stages anyway, so the guarantee does not depend on the compiler |
+
+**The upstream head precedes the decoded body.** The endpoint is a publication fact, which is why a
+converted route can write the provider's path and headers before it has a body. A body refused at end
+of stream (`400`/`422`, or a codec defect) may therefore already have opened the connection and
+written a head with no body. That is not a forwarded request: no prompt byte reaches the origin, and
+the refusal is the only answer the caller receives. The end-to-end scenarios assert on the received
+body, not on the absence of a connection.
+
+**The request record names the exchange, never its contents.** An AI route adds
+`llm.protocol`/`llm.provider` (publication facts) and, once the body was decoded,
+`llm.model` (`logical -> physical`) and `llm.stream`. A route that is not an AI route reports none of
+them, and a passthrough route or a refusal before encoding reports only the two publication facts. No
+prompt, response body, header value or credential is logged.
+
+**Where the response ceiling applies.** `request.max_response_bytes` bounds a *buffered* answer: a
+converted response that is translated whole, and the declared length of one before the head is
+written. A `passthrough` route buffers nothing — its bytes go through as they arrive and are never
+collected — so the ceiling does not apply to it, and a document that sets one on such a route is
+setting a bound nothing can cross. This is a property of the route mode, not a gap in enforcement.
+
+**A streaming path still bounds its state.** `request.max_response_bytes` is documented as not
+applying to an event stream, because nothing holds the body whole — but that exemption is about the
+*body*, not about what a decoder accumulates while reading it. Every accumulator on the streaming path
+declares its own bound and enforces it as it grows: the SSE framing caps one event
+(`MAX_EVENT_BYTES`), the OpenAI stream caps the tool calls one response may have open
+(`MAX_TOOL_CALLS`), and a wire token retained in that state (a model name, a tool name, a call id) is
+capped where the type is built (`MAX_TOKEN_BYTES`). A peer chooses both how many chunks arrive and
+what they contain, so "the body is streamed" is never an argument for unbounded memory.
+
+**Where the response ceiling can and cannot be answered.** `request.max_response_bytes` (a route may
+only tighten it) is enforced twice, and the two paths answer differently because Pingora has already
+written the status line by the time a body chunk arrives:
+
+- a non-streaming answer that **declares** a `content-length` over the ceiling is refused inside
+  `upstream_response_filter`, before anything is written: `502 upstream_response_too_large`;
+- a **chunked** answer declares nothing, so the overrun is discovered in the body hook. The head is
+  committed, so no second status exists: the transform's error ends the stream, `fail_to_proxy`
+  records the request as cancelled and the client sees a truncated `200`. A `502` there would be a
+  second response on a connection that already has one.
+
+An event stream is never buffered, so the ceiling does not apply to it — no check is made against a
+streaming response's declared length either.
+
 ## 4. Validation & Error Matrix
 
 | Condition | Result |
@@ -145,6 +234,10 @@ then skips the stage instead of handing a plugin a buffer with no bytes, and kee
 | an authentication plugin refuses the request | `401` + `www-authenticate`, code `auth_missing` or `auth_invalid` (a document may override status/body, 4xx only) |
 | a rate-limit plugin refuses the request | `429 rate_limited` + `retry-after`, rounded up to whole seconds |
 | `route.target` is a provider and no plugin replaced it | `502 provider_unavailable` |
+| `route.target` is a provider and the published plan has no front-end for the route | `502 provider_unavailable` — refused at routing, never forwarded |
+| a converted route's front-end cannot decode the client body | the front-end's `HttpError`: `400 invalid_request`, `422 unsupported_capability` or `500` for its own defect |
+| a non-streaming answer declares a `content-length` over `max_response_bytes` | `502 upstream_response_too_large`, before the head is written |
+| a chunked answer crosses `max_response_bytes` while it arrives | no second status: the head is committed, the stream ends and the request is logged as cancelled |
 | upstream host does not resolve | `502 upstream_unreachable` |
 | `scheme: https` while no TLS provider is compiled | `502 upstream_unreachable` (refused, never plaintext) |
 | `Content-Length` or metered chunked body over the limit | `413 body_too_large` |
@@ -177,7 +270,10 @@ ones the data plane owns. The one exception to both is the informational respons
   Pingora does not replay a consumed body and does not un-buffer a collected response: the upstream
   hangs or memory grows with the body. The one collection this data plane does perform is the buffered
   request mode, and it is bounded by `request.max_body_bytes` and only reachable when a document
-  declares `buffers_body`.
+  declares `buffers_body`. The other two are bounded the same way and for the same reason: an AI
+  route's `convert` mode buffers the client body to `max_body_bytes`, and a non-streaming answer is
+  held to `max_response_bytes` — a chunked answer is never collected, and a ceiling crossed after the
+  head was written ends the stream rather than inventing a status.
 
 ## 6. Tests Required
 
@@ -197,6 +293,14 @@ ones the data plane owns. The one exception to both is the informational respons
 | a cancelled token becomes a graceful termination | `nico-server/src/server/shutdown/tests.rs` |
 | `max_retries == 1`, seconds rounded up and never `0`, `threads` passthrough | `service/tests.rs` |
 | a route that names plugins and has no chain is refused, a route without plugins runs none | `nico-http/src/state/tests.rs` (`chain_for_route`) |
+| a provider route with no published front-end is refused, an upstream route has none | `nico-http/src/state/tests.rs` (`llm_for_route`) |
+| a converted body is held back, prepared once and replaced by the front-end's bytes | `nico-http/src/proxy/tests/llm.rs` |
+| a converted head replaces the provider's, drops `content-length`, and adds `x-nico-trace-id` | `nico-http/src/proxy/tests/llm/response.rs` |
+| an answer that precedes the client body is translated buffered, not refused as a defect | `nico-http/src/proxy/tests/llm/response.rs` |
+| a declared response length over the ceiling is `502 upstream_response_too_large`; a stream is not checked | `nico-http/src/proxy/tests/llm/response.rs` |
+| a response body is translated chunk by chunk and completed at end of body | `nico-http/src/proxy/tests/llm/response.rs` |
+| an OpenAI client's body is decoded, model-mapped and re-encoded; the stream arrives at the origin's rate; 429/401 become canonical answers; 413/422/502 are answered without a provider body; the record carries `llm.*` only on AI routes | `nico-server/tests/llm_convert.rs` |
+| a passthrough route forwards both bodies byte for byte, keeps the caller's framing and coding, presents the route's credential when it has one, and decodes nothing | `nico-server/tests/llm_passthrough.rs` |
 | an unauthenticated request answers `401` + challenge + `x-nico-error-code`/`x-nico-trace-id`, a signed one is forwarded | `nico-server/tests/plugins_auth.rs` |
 | a bucket runs out per subject, answers `429` + `retry-after`, and leaves other routes alone | `nico-server/tests/plugins_limit.rs` |
 | a configured 4xx/JSON or 4xx/HTML refusal keeps the stable headers | `nico-server/tests/plugins_custom_response.rs` |

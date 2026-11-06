@@ -45,7 +45,10 @@ mod usage;
 
 pub use conversation::{ContentPart, ImageSource, Item, Message, Reasoning, Role};
 pub(crate) use error::MAX_PROVIDER_CODE_BYTES;
-pub use error::{CanonicalError, SchemaError};
+pub use error::{
+    CanonicalError, MAX_CANONICAL_CODE_BYTES, MAX_CANONICAL_MESSAGE_BYTES, MAX_TOKEN_BYTES,
+    SchemaError,
+};
 pub use extension::{Extensions, RawJson};
 pub use model::{ModelId, ModelRef};
 pub use request::{ChatRequest, JsonSchema, ResponseFormat};

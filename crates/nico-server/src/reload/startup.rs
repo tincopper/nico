@@ -82,9 +82,9 @@ impl Reloader {
             }
         };
 
-        // A remembered document is compiled like any other: its plugins are what make it servable,
-        // so a credential that has since disappeared has to stop startup rather than publish a
-        // generation whose routes would all answer `500`.
+        // A remembered document is compiled like any other: its plugins and its LLM routes are what
+        // make it servable, so a credential that has since disappeared has to stop startup rather than
+        // publish a generation whose routes would all answer `500`.
         let plan = match self.runtime.compile(&document) {
             Ok(plan) => plan,
             Err(error) => {
@@ -94,6 +94,19 @@ impl Reloader {
                     error = %error,
                     error.category = ?category,
                     "cached configuration document has no usable plugin plan"
+                );
+                return Err(ReloadError::NotReady { category });
+            }
+        };
+        let llm = match self.llm.compile(&document, &plan) {
+            Ok(llm) => llm,
+            Err(error) => {
+                let category = error.category();
+                tracing::warn!(
+                    source = self.source.name(),
+                    error = %error,
+                    error.category = ?category,
+                    "cached configuration document has no usable LLM plan"
                 );
                 return Err(ReloadError::NotReady { category });
             }
@@ -121,6 +134,7 @@ impl Reloader {
                 self.source.name(),
             )),
             plan,
+            llm,
         );
         self.handle.mark_stale();
         self.handle.mark_degraded(category);

@@ -152,6 +152,17 @@ pub(crate) struct Decoder {
     buffer: Vec<u8>,
     /// Offset in `buffer` of the first byte not yet consumed as a line.
     read: usize,
+    /// Bytes of `buffer[read..]` already proven to hold no line ending.
+    ///
+    /// The peer chooses both the chunk size and the absence of a terminator, so rescanning what an
+    /// earlier call already searched makes the total work quadratic in the bytes received: a
+    /// terminator-free trickle of one-byte chunks is a CPU amplifier that fits inside
+    /// [`MAX_EVENT_BYTES`]. This is the scan's high-water mark — a `None` from [`line_end`] advances
+    /// it, and it returns to zero whenever `read` moves past a line or [`Decoder::compact`] runs.
+    ///
+    /// It never includes a trailing `\r`: that byte is not conclusively searched until the byte after
+    /// it is known, because `\r\n` is one terminator and `\r` alone is another.
+    scanned: usize,
     /// Whether the byte-order mark question is settled; see [`Decoder::strip_mark`].
     mark_settled: bool,
     frame: Frame,
@@ -174,11 +185,23 @@ impl Decoder {
         self.buffer.extend_from_slice(chunk);
         self.strip_mark();
         let mut events = Vec::new();
-        while let Some((end, width)) = line_end(&self.buffer[self.read..]) {
+        loop {
+            // Start where the previous call stopped searching: what lies before it provably holds no
+            // line ending, so rescanning it would make the whole-stream cost quadratic.
+            let pending = &self.buffer[self.read + self.scanned..];
+            let Some((end, width)) = line_end(pending) else {
+                // A trailing `\r` is `line_end`'s only inconclusive answer: the next byte may turn it
+                // into `\r\n`. Everything before it is settled.
+                let settled = pending.len() - usize::from(pending.last() == Some(&b'\r'));
+                self.scanned += settled;
+                break;
+            };
+            let end = self.scanned + end;
             let consumed = self.read + end + width;
             if end == 0 {
                 // An event is a blank line; the line itself carries no field to record.
                 self.read = consumed;
+                self.scanned = 0;
                 if let Some(event) = self.frame.dispatch() {
                     events.push(event);
                 }
@@ -190,6 +213,7 @@ impl Decoder {
             };
             self.frame.record(line);
             self.read = consumed;
+            self.scanned = 0;
             if self.frame.payload_len() > MAX_EVENT_BYTES {
                 return Err(self.fail(SseError::TooLarge {
                     limit: MAX_EVENT_BYTES,
@@ -213,7 +237,8 @@ impl Decoder {
     /// Drops the bytes already consumed as lines.
     ///
     /// Once per chunk, after the line loop: one move of what is still pending, instead of one move
-    /// of it per consumed line.
+    /// of it per consumed line. The scan high-water mark survives the move — it is an offset into
+    /// `buffer[read..]`, and draining a prefix leaves that slice's content unchanged.
     fn compact(&mut self) {
         if self.read == 0 {
             return;
@@ -237,6 +262,8 @@ impl Decoder {
             self.mark_settled = true;
             if marked {
                 self.read += MARK.len();
+                // The high-water mark is relative to `read`, so moving `read` invalidates it.
+                self.scanned = 0;
             }
         } else if !MARK.starts_with(pending) {
             // Fewer bytes than the mark and not a prefix of it: the stream has no mark.
@@ -249,6 +276,7 @@ impl Decoder {
     fn fail(&mut self, error: SseError) -> SseError {
         self.buffer.clear();
         self.read = 0;
+        self.scanned = 0;
         self.frame = Frame::default();
         error
     }

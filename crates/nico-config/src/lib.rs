@@ -50,12 +50,14 @@
 
 pub mod cache;
 pub mod fake;
+pub mod file;
 pub mod local;
 pub mod source;
 mod stream;
 
 pub use cache::{CacheError, CacheMeta, CacheStore, CachedSnapshot};
 pub use fake::FakeConfigSource;
+pub use file::{ReadError, read_bounded};
 pub use local::{LocalConfig, LocalFileSource, WatchMode};
 pub use nico_core::version::{ConfigDigest, Revision, RevisionOrdering};
 pub use source::{ConfigEvent, ConfigSource, ConfigSourceError, ConfigVersion, ConfigWatch};

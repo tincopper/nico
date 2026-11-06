@@ -73,6 +73,7 @@ mod targets {
                 "  - id: llm-chat\n",
                 "    path_prefix: /v1/chat/\n",
                 "    provider: openai-primary\n",
+                "    protocol: openai.chat\n",
             ),
         );
         let document = parse(&document).expect("both targets resolve");
@@ -85,6 +86,89 @@ mod targets {
             routes[1].target(),
             &RouteTarget::Provider("openai-primary".to_owned())
         );
+    }
+
+    #[test]
+    fn a_provider_route_without_a_protocol_is_rejected() {
+        // Without a protocol there is no codec to decode the caller's body, so the route cannot be
+        // served: the published plan would have to guess, and guessing is how a request is silently
+        // forwarded as bytes the provider never asked for.
+        let document = document(
+            PROVIDER,
+            NO_ENTRIES,
+            concat!(
+                "  - id: llm-chat\n",
+                "    path_prefix: /v1/chat/\n",
+                "    provider: openai-primary\n",
+            ),
+        );
+        let error = parse(&document).expect_err("a provider route must name its protocol");
+        assert!(
+            matches!(
+                error,
+                DocumentError::InvalidField {
+                    field: "routes[].protocol",
+                    ..
+                }
+            ),
+            "expected InvalidField for routes[].protocol, got {error:?}"
+        );
+        assert_eq!(error.category(), ErrorCategory::Client);
+    }
+
+    #[test]
+    fn an_upstream_route_with_a_protocol_is_rejected() {
+        let routes = concat!(
+            "  - id: api-public-v1\n",
+            "    path_prefix: /api/\n",
+            "    upstream: api-backend\n",
+            "    protocol: openai.chat\n",
+        );
+        assert_only_on_a_provider_route("routes[].protocol", routes);
+    }
+
+    #[test]
+    fn an_upstream_route_with_a_mode_is_rejected() {
+        let routes = concat!(
+            "  - id: api-public-v1\n",
+            "    path_prefix: /api/\n",
+            "    upstream: api-backend\n",
+            "    mode: convert\n",
+        );
+        assert_only_on_a_provider_route("routes[].mode", routes);
+    }
+
+    #[test]
+    fn an_upstream_route_with_a_response_bound_is_rejected() {
+        let routes = concat!(
+            "  - id: api-public-v1\n",
+            "    path_prefix: /api/\n",
+            "    upstream: api-backend\n",
+            "    max_response_bytes: 1024\n",
+        );
+        assert_only_on_a_provider_route("routes[].max_response_bytes", routes);
+    }
+
+    /// Asserts that `routes` is refused because `field` belongs to a provider route.
+    ///
+    /// An upstream route would otherwise read the value as a default and drop what the operator
+    /// wrote, which is the failure this rule exists to prevent.
+    fn assert_only_on_a_provider_route(field: &str, routes: &str) {
+        let document = document(NO_ENTRIES, UPSTREAM, routes);
+        let error = parse(&document).expect_err("the route has no exchange to configure");
+        match error {
+            DocumentError::InvalidField {
+                field: named,
+                reason,
+            } => {
+                assert_eq!(named, field);
+                assert!(
+                    reason.contains("only valid on a provider route"),
+                    "the message must say which kind owns the field, got {reason:?}"
+                );
+            }
+            other => panic!("expected InvalidField for {field}, got {other:?}"),
+        }
     }
 }
 

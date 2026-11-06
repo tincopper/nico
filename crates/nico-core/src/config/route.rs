@@ -8,6 +8,14 @@
 //! The route also names the plugins that run on its requests. It names them rather than carrying
 //! them, so one plugin entry is shared by every route that references it and a route cannot
 //! disagree with the plugin it runs.
+//!
+//! A provider target additionally decides how the exchange is translated: [`Route::protocol`] names
+//! the client protocol, [`Route::mode`] whether the body is converted or passed through, and
+//! [`Route::max_response_bytes`] how much of a buffered response is accepted. Those three describe a
+//! converted exchange, so they exist on a provider route alone; an upstream route forwards bytes and
+//! the document refuses them there instead of ignoring them.
+
+use serde::Deserialize;
 
 /// Where a matched route sends the request.
 ///
@@ -32,6 +40,23 @@ impl RouteTarget {
     }
 }
 
+/// How a provider route relates the client's body to the provider's.
+///
+/// The mode is a property of the route, not of the protocol pair: the same two protocols may be
+/// byte-compatible for one route and not for another (a caller sending an extension the canonical
+/// model does not carry, for example), so the document decides per route. `Convert` is the default
+/// because it is the mode that works between two different protocols at all.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum RouteMode {
+    /// Decode the client body into the canonical model, then encode it for the provider.
+    #[default]
+    Convert,
+    /// Forward the client's bytes to the provider unchanged, skipping the canonical model.
+    Passthrough,
+}
+
 /// One routing rule.
 ///
 /// Fields are private and there is no public constructor: a `Route` only exists inside a
@@ -44,6 +69,9 @@ pub struct Route {
     pub(super) target: RouteTarget,
     pub(super) timeout_ms: Option<u32>,
     pub(super) max_body_bytes: Option<u32>,
+    pub(super) protocol: Option<String>,
+    pub(super) mode: RouteMode,
+    pub(super) max_response_bytes: Option<u32>,
     pub(super) plugins: Vec<String>,
 }
 
@@ -82,6 +110,34 @@ impl Route {
     #[must_use]
     pub const fn max_body_bytes(&self) -> Option<u32> {
         self.max_body_bytes
+    }
+
+    /// Returns the client protocol a provider route converts, or `None` for an upstream route.
+    ///
+    /// The value is a name such as `<vendor>.<surface>`, kept exactly as written. Whether a codec is
+    /// registered for it is decided when the document is published, by the crate that owns the
+    /// registry: this model only checks that the value could name one.
+    #[must_use]
+    pub fn protocol(&self) -> Option<&str> {
+        self.protocol.as_deref()
+    }
+
+    /// Returns how this route relates the client's body to the provider's.
+    ///
+    /// A provider route defaults to [`RouteMode::Convert`]. An upstream route has no conversion and
+    /// the document refuses a `mode` there, so this reports the default for it.
+    #[must_use]
+    pub const fn mode(&self) -> RouteMode {
+        self.mode
+    }
+
+    /// Returns the route-level ceiling on a buffered response body, when the document sets one.
+    ///
+    /// A route may only tighten the document-wide bound, and `None` means it inherits it. Only a
+    /// provider route has a response to convert, so the document refuses this on an upstream route.
+    #[must_use]
+    pub const fn max_response_bytes(&self) -> Option<u32> {
+        self.max_response_bytes
     }
 
     /// Returns the plugins this route runs, in document order.

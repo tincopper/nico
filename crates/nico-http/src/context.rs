@@ -32,6 +32,7 @@
 
 mod buffer;
 mod identity;
+mod llm;
 
 use std::{
     net::IpAddr,
@@ -43,7 +44,7 @@ pub use identity::Identity;
 use nico_core::{Generation, Route, RouteTarget, RuntimeSnapshot};
 use pingora::http::{Method, RequestHeader};
 
-use self::buffer::BodyBuffer;
+use self::{buffer::BodyBuffer, llm::LlmExchange};
 use crate::{budget, error::HttpError, plugin::PluginChain, upstream::Destination};
 
 /// What the data plane remembers about one in-flight request.
@@ -63,7 +64,9 @@ pub struct HttpContext {
     destination: Option<Destination>,
     client_ip: Option<IpAddr>,
     body_limit: Option<u32>,
+    response_limit: Option<u32>,
     body_bytes: u64,
+    llm: Option<LlmExchange>,
     error: Option<HttpError>,
     global: Option<PluginChain>,
     route_chain: Option<PluginChain>,
@@ -118,6 +121,7 @@ impl HttpContext {
             return;
         };
         self.body_limit = Some(budget::body_limit(route, request));
+        self.response_limit = Some(budget::response_limit(route, request));
         if let Some(started) = self.started {
             self.deadline = Some(started + budget::request_budget(route, request));
         }
@@ -276,6 +280,16 @@ impl HttpContext {
     #[must_use]
     pub fn body_limit(&self) -> Option<u32> {
         self.body_limit
+    }
+
+    /// Returns the ceiling on a buffered response body this route accepts, in bytes.
+    ///
+    /// The smaller of the route override and the document bound, decided by [`Self::bind_route`] the
+    /// same way the two request limits are. It applies only to a response that is buffered whole; an
+    /// event stream is translated chunk by chunk and never held to it.
+    #[must_use]
+    pub fn response_limit(&self) -> Option<u32> {
+        self.response_limit
     }
 
     /// Returns how many body bytes have been counted so far.

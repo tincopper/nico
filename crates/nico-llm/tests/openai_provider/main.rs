@@ -9,6 +9,7 @@ mod endpoint;
 mod exchange;
 mod request;
 mod response;
+mod status;
 mod stream;
 mod support;
 
@@ -22,6 +23,7 @@ use nico_llm::{
 fn the_adapter_names_its_kind_and_native_protocol() {
     let provider = OpenAiProvider::new();
     assert_eq!(provider.kind(), PROVIDER_KIND);
+    assert_eq!(provider.native_protocol(), NATIVE_PROTOCOL);
     assert_eq!(PROVIDER_KIND.as_str(), "openai");
     assert_eq!(NATIVE_PROTOCOL.as_str(), "openai.chat");
     assert_eq!(

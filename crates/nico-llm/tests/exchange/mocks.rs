@@ -222,6 +222,10 @@ impl Provider for MockProvider {
         KIND
     }
 
+    fn native_protocol(&self) -> ProtocolId {
+        PROTOCOL
+    }
+
     fn capabilities(&self) -> Capabilities {
         self.capabilities
     }
@@ -302,6 +306,16 @@ impl Provider for MockProvider {
             buffer: Vec::new(),
             behaviour: self.stream,
         })
+    }
+
+    fn error_for_status(&self, status: u16) -> CanonicalError {
+        CanonicalError::try_new(
+            ErrorCategory::Upstream,
+            "mock_refused",
+            "the mock provider refused the request",
+            status,
+        )
+        .expect("the mock status table is a constant")
     }
 }
 

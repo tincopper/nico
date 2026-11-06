@@ -13,10 +13,12 @@ use crate::{
     schema::{CanonicalError, SchemaError},
 };
 
-/// Why a route, a codec and a provider adapter cannot be paired.
+/// Why a route, a codec and a provider adapter cannot be assembled into a front-end.
 ///
 /// Every variant is a **publication** failure: the document is refused and the previously published
-/// generation keeps serving. None of them can be caused by a request.
+/// generation keeps serving. None of them can be caused by a request. The converting and the
+/// passthrough constructors share the vocabulary because both pair a route with an adapter; the two
+/// mode-specific variants ([`Self::NotConverted`], [`Self::NotPassthrough`]) are mirror images.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ExchangeBuildError {
@@ -41,6 +43,30 @@ pub enum ExchangeBuildError {
     NotConverted {
         /// The route that asked for passthrough.
         route_id: String,
+    },
+    /// The route converts, so it has no passthrough front-end.
+    ///
+    /// The mirror image of [`Self::NotConverted`]: a front-end is built for the mode its route
+    /// declares, and building one for the other mode would either decode bytes the operator asked to
+    /// forward or forward bytes nobody encoded.
+    #[error("route `{route_id}` converts and has no passthrough front-end")]
+    NotPassthrough {
+        /// The route that asked to convert.
+        route_id: String,
+    },
+    /// The adapter speaks a protocol other than the one the route passes through byte for byte.
+    ///
+    /// A passthrough route forwards the client's bytes to the provider unchanged, so the two sides
+    /// must speak the same protocol. The adapter answers with its own native protocol instead of the
+    /// plan compiler consulting a vendor table.
+    #[error("the provider speaks `{provider}` but route `{route_id}` passes through `{route}`")]
+    NativeProtocolMismatch {
+        /// The route that passes bytes through.
+        route_id: String,
+        /// The protocol the adapter speaks natively.
+        provider: ProtocolId,
+        /// The client protocol the route names.
+        route: ProtocolId,
     },
     /// The adapter cannot compile the route into an endpoint.
     ///

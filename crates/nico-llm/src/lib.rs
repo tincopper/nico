@@ -16,12 +16,15 @@
 //! - [`provider`] — the [`Provider`] and [`ProviderStream`] contracts, their registry, and the
 //!   compiled route facts an adapter reads. The OpenAI adapter lives in [`provider::openai`].
 //! - [`filter`] — [`Exchange`], the one place a codec and an adapter meet.
+//! - [`route`] — the front-ends the data plane publishes: one converting route (exchange plus a
+//!   per-response transform) and one passthrough route (endpoint only).
 //!
 //! The shared SSE framing lives in `stream/` (crate-private: it is a framing detail, not a contract),
-//! the shared diagnostic rules live in `diagnostic/` (crate-private: what a refusal may quote), the
+//! the shared diagnostic rules live in `diagnostic.rs` (crate-private: what a refusal may quote), the
 //! OpenAI Chat Completions codec lives in [`protocol::openai_chat`], and the OpenAI provider adapter
 //! lives in [`provider::openai`]. Vendor names belong only in those modules; the canonical model, the
-//! two contracts and the exchange never learn them.
+//! two contracts and the exchange never learn them. [`builtin_registry`] is the one place the kinds
+//! this build serves are listed, so the process assembles a registry rather than a vendor table.
 //!
 //! # Invariants
 //!
@@ -40,9 +43,12 @@
 
 #![deny(missing_docs)]
 
+use std::sync::Arc;
+
 pub mod filter;
 pub mod protocol;
 pub mod provider;
+pub mod route;
 pub mod schema;
 
 mod diagnostic;
@@ -57,9 +63,44 @@ pub use provider::{
     Credential, Endpoint, EndpointError, ExchangeMode, Provider, ProviderError, ProviderKind,
     ProviderRegistry, ProviderRoute, ProviderStream, RouteError, WireRequest,
 };
+pub use route::{ConvertRoute, PassthroughRoute};
 pub use schema::{
     AssistantTurn, CanonicalError, ChatRequest, ChatResponse, Choice, ContentPart, Extensions,
-    FinishReason, ImageSource, Item, JsonSchema, Message, ModelId, ModelRef, RawJson, Reasoning,
+    FinishReason, ImageSource, Item, JsonSchema, MAX_CANONICAL_CODE_BYTES,
+    MAX_CANONICAL_MESSAGE_BYTES, MAX_TOKEN_BYTES, Message, ModelId, ModelRef, RawJson, Reasoning,
     ResponseFormat, ResponseId, Role, Sampling, SchemaError, StreamEvent, TokenKind, Tool,
     ToolCall, ToolCallId, ToolChoice, ToolName, ToolResult, Usage, UsageCounts,
 };
+
+/// Returns the client codecs and provider adapters this build serves.
+///
+/// The process calls this once while it is assembled and keeps both registries for its lifetime: a
+/// codec and an adapter hold configuration and no per-request state, so one value serves every route
+/// of its protocol or kind. The pair travels together because publication needs both to compile one
+/// route, and a process that took one from here and the other from somewhere else could pair a codec
+/// with an adapter nothing assembled.
+///
+/// A duplicate registration is reported and skipped rather than asserted: the kinds above are
+/// distinct, so reaching it means this function was changed incorrectly, and a panic while the
+/// process starts is a worse answer than a kind that is registered once. The test that asserts both
+/// lookups resolve is what catches it.
+#[must_use]
+pub fn builtin_registry() -> (ProtocolRegistry, ProviderRegistry) {
+    let mut protocols = ProtocolRegistry::new();
+    let codecs: [Arc<dyn ClientCodec>; 1] =
+        [Arc::new(protocol::openai_chat::OpenAiChatCodec::new())];
+    for codec in codecs {
+        if let Err(error) = protocols.register(codec) {
+            tracing::warn!(%error, "a built-in client protocol was registered twice");
+        }
+    }
+
+    let mut providers = ProviderRegistry::new();
+    let adapters: [Arc<dyn Provider>; 1] = [Arc::new(provider::OpenAiProvider::new())];
+    for adapter in adapters {
+        if let Err(error) = providers.register(adapter) {
+            tracing::warn!(%error, "a built-in provider was registered twice");
+        }
+    }
+    (protocols, providers)
+}

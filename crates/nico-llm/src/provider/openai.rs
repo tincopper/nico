@@ -66,7 +66,7 @@
 //! # Failures
 //!
 //! **Every failure is typed and named.** A non-2xx response becomes [`ProviderError::Upstream`]
-//! carrying a [`CanonicalError`](crate::schema::CanonicalError) built by the status table: the
+//! carrying a [`CanonicalError`] built by the status table: the
 //! provider's status selects the category, stable code and client-facing status, and only its
 //! `error.code` (when it is a bounded printable token) is kept, for structured logs. The provider's
 //! message, body and headers are not decoded into the client answer. A 2xx body this adapter cannot
@@ -87,7 +87,7 @@ use super::{Endpoint, Provider, ProviderError, ProviderKind, ProviderRoute, Prov
 use crate::{
     diagnostic,
     protocol::{Capabilities, Capability, ProtocolId, ResponseFacts},
-    schema::{ChatRequest, ChatResponse, FinishReason, RawJson, SchemaError},
+    schema::{CanonicalError, ChatRequest, ChatResponse, FinishReason, RawJson, SchemaError},
 };
 
 mod base64;
@@ -100,6 +100,15 @@ mod usage;
 
 /// The provider kind this adapter registers under.
 pub const PROVIDER_KIND: ProviderKind = ProviderKind::new("openai");
+
+/// Most tool calls one response may have open at once.
+///
+/// The stream decoder retains an entry per open call for the life of the response, and the peer picks
+/// the `index` of every fragment, so the number of entries is the peer's choice. A stream is exempt
+/// from `max_response_bytes` because nothing holds its body whole — but that exemption is about the
+/// body, not about the state a decoder accumulates while reading it, so the accumulator carries its
+/// own bound. The value is a count because the bytes are already bounded per event by the SSE framing.
+pub const MAX_TOOL_CALLS: usize = 128;
 
 /// The wire protocol this provider speaks natively.
 ///
@@ -125,6 +134,10 @@ impl OpenAiProvider {
 impl Provider for OpenAiProvider {
     fn kind(&self) -> ProviderKind {
         PROVIDER_KIND
+    }
+
+    fn native_protocol(&self) -> ProtocolId {
+        NATIVE_PROTOCOL
     }
 
     fn capabilities(&self) -> Capabilities {
@@ -157,6 +170,10 @@ impl Provider for OpenAiProvider {
         body: &[u8],
     ) -> Result<ChatResponse, ProviderError> {
         response::decode(head, body)
+    }
+
+    fn error_for_status(&self, status: u16) -> CanonicalError {
+        error::failure(status, b"")
     }
 
     fn stream_decoder(&self) -> Box<dyn ProviderStream> {

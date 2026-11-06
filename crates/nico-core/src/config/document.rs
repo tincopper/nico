@@ -52,13 +52,15 @@ impl Document {
     /// - [`DocumentError::ReferenceUnknown`] when a route names an upstream, provider or plugin that
     ///   is not defined.
     /// - [`DocumentError::InvalidField`] when a name, host, path prefix, base URL, credential
-    ///   reference, upstream host, port, plugin name, plugin kind or rejection body is malformed.
+    ///   reference, upstream host, port, plugin name, plugin kind, protocol id, model map entry or
+    ///   rejection body is malformed, when a provider route names no `protocol`, or when a route sets
+    ///   a field its target kind does not own.
     /// - [`DocumentError::TooMany`] when a collection exceeds its count bound.
     ///
     /// # Examples
     ///
     /// ```
-    /// use nico_core::{Document, ParseLimits, RouteTarget};
+    /// use nico_core::{Document, ParseLimits, RouteMode, RouteTarget};
     ///
     /// let bytes = "\
     /// apiVersion: gateway/v1
@@ -71,6 +73,8 @@ impl Document {
     ///     kind: openai
     ///     base_url: https://api.openai.com
     ///     credential_ref: env:OPENAI_API_KEY
+    ///     model_map:
+    ///       fast: gpt-4o-mini
     /// upstreams:
     ///   - name: api-backend
     ///     scheme: http
@@ -83,6 +87,7 @@ impl Document {
     ///   - id: llm-chat
     ///     path_prefix: /v1/chat/
     ///     provider: openai-primary
+    ///     protocol: openai.chat
     /// ";
     /// let document = Document::parse(bytes.as_bytes(), ParseLimits::new(1024 * 1024))
     ///     .expect("fixture is valid");
@@ -91,6 +96,16 @@ impl Document {
     /// assert_eq!(
     ///     document.routes()[1].target(),
     ///     &RouteTarget::Provider("openai-primary".to_owned())
+    /// );
+    /// // A provider route converts unless the document says otherwise, and a route that writes no
+    /// // response bound inherits the document's 8 MiB default.
+    /// assert_eq!(document.routes()[1].mode(), RouteMode::Convert);
+    /// assert_eq!(document.routes()[1].max_response_bytes(), None);
+    /// assert_eq!(document.request().max_response_bytes(), 8 * 1024 * 1024);
+    /// // A caller's model name becomes the one this endpoint serves.
+    /// assert_eq!(
+    ///     document.providers()[0].model_map().get("fast").map(String::as_str),
+    ///     Some("gpt-4o-mini")
     /// );
     /// ```
     ///

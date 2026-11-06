@@ -278,7 +278,13 @@ pub trait PluginContext: Send {
     fn method(&self) -> String;
 
     /// Returns the request target as sent: path and query, unchanged.
-    fn uri(&self) -> String;
+    ///
+    /// Bytes, not text. A request target is only required to be ASCII-safe on the wire, and this build
+    /// forwards whatever the parser accepted, so a policy that authorized on a lossily decoded string
+    /// would be reading a different target than the router matched. A stage that wants text decodes it
+    /// and decides what an undecodable target means — the gateway never substitutes one value for
+    /// another on its behalf.
+    fn uri(&self) -> &[u8];
 
     /// Replaces the request target. Only `on_request` offers this; the data plane reconciles the
     /// rewritten target with the upstream it connects to.
@@ -286,7 +292,7 @@ pub trait PluginContext: Send {
     /// # Errors
     /// - [`PluginError::PhaseViolation`] outside `on_request`.
     /// - [`PluginError::Execute`] when `uri` is not a valid request target.
-    fn set_uri(&mut self, uri: &str) -> Result<(), PluginError>;
+    fn set_uri(&mut self, uri: &[u8]) -> Result<(), PluginError>;
 
     /// Reports whether this is an event stream, from the response content type when one exists and
     /// from the request's `accept` header before that.

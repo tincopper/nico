@@ -26,6 +26,7 @@ use pingora::{
 use super::super::{
     HttpApp,
     failure::{abort, classify, is_downstream_gone, write_respond},
+    hooks::llm,
     record,
 };
 use crate::{context::HttpContext, error::HttpError};
@@ -36,6 +37,10 @@ use crate::{context::HttpContext, error::HttpError};
 /// will change those bytes chunk by chunk. Removing the header here is what makes the framework frame
 /// the response as chunked instead — it only adds a transfer coding when neither header is present, so
 /// the removal has to happen before that point.
+///
+/// An LLM route takes the other branch: its response head is the client protocol's answer, produced by
+/// the transform this hook installs, and no plugin response stage runs — a policy must not rewrite the
+/// bytes of a protocol it cannot see.
 pub(super) async fn upstream_response_filter(
     _app: &HttpApp,
     session: &mut Session,
@@ -48,7 +53,21 @@ pub(super) async fn upstream_response_filter(
         return Ok(());
     }
 
-    if ctx.rewrites_response() && may_carry_body(session, response) {
+    if ctx.llm().is_some() {
+        let request = session.req_header();
+        if let Err(error) = llm::install_transform(ctx, request, response) {
+            return Err(abort(ctx, error));
+        }
+        if ctx.expired(Instant::now()) {
+            let error = ctx.deadline_error();
+            return Err(abort(ctx, error));
+        }
+        return Ok(());
+    }
+
+    if ctx.rewrites_response()
+        && may_carry_body(session.req_header().method == Method::HEAD, response)
+    {
         response.remove_header("content-length");
     }
 
@@ -70,14 +89,15 @@ pub(super) async fn upstream_response_filter(
     Ok(())
 }
 
-/// Returns whether a plugin can still rewrite this response's body.
+/// Returns whether a response can still carry a body at all.
 ///
-/// Only such a response may lose its `content-length`. A response that carries no body — `HEAD`, a
-/// `204`/`304`, or an upstream that declared a length of zero — keeps the header: there is nothing to
-/// rewrite, no chunk will arrive, and a head with neither a length nor a transfer coding is a response
-/// the client reads until the connection closes.
-fn may_carry_body(session: &Session, response: &ResponseHeader) -> bool {
-    if session.req_header().method == Method::HEAD {
+/// Only such a response may lose its `content-length`, and only such a response gives a transform
+/// bytes to translate. A response that carries no body — `HEAD`, a `204`/`304`, or an upstream that
+/// declared a length of zero — keeps the header: there is nothing to rewrite, no chunk will arrive, and
+/// a head with neither a length nor a transfer coding is a response the client reads until the
+/// connection closes.
+pub(super) fn may_carry_body(head_request: bool, response: &ResponseHeader) -> bool {
+    if head_request {
         return false;
     }
     if matches!(response.status.as_u16(), 204 | 304) {

@@ -22,17 +22,20 @@ const VENDORS: [&str; 5] = ["openai", "anthropic", "gemini", "claude", "gpt"];
 /// `lib.rs` is deliberately absent: the crate root names the protocols the crate bridges, which is its
 /// purpose, not a vendor switch. `protocol/` and `provider/` as directories are exempt because a file
 /// named after a vendor lives there; a shared file inside them is listed by path, the same way
-/// `provider/route.rs` is.
-const VENDOR_FREE: [&str; 10] = [
+/// `provider/route.rs` and `route/` are.
+const VENDOR_FREE: [&str; 13] = [
     "schema.rs",
     "schema",
     "protocol.rs",
     "protocol/capabilities.rs",
     "protocol/facts.rs",
     "provider.rs",
+    "provider/endpoint.rs",
     "provider/route.rs",
     "filter.rs",
     "filter",
+    "route.rs",
+    "route",
     "stream",
 ];
 

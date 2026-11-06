@@ -31,11 +31,19 @@
 //!   so anything a plugin added there would corrupt the `Expect: 100-continue` handshake.
 //!
 //! The bodies of the hooks live in the submodules, one per direction: `request` decides whether the
-//! request is served at all, `body` moves the bytes, and `response` closes the request out. This file
-//! is the assembly — the `ProxyHttp` implementation itself must be one block, so each method is a
-//! delegation and the order above is the only thing it states.
+//! request is served at all, `body` moves the bytes, `response` closes the request out, and `llm`
+//! translates the two bodies of a provider route. This file is the assembly — the `ProxyHttp`
+//! implementation itself must be one block, so each method is a delegation and the order above is the
+//! only thing it states.
+//!
+//! A route that targets a provider changes two rows of the table: the body stages and the response
+//! stages do not run, because the bytes belong to a client protocol the policy cannot see. The request
+//! stages still run (authentication and rate limiting are header decisions), and so does the logging
+//! stage. Publication rejects a document that asks for the other combination; the hooks skip the
+//! stages anyway, so the guarantee does not depend on the compiler having refused it.
 
 mod body;
+pub(super) mod llm;
 mod request;
 mod response;
 

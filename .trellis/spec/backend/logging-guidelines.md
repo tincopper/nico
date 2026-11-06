@@ -78,6 +78,45 @@ Rules:
 | `http.method` | string | Request method |
 | `http.status` | u16 | Status written to the caller; `499` for a cancelled request nobody answered, `0` when nothing was written |
 | `body_bytes` | u64 | Request body bytes actually metered through the proxy |
+| `llm.protocol` | string | Client protocol an AI route serves, e.g. `openai.chat`; absent on every other route |
+| `llm.provider` | string | Provider kind an AI route speaks to, e.g. `openai`; absent on every other route |
+| `llm.model` | string | `logical -> physical` as the front-end reported it; absent until the client body was decoded |
+| `llm.stream` | bool | Whether the client asked for an event stream; present exactly when `llm.model` is |
+| `llm.mode` | string | `convert` or `passthrough`, as the route itself reports it |
+| `llm.model_map` | bool | Whether the route renames models; never the map's contents |
+| `llm.routes` | u64 | Provider routes the published generation covers |
+| `llm.protocols` / `llm.providers` | `?` debug | Registered built-in kind names, emitted once per process |
+| `error.stage` | string | Which publication stage refused a document: `document`, `plugin` or `llm` |
+
+### LLM request fields
+
+An AI route (`routes[].provider`) adds four fields to the one request record. The data plane reads
+them from the request context, never from a vendor:
+
+- `llm.protocol` and `llm.provider` are **publication facts**: the codec and adapter the plan paired
+  for the route. They exist for every request of the route, including one refused before its body was
+  read.
+- `llm.model` and `llm.stream` are **facts of the decoded body**: the model pair
+  (`logical -> physical`) and whether the caller asked for a stream. `llm.model` is written with `?`
+  (Debug), not `%`: its logical half is the caller's string, and Debug escapes a control character
+  instead of letting it shape the record. A `passthrough` route never
+  decodes a body and a body refused before encoding never reports them; both fields are absent rather
+  than empty/false. `false` would claim the caller asked for a complete answer when nothing was
+  decoded.
+- A route that is not an AI route emits none of the four. Do not write an empty value to keep a
+  column shape: the absence is the fact.
+- An AI route's request record never contains the prompt, the response body, a header value,
+  `Authorization` or a provider credential. The LLM seam's values (`LlmRequest`, `LlmPrepared`,
+  `LlmExchange`, `Endpoint`, `WireRequest`, the prepared exchange) have hand-written `Debug`
+  implementations that print names and lengths only.
+- Publication adds one `info!` line per AI route: `route_id`, `llm.protocol`, `llm.provider`,
+  `llm.mode` and `llm.model_map` (whether the route renames models, never the map's contents). It is
+  a lifecycle event, not a per-request one, and it is emitted **after** the snapshot store: a line
+  written while compiling would claim a publication that a later stage of the same document can still
+  refuse, and a retried document would repeat it.
+- A publication stage that refuses a document logs once, with `error.stage` naming the stage, the
+  revision, and the error's `Display`. The three stages share one line so a fourth cannot forget to
+  report the revision or to mark the generation degraded.
 
 ### Event shape
 

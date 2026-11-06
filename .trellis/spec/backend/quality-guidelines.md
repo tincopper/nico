@@ -33,11 +33,14 @@ run doc tests.
 Per-feature matrix (features must be additive and independent):
 
 ```bash
-cargo check --no-default-features
-cargo check --features llm
-cargo check --features llm,builtin-plugins,config-etcd
-cargo check --all-features
+cargo check --workspace --no-default-features
+cargo check --workspace --all-features
 ```
+
+No crate declares a Cargo feature today. The optional pieces that will (`config-etcd`,
+`config-nacos`) arrive as their own crates behind their own feature, and each one adds a line to the
+matrix at that moment. A line naming a feature nothing declares is a gate nobody can run, so it is
+not written ahead of the crate that needs it.
 
 ---
 

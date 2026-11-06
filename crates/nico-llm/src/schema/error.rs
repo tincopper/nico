@@ -11,9 +11,9 @@ use nico_core::ErrorCategory;
 use serde::{Deserialize, Serialize};
 
 /// Longest stable error code accepted, in bytes.
-const MAX_CODE_BYTES: usize = 64;
+pub const MAX_CANONICAL_CODE_BYTES: usize = 64;
 /// Longest caller-safe message accepted, in bytes.
-const MAX_MESSAGE_BYTES: usize = 256;
+pub const MAX_CANONICAL_MESSAGE_BYTES: usize = 256;
 /// Longest provider error code accepted, in bytes.
 ///
 /// Shared with the adapters that decide whether to attach a provider's own code: the bound the
@@ -21,6 +21,14 @@ const MAX_MESSAGE_BYTES: usize = 256;
 pub(crate) const MAX_PROVIDER_CODE_BYTES: usize = 128;
 /// Longest request text a diagnostic error echoes, in bytes.
 const MAX_EXCERPT_BYTES: usize = 64;
+/// Longest wire token accepted, in bytes.
+///
+/// A model name, a tool name and a tool-call id are the same kind of value: a short identifier the
+/// caller or the provider chooses, retained for the life of a request, recorded in a log field and
+/// sometimes put in a URL. They share one number because they share one failure mode — a caller-written
+/// megabyte that costs memory and log volume while addressing nothing — and one bound is what stops
+/// the three from drifting apart.
+pub const MAX_TOKEN_BYTES: usize = 256;
 /// Inclusive range of HTTP statuses a canonical error may carry.
 const ERROR_STATUS_RANGE: std::ops::RangeInclusive<u16> = 400..=599;
 
@@ -241,7 +249,7 @@ impl CanonicalError {
     /// # Errors
     /// Returns the same variants as [`CanonicalError::try_new`].
     pub fn validate(&self) -> Result<(), SchemaError> {
-        validate_bounded("canonical_error.code", &self.code, MAX_CODE_BYTES)?;
+        validate_bounded("canonical_error.code", &self.code, MAX_CANONICAL_CODE_BYTES)?;
         if !self
             .code
             .bytes()
@@ -252,7 +260,11 @@ impl CanonicalError {
                 value: excerpt(&self.code),
             });
         }
-        validate_bounded("canonical_error.message", &self.message, MAX_MESSAGE_BYTES)?;
+        validate_bounded(
+            "canonical_error.message",
+            &self.message,
+            MAX_CANONICAL_MESSAGE_BYTES,
+        )?;
         if !ERROR_STATUS_RANGE.contains(&self.http_status) {
             return Err(SchemaError::OutOfRange {
                 field: "canonical_error.http_status",
@@ -344,7 +356,11 @@ pub(super) fn excerpt(value: &str) -> String {
     excerpt
 }
 
-fn validate_bounded(field: &'static str, value: &str, limit: usize) -> Result<(), SchemaError> {
+pub(super) fn validate_bounded(
+    field: &'static str,
+    value: &str,
+    limit: usize,
+) -> Result<(), SchemaError> {
     if value.is_empty() {
         return Err(SchemaError::Empty { field });
     }

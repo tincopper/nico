@@ -37,6 +37,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
+    ReadError,
+    file::read_bounded,
     source::{ConfigEvent, ConfigSource, ConfigSourceError, ConfigVersion, ConfigWatch},
     stream::{SourceWatch, WatchItem},
 };
@@ -147,24 +149,22 @@ struct Inner {
 
 impl Inner {
     async fn load(&self) -> Result<ConfigVersion, ConfigSourceError> {
-        let path = &self.config.path;
         let limit = self.config.max_bytes;
-
-        // Size check before reading: an oversized document must never be buffered in full.
-        let metadata = tokio::fs::metadata(path).await.map_err(unavailable)?;
-        let size = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
-        if size > limit {
-            return Err(ConfigSourceError::TooLarge { size, limit });
-        }
-
-        let bytes = tokio::fs::read(path).await.map_err(unavailable)?;
-        // Re-check the real length: the file may have grown between `metadata` and `read`.
-        if bytes.len() > limit {
-            return Err(ConfigSourceError::TooLarge {
-                size: bytes.len(),
-                limit,
-            });
-        }
+        // The ceiling is applied by the read itself, on a blocking thread: a length checked before a
+        // read says nothing about what the read will pull in, and the path may not even name a regular
+        // file. `tokio::fs` would make this same hop internally, so it is taken explicitly and the
+        // rule lives in one place both this source and the credential resolver use.
+        let path = self.config.path.clone();
+        let bytes = tokio::task::spawn_blocking(move || read_bounded(&path, limit))
+            .await
+            .map_err(unavailable)?
+            .map_err(|error| match error {
+                ReadError::TooLarge { at_least, limit } => ConfigSourceError::TooLarge {
+                    size: at_least,
+                    limit,
+                },
+                other => unavailable(other),
+            })?;
         std::str::from_utf8(&bytes).map_err(|_| ConfigSourceError::NotUtf8)?;
 
         // Saturating so an exhausted counter cannot panic; reaching it would take 2^64 loads.
@@ -339,7 +339,7 @@ async fn wait_for_signal(signal: Option<&mut tokio::signal::unix::Signal>) {
 /// The body of a watch task: translate triggers into reloads until cancelled or dropped.
 async fn run_watch(
     source: Arc<Inner>,
-    mut sink: EventSink,
+    sink: EventSink,
     token: CancellationToken,
     mut triggers: mpsc::Receiver<()>,
     mut watchers: WatchTriggers,
@@ -362,46 +362,31 @@ async fn run_watch(
             Ok(version) => Ok(ConfigEvent::Snapshot(version)),
             Err(error) => Err(error),
         };
-        if !sink.send(item) {
+        if !sink.send(item).await {
             // The stream was dropped while the reload was in flight.
             break;
         }
     }
 }
 
-/// The bounded output side of a watch, including the resync-collapse rule.
+/// The bounded output side of a watch.
+///
+/// It holds no state of its own: what it delivers is the state of the world at the moment it ran —
+/// a snapshot, or the failure that prevented one — and the pipeline coalesces from there. A full
+/// channel therefore means "wait", not "remember this for later": an item held back until the next
+/// trigger is the last change of a burst, and a burst has no next trigger to deliver it on.
 struct EventSink {
     sender: mpsc::Sender<WatchItem>,
-    pending_resync: bool,
 }
 
 impl EventSink {
     fn new(sender: mpsc::Sender<WatchItem>) -> Self {
-        Self {
-            sender,
-            pending_resync: false,
-        }
+        Self { sender }
     }
 
-    /// Returns `false` when the receiver is gone, meaning the subscriber dropped the stream.
-    fn send(&mut self, item: WatchItem) -> bool {
-        let item = if self.pending_resync {
-            // One resync supersedes every event that could not be delivered: the pipeline reloads
-            // the whole document instead of replaying history.
-            self.pending_resync = false;
-            Ok(ConfigEvent::ResyncRequired)
-        } else {
-            item
-        };
-
-        match self.sender.try_send(item) {
-            Ok(()) => true,
-            Err(mpsc::error::TrySendError::Full(_dropped)) => {
-                self.pending_resync = true;
-                true
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => false,
-        }
+    /// Delivers one item, waiting for capacity. Returns `false` when the receiver is gone.
+    async fn send(&self, item: WatchItem) -> bool {
+        self.sender.send(item).await.is_ok()
     }
 }
 

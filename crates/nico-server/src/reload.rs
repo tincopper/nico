@@ -13,9 +13,9 @@
 //!   watch leaves the published snapshot in service, marks the pipeline degraded and retries with
 //!   backoff. The generation counter never moves during a failure.
 //! - **Publication is atomic, and one generation is one value.** A complete [`RuntimeSnapshot`](nico_core::RuntimeSnapshot) is
-//!   built off the request path, together with the plugin plan compiled from the same document;
-//!   `publish_state` hands both to the request path and to the status handle operators read. A reader
-//!   holding the previous `Arc` keeps a consistent view for its whole lifetime.
+//!   built off the request path, together with the plugin plan and the LLM plan compiled from the same
+//!   document; `publish_state` hands all of them to the request path and to the status handle operators
+//!   read. A reader holding the previous `Arc` keeps a consistent view for its whole lifetime.
 //!
 //! Everything that can be cancelled is cancellable: the watch, the debounce timer, the backoff wait
 //! and the initial load all select on the shutdown token, so [`Reloader::run`] returns promptly and
@@ -40,6 +40,8 @@ use nico_http::HttpStateHandle;
 use nico_plugins::PluginRuntime;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
+
+use crate::llm::LlmRuntime;
 
 mod error;
 mod pacing;
@@ -149,6 +151,9 @@ pub struct Reloader {
     /// The plugin compiler, which also keeps the state that outlives a publication — a rate limiter's
     /// buckets. It is created by the process assembly, so every generation of one process shares it.
     runtime: Arc<PluginRuntime>,
+    /// The LLM registries and the credential resolver, shared by every generation for the same reason:
+    /// a codec and an adapter hold configuration, and a key is re-read on each publication.
+    llm: Arc<LlmRuntime>,
     cache: Option<CacheStore>,
     limits: ReloadLimits,
     parse_limits: ParseLimits,
@@ -169,11 +174,37 @@ impl Reloader {
     /// and the one value the request path reads — because `publish_state` writes them together.
     /// `runtime` is shared with the process rather than created here, because the bucket tables inside
     /// it must survive every reload this reloader performs and nothing else in the process knows them.
+    ///
+    /// The LLM runtime is the built-in one ([`LlmRuntime::builtin`]): the codecs, adapters and
+    /// credential resolver this build serves, created here so a pipeline that does not care can be
+    /// built without naming them. [`Reloader::with_llm`] is the seam that injects another one.
     #[must_use]
     pub fn new(
         source: Arc<dyn ConfigSource>,
+        publication: Publication,
+        runtime: Arc<PluginRuntime>,
+        settings: ReloadSettings,
+    ) -> Self {
+        Self::with_llm(
+            source,
+            publication,
+            runtime,
+            Arc::new(LlmRuntime::builtin()),
+            settings,
+        )
+    }
+
+    /// Creates a reloader that compiles LLM routes with `llm`.
+    ///
+    /// The registries and the resolver are process-wide state, so the process creates them once and
+    /// hands the same value to the reloader it builds. A test uses this constructor to compile a
+    /// document against a resolver it owns, instead of mutating the environment.
+    #[must_use]
+    pub fn with_llm(
+        source: Arc<dyn ConfigSource>,
         Publication { status, requests }: Publication,
         runtime: Arc<PluginRuntime>,
+        llm: Arc<LlmRuntime>,
         ReloadSettings {
             cache,
             limits,
@@ -187,6 +218,7 @@ impl Reloader {
             handle: status,
             state: requests,
             runtime,
+            llm,
             cache,
             limits,
             parse_limits,

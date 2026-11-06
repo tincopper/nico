@@ -49,6 +49,7 @@ fn a_context_that_never_began_reports_nothing() {
     assert!(ctx.destination().is_none());
     assert!(ctx.client_ip().is_none());
     assert!(ctx.body_limit().is_none());
+    assert!(ctx.response_limit().is_none());
     assert_eq!(ctx.body_bytes(), 0);
     assert!(ctx.error().is_none());
     assert!(ctx.identity().is_none());
@@ -103,6 +104,11 @@ fn a_route_override_tightens_the_body_limit_and_the_deadline() {
     let (ctx, now) = begin(TIGHT_ROUTE);
 
     assert_eq!(ctx.body_limit(), Some(512));
+    assert_eq!(
+        ctx.response_limit(),
+        Some(nico_core::DEFAULT_MAX_RESPONSE_BYTES),
+        "a route that sets no response ceiling inherits the document's"
+    );
     assert_eq!(ctx.deadline(), Some(now + Duration::from_millis(100)));
 }
 

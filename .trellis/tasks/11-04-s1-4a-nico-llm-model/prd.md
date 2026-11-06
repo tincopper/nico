@@ -48,7 +48,8 @@
 
 ### R4：OpenAI 上游 provider 适配
 
-- `provider/openai.rs` 实现 `Provider`：`endpoint(route)` 生成 `Endpoint`（`Destination`、path、headers），`encode(route, request)` 生成 wire body，二者由 `Exchange` 组装为 `WireRequest`；chat 交换的 method 恒为 `POST`，由数据面写出。凭证从 `credential_ref` materialize 为 `Authorization`；`model_map` 把逻辑模型映射为物理模型；`decode_response`/`stream_decoder` 把 OpenAI wire 转 canonical。
+- `provider/openai.rs` 实现 `Provider`：`endpoint(route)` 生成 `Endpoint`（`Destination`、path、headers），`encode(route, request)` 生成 wire body，二者由 `Exchange` 组装为 `WireRequest`；method 不在 `WireRequest` 里：请求行由数据面写出，动词沿用调用方（chat 请求按客户端协议本就是 `POST`，passthrough 必须字节一致）。凭证从 `credential_ref` materialize 为 `Authorization`；`model_map` 把逻辑模型映射为物理模型；`decode_response`/`stream_decoder` 把 OpenAI wire 转 canonical。
+- `Provider::native_protocol()` 报出 provider 自己的 wire 协议（OpenAI：`openai.chat`），供发布期判断 `mode: passthrough` 是否合法；`Provider::error_for_status(status)` 只凭状态生成 canonical 错误（不读 body），与 `decode_response` 的失败路径共用同一张状态表——响应头在 body 之前写出，所以失败状态必须能在没有 body 时映射；`Exchange::error_for_status` 暴露同一结果给响应转换。
 - provider **不拥有** HTTP/TLS/预算：连接、超时、TLS 策略仍归 `nico-http`。
 - provider 4xx/5xx → `CanonicalError`（保留稳定 code 与类别），不把 provider body 原样泄露给客户端；凭证不写日志。
 - `Provider` 单例无 per-request 状态；`ProviderStream` 每次响应新建。
@@ -58,8 +59,10 @@
 - `routes[].protocol` 只对 `provider` 路由必填（例如 `openai.chat`）；发布期按 codec 注册表校验；未知 protocol/provider kind 发布失败。
 - AI 路由（`RouteTarget::Provider`）在路由匹配后、路由请求插件后**有界缓冲**请求体，上限 `request.max_body_bytes`；canonical decode 一次；`WireRequest` 由数据面发往 `Endpoint::destination`。
 - convert 路由在发布期构建 `Arc<Exchange>`；`Exchange::prepare` 先取 `endpoint`（只读路由，不依赖 body），再对有界缓冲的 body decode 一次并 encode；`mode: passthrough` 的路由不构建 `Exchange`，数据面按字节直通。
-- 响应体转换：`nico-http` 定义协议无关的 per-request `ResponseTransform`（`push`/`finish`，输入/输出字节），`HttpContext` 持有；LLM 路由在响应头/响应体钩子里安装并驱动它。
-- 非流式响应有界缓冲：新增 `request.max_response_bytes`（默认 8 MiB，路由只能收紧）；超限 → 502 + 稳定 code `upstream_response_too_large`。SSE 永不整块缓冲。
+- 两条 front-end 在发布期构造：`ConvertRoute::new(Arc<Exchange>)` 与 `PassthroughRoute::try_new(route, provider)`。后者要求 route 的 mode 是 passthrough、provider kind 与 route 相符、route 的 `protocol` 等于 `provider.native_protocol()`，并编译出 endpoint；不满足即发布失败（`ExchangeBuildError`），所以已发布的 passthrough 路由不会把字节送给一个解析别的协议的 peer。
+- 转换路由的请求期拒绝保留**客户端 codec 的错误正文**：`ConvertRoute::prepare` 把 `Exchange::error_reply` 的 `ClientReply`（状态、code、类别、body）装进 `HttpError::LlmRejected`，由数据面唯一 writer 写出；状态与 `x-nico-error-code` 来自 canonical error，正文原样写回，不重新包一层网关 envelope。codec 连自己的错误 envelope 都编不出来时才是 500（网关缺陷）。
+- 响应体转换：`nico-http` 定义协议无关的 per-request `ResponseTransform`（`head`/`push`/`finish`，输入/输出字节），`HttpContext` 持有；LLM 路由在响应头/响应体钩子里安装并驱动它。convert 的 transform 对 2xx 按客户端的 stream 标志选择逐块翻译或整块缓冲，对**非 2xx 一律缓冲**（失败文档不是事件流）；缓冲的答复在写头前按声明长度、在 body 阶段按 `max_response_bytes` 计。
+- 非流式响应有界缓冲：新增 `request.max_response_bytes`（默认 8 MiB，路由只能收紧）。响应**声明**的长度超限 → 写头前 502 + 稳定 code `upstream_response_too_large`；长度未知（chunked）时状态行已提交，超限只能结束流并记 cancelled，不伪造第二个状态。SSE 永不整块缓冲。
 - 插件顺序：LLM 路由允许全局/路由的请求头阶段插件（认证/限流）；body/response 阶段插件在 LLM 路由上 1.4a 不支持（顺序与语义留到后续），日志阶段照常。同一路由同时声明插件 `buffers_body` 与 AI 路由缓冲时发布期拒绝。
 - raw 模式：`routes[].mode: passthrough`（客户端协议等于 provider 原生协议）跳过 canonical，字节直通；默认 `convert`。
 - **上游请求头的时机**：provider 的 path/headers 必须由路由/provider 配置决定，不能依赖请求体；当前 OpenAI/Anthropic/Responses 的 endpoint 是固定的，满足这一点。Gemini 的 path 含模型名，属于 1.4b 的专门设计项，不在本任务假装已解决。
@@ -75,22 +78,23 @@
 
 - `schema/` 的 golden JSON fixtures；每个形状的 round-trip/拒绝测试。
 - OpenAI codec：请求/响应/流式 decode→encode 的语义 round-trip；未知字段保留。
-- provider：用 mock upstream 断言 `Endpoint`/`WireRequest` 的 path/headers/body、`decode_response`/`stream` 的 canonical 事件。
+- provider：用 mock upstream 断言 `Endpoint`/`WireRequest` 的 path/headers/body、`decode_response`/`stream` 的 canonical 事件；`error_for_status` 的每一行与 `decode_response` 的失败路径对同一状态给出相同结果。
+- front-end：`ConvertRoute`/`PassthroughRoute` 的 endpoint/protocol/provider/headers、prepare 的 body 与模型映射、请求期拒绝的客户端正文、transform 的 2xx JSON/SSE、provider 429/401、任意分片、`[DONE]`、缓冲上限与 head 失败。
 - 端到端：OpenAI client → OpenAI provider（convert 与 passthrough 两种模式）；8 MiB body 分片；SSE 每 200 ms 一个事件；首字节后不重试。
 - 结构测试：`schema/`、`protocol.rs`、`provider.rs`、`provider/route.rs`、`filter.rs`、`filter/`、`stream/` 无 vendor 名/switch；`cargo tree -p nico-http | grep nico-llm` 无输出。
 - `(client protocol × provider)` 的 matrix harness 在 1.4a 先跑 OpenAI×OpenAI，1.4b 填满其余组合。
 
 ## Acceptance Criteria
 
-- [ ] `nico-llm` 建立，`schema`/`protocol`/`provider`/`filter` 的边界与依赖方向成立。
-- [ ] canonical 形状有 fixture/round-trip；未知字段保留；`RawJson` 使用范围受限。
-- [ ] OpenAI Chat codec 的请求/响应/SSE 语义 round-trip 通过；任意分片/UTF-8 边界安全。
-- [ ] OpenAI provider 的 prepare/decode/stream 通过 mock；凭证注入、模型映射、错误映射正确。
-- [ ] `routes[].protocol` 发布期校验；未知 protocol/provider 失败；`mode: passthrough` 字节一致。
-- [ ] AI 路由有界请求体缓冲（`request.max_body_bytes`）与非流式响应缓冲（`request.max_response_bytes`）；超限分别为 413/502。
-- [ ] 端到端 OpenAI→OpenAI（convert + passthrough）、SSE、错误、日志字段有测试。
-- [ ] 插件 `buffers_body` 与 AI 路由缓冲冲突在发布期拒绝；LLM 路由的 body/response 插件限制有测试。
-- [ ] 五条基线全绿；`nico-core` 不新增网络/密码学依赖；`nico-http` 不依赖 `nico-llm`。
+- [x] `nico-llm` 建立，`schema`/`protocol`/`provider`/`filter` 的边界与依赖方向成立。
+- [x] canonical 形状有 fixture/round-trip；未知字段保留；`RawJson` 使用范围受限。
+- [x] OpenAI Chat codec 的请求/响应/SSE 语义 round-trip 通过；任意分片/UTF-8 边界安全。
+- [x] OpenAI provider 的 prepare/decode/stream 通过 mock；凭证注入、模型映射、错误映射正确。
+- [x] `routes[].protocol` 发布期校验；未知 protocol/provider 失败；`mode: passthrough` 字节一致。
+- [x] AI 路由有界请求体缓冲（`request.max_body_bytes`）与非流式响应缓冲（`request.max_response_bytes`）：请求体超限 413；非流式响应声明长度超限时写头前 502，长度未知时在头已提交后切流（不伪造第二个状态，见 `pingora-guidelines.md`）。
+- [x] 端到端 OpenAI→OpenAI（convert + passthrough）、SSE、错误、日志字段有测试。
+- [x] 插件 `buffers_body` 与 AI 路由缓冲冲突在发布期拒绝；LLM 路由的 body/response 插件限制有测试。
+- [x] 五条基线全绿；`nico-core` 不新增网络/密码学依赖；`nico-http` 不依赖 `nico-llm`。
 
 ## Out of Scope
 

@@ -107,10 +107,12 @@ mod load {
         let source =
             LocalFileSource::new(config(&path).with_max_bytes(16)).expect("configuration is valid");
 
+        // The reader stops one byte past the ceiling instead of buffering the file to learn its exact
+        // length, so the reported size is a lower bound: the first byte it refused to accept.
         assert_eq!(
             source.load().await.expect_err("the file is too large"),
             ConfigSourceError::TooLarge {
-                size: DOC_A.len(),
+                size: 17,
                 limit: 16
             }
         );
@@ -331,6 +333,62 @@ mod watch {
             .status()
             .expect("kill runs");
         assert!(status.success(), "sending SIGHUP must succeed");
+    }
+}
+
+mod sink {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_full_channel_delivers_the_item_instead_of_dropping_it() {
+        // A full channel is backpressure, not a reason to keep the item for "the next trigger": a burst
+        // of file events has no next trigger, so an item held back is the last change of the burst and
+        // the configuration never reaches the pipeline.
+        let (sender, mut receiver) = mpsc::channel::<WatchItem>(WATCH_CHANNEL_CAPACITY);
+        let sink = EventSink::new(sender);
+        for _ in 0..WATCH_CHANNEL_CAPACITY {
+            assert!(
+                sink.send(Err(ConfigSourceError::NotUtf8)).await,
+                "a drained channel accepts every item"
+            );
+        }
+
+        // The next send must wait for capacity, and then land: nothing is dropped and nothing is
+        // deferred.
+        let waiting = tokio::spawn(async move { sink.send(Err(ConfigSourceError::NotUtf8)).await });
+        tokio::task::yield_now().await;
+        assert!(
+            !waiting.is_finished(),
+            "a full channel makes the send wait rather than return early"
+        );
+
+        assert!(receiver.recv().await.is_some(), "the consumer drains one");
+        assert!(
+            waiting.await.expect("the send task does not panic"),
+            "the waiting item is delivered"
+        );
+        for _ in 0..WATCH_CHANNEL_CAPACITY {
+            assert!(
+                receiver.try_recv().is_ok(),
+                "every accepted item is on the channel"
+            );
+        }
+        assert!(
+            receiver.try_recv().is_err(),
+            "nothing was queued twice or invented"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_closed_channel_reports_that_the_subscriber_is_gone() {
+        let (sender, receiver) = mpsc::channel::<WatchItem>(WATCH_CHANNEL_CAPACITY);
+        let sink = EventSink::new(sender);
+        drop(receiver);
+
+        assert!(
+            !sink.send(Err(ConfigSourceError::NotUtf8)).await,
+            "a dropped watch ends the task instead of retrying forever"
+        );
     }
 }
 

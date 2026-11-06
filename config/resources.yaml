@@ -7,15 +7,29 @@ apiVersion: gateway/v1
 request:
   # Any u32: 0 means "accept no request body". The default document stays within 1 MiB.
   max_body_bytes: 1048576
+  # Optional ceiling on a buffered (non-streaming) response body. The default is 8 MiB; a route may
+  # only tighten it (a route value above this one is a publication failure), and an event stream is
+  # never buffered, so it is not bounded by this. A declared length over the bound is answered
+  # `502 upstream_response_too_large` before the head is written; a chunked answer is metered in the
+  # body stage, where the status line is already committed.
+  # max_response_bytes: 8388608
   # 1..=600000 milliseconds.
   timeout_ms: 30000
 
 # LLM providers. Credentials are referenced, never written here: `env:VAR` or `file:/path`.
+# The reference below is `env:OPENAI_API_KEY`, so a local run needs that variable set; a document
+# whose credential cannot be read is refused as a whole (see CONTRIBUTING.md).
 providers:
   - name: openai-primary
     kind: openai
     base_url: https://api.openai.com
     credential_ref: env:OPENAI_API_KEY
+    # Optional logical → physical model names. A caller writes `fast`; this endpoint is asked for
+    # the name on the right. Without a map the caller's name is sent unchanged. Anything else that
+    # differs between two endpoints — base URL, credential, timeout — needs a second provider entry,
+    # because that is configuration of the endpoint rather than of one request.
+    model_map:
+      fast: gpt-4o-mini
 
 # Plain HTTP upstreams. The scheme is `http` or `https`; the port is required.
 upstreams:
@@ -102,10 +116,19 @@ routes:
     path_prefix: /api/
     upstream: api-backend
     plugins: [public-jwt, api-quota]
+  # A provider route converts between the client protocol and the provider's: `protocol` names the
+  # client protocol and is required here, because it is what selects the codec. `mode: convert` (the
+  # default) decodes the caller's body and re-encodes it; `mode: passthrough` forwards the bytes
+  # unchanged and is only meaningful when both sides speak the same protocol. Both fields, and the
+  # response bound below, are refused on an upstream route: an upstream has no exchange to convert.
   - id: llm-chat
     path_prefix: /v1/chat/
     provider: openai-primary
+    protocol: openai.chat
     timeout_ms: 120000
+    # A route may only tighten `request.max_response_bytes`; this route halves the 8 MiB default,
+    # which is the value the memory arithmetic uses for a buffered (non-streaming) answer here.
+    max_response_bytes: 4194304
   # A buffered route: `buffers_body` on any plugin in the chain puts this route, and only this route,
   # into whole-body mode. The bound stays the document's or tighter — a route can tighten a budget,
   # never widen it — so it is written here only to state the value the memory arithmetic uses.

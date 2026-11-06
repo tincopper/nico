@@ -88,9 +88,32 @@ pub fn validate_host(host: &str) -> Result<(), HostError> {
     Ok(())
 }
 
+/// Reports whether two hosts name the same destination.
+///
+/// An HTTP authority is case-insensitive: `API.example` and `api.example` reach the same server, so a
+/// document that lists both has listed one route twice. The document model refuses such a duplicate
+/// and the router chooses a route with the same comparison, which is why the rule lives here beside
+/// [`validate_host`] — this module already owns "one rule, shared across crates", and two spellings of
+/// *this* one is how a validator ends up promising a refusal the router does not agree with.
+#[must_use]
+pub fn hosts_match(left: &str, right: &str) -> bool {
+    left.eq_ignore_ascii_case(right)
+}
+
+/// Returns the key a host is deduplicated under.
+///
+/// [`hosts_match`] is the comparison; a set needs a value. ASCII-lowercasing is that comparison's
+/// canonical form, and a test pins the two together: `hosts_match(a, b)` must equal
+/// `host_key(a) == host_key(b)` for every pair, or a document would be refused as a duplicate the
+/// router routes as one route, or accepted as distinct and routed as another.
+#[must_use]
+pub fn host_key(host: &str) -> String {
+    host.to_ascii_lowercase()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{HostError, MAX_HOST_BYTES, validate_host};
+    use super::{HostError, MAX_HOST_BYTES, host_key, hosts_match, validate_host};
 
     #[test]
     fn a_name_is_a_host() {
@@ -127,6 +150,29 @@ mod tests {
         assert_eq!(validate_host(&at_bound), Ok(()));
         let over_bound = "a".repeat(MAX_HOST_BYTES + 1);
         assert_eq!(validate_host(&over_bound), Err(HostError::TooLong));
+    }
+
+    #[test]
+    fn the_comparison_and_the_key_are_the_same_rule() {
+        let cases = [
+            ("api.example", "api.example"),
+            ("API.example", "api.example"),
+            ("Api.Example.", "api.example."),
+            ("api.example", "api.example."),
+            ("127.0.0.1", "127.0.0.1"),
+        ];
+        for (left, right) in cases {
+            assert_eq!(
+                hosts_match(left, right),
+                host_key(left) == host_key(right),
+                "`{left}` vs `{right}`: the comparison and the key must agree"
+            );
+        }
+        assert!(hosts_match("API.example", "api.example"));
+        assert!(
+            !hosts_match("api.example", "api.example."),
+            "a trailing dot is a different name"
+        );
     }
 
     #[test]

@@ -105,13 +105,22 @@ pub(super) fn peer_ip(session: &Session) -> Option<IpAddr> {
 ///
 /// Precedence is the contract:
 ///
-/// 1. a destination a filter recorded — that filter owns the target kind the route named
-///    (`nico-llm` for a provider), and this crate must not second-guess it;
-/// 2. the document upstream the route names, if the document has it;
-/// 3. a refusal. A provider target with no filter is [`HttpError::ProviderNotConfigured`], because
-///    this crate does not know provider semantics and guessing an address would be worse than
-///    failing; an upstream name the document lacks is [`HttpError::UpstreamFailed`], which reference
-///    validation makes unreachable for a published document.
+/// 1. a destination a filter recorded — that filter owns the target kind the route named, and this
+///    crate must not second-guess it;
+/// 2. the LLM front-end the route was published with, which resolved the provider's address when the
+///    document was compiled — the same decision, made earlier and by the crate that understands the
+///    provider;
+/// 3. the document upstream the route names, if the document has it;
+/// 4. a refusal. A provider target with no front-end is [`HttpError::ProviderNotConfigured`], because
+///    this crate does not know provider semantics and guessing an address would be worse than failing;
+///    an upstream name the document lacks is [`HttpError::UpstreamFailed`], which reference validation
+///    makes unreachable for a published document.
+///
+/// The two are ordered, never mixed. A recorded destination wins outright, and step 2's headers are
+/// written to whichever peer won — so the day a filter can record a destination for a *provider* route,
+/// that filter must also decide what credential goes with it. Nothing exposes that today
+/// (`PluginContext` has no destination setter, and the only writer is the crate's own request hook), and
+/// this note is the condition under which that stops being true.
 ///
 /// # Errors
 /// Returns the failure that explains why no destination exists. It is never a fallback: the request
@@ -119,6 +128,9 @@ pub(super) fn peer_ip(session: &Session) -> Option<IpAddr> {
 pub(super) fn destination(ctx: &HttpContext) -> Result<Destination, HttpError> {
     if let Some(destination) = ctx.destination() {
         return Ok(destination.clone());
+    }
+    if let Some(llm) = ctx.llm() {
+        return Ok(llm.route().destination().clone());
     }
 
     let Some(snapshot) = ctx.snapshot() else {
