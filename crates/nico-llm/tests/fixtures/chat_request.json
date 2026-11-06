@@ -1,0 +1,90 @@
+{
+  "model": "gpt-4o-mini",
+  "conversation": [
+    {
+      "type": "message",
+      "data": {
+        "role": "system",
+        "content": [
+          { "type": "text", "data": "Answer in one sentence." }
+        ]
+      }
+    },
+    {
+      "type": "message",
+      "data": {
+        "role": "user",
+        "content": [
+          { "type": "text", "data": "What is in the image?" },
+          {
+            "type": "image",
+            "data": {
+              "type": "url",
+              "data": "https://example.com/two-cats.png"
+            }
+          },
+          {
+            "type": "image",
+            "data": {
+              "type": "base64",
+              "data": {
+                "media_type": "image/png",
+                "data": [137, 80, 78, 71]
+              }
+            }
+          },
+          {
+            "type": "file",
+            "data": {
+              "media_type": "text/plain",
+              "data": [104, 105]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "tool_call",
+      "data": {
+        "id": "call_1",
+        "name": "describe",
+        "arguments": { "detail": "brief" }
+      }
+    },
+    {
+      "type": "tool_result",
+      "data": {
+        "id": "call_1",
+        "content": [
+          { "type": "text", "data": "two cats" }
+        ]
+      }
+    },
+    {
+      "type": "reasoning",
+      "data": {
+        "text": "The image shows two cats."
+      }
+    }
+  ],
+  "tools": [
+    {
+      "name": "describe",
+      "description": "Describe an image",
+      "parameters": {
+        "type": "object",
+        "properties": { "detail": { "type": "string" } },
+        "required": ["detail"]
+      }
+    }
+  ],
+  "tool_choice": { "type": "tool", "data": "describe" },
+  "sampling": {
+    "temperature": 0.2,
+    "top_p": 0.9,
+    "max_tokens": 256
+  },
+  "response_format": { "type": "json_object" },
+  "stream": true,
+  "x_vendor_trace": { "hint": "fast" }
+}

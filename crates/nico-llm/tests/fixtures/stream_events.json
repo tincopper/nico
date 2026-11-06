@@ -1,0 +1,70 @@
+[
+  {
+    "type": "start",
+    "data": {
+      "id": "chatcmpl_2",
+      "model": "gpt-4o-mini"
+    }
+  },
+  {
+    "type": "reasoning_delta",
+    "data": "Thinking"
+  },
+  {
+    "type": "text_delta",
+    "data": "Two "
+  },
+  {
+    "type": "text_delta",
+    "data": "cats."
+  },
+  {
+    "type": "tool_call_start",
+    "data": {
+      "id": "call_3",
+      "name": "describe"
+    }
+  },
+  {
+    "type": "tool_call_delta",
+    "data": {
+      "id": "call_3",
+      "arguments": "{\"detail\":"
+    }
+  },
+  {
+    "type": "tool_call_delta",
+    "data": {
+      "id": "call_3",
+      "arguments": "\"brief\"}"
+    }
+  },
+  {
+    "type": "tool_call_end",
+    "data": { "id": "call_3" }
+  },
+  {
+    "type": "usage",
+    "data": {
+      "reported": {
+        "input": 10,
+        "output": 2
+      }
+    }
+  },
+  {
+    "type": "finish",
+    "data": "tool_calls"
+  },
+  {
+    "type": "error",
+    "data": {
+      "category": "upstream",
+      "code": "provider_overloaded",
+      "message": "the provider is temporarily overloaded",
+      "http_status": 503,
+      "retryable": true,
+      "provider_code": "server_error"
+    }
+  }
+]

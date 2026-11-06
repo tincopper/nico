@@ -955,6 +955,7 @@ dependencies = [
  "arc-swap",
  "proptest",
  "serde",
+ "serde_json",
  "serde_norway",
  "sha2",
  "thiserror",
@@ -972,6 +973,17 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "nico-llm"
+version = "0.0.0"
+dependencies = [
+ "nico-core",
+ "nico-http",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

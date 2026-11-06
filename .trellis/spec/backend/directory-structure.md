@@ -89,15 +89,15 @@ nico/
     │   └── src/
     │       ├── lib.rs
     │       ├── schema.rs        # canonical shape root; schema/ split by data boundary
-    │       ├── schema/          # request/conversation/tool/response/stream/usage/error/model
-    │       ├── protocol.rs      # ClientCodec trait + registry
-    │       ├── protocol/        # openai_chat, openai_responses, anthropic, gemini
+    │       ├── schema/          # request/conversation/tool/extension/response/stream/usage/error/model
+    │       ├── protocol.rs      # ClientCodec trait + ClientReply (the status a client protocol answers with) + registry
+    │       ├── protocol/        # facts.rs (framework-free request/response facts), then openai_chat, openai_responses, anthropic, gemini
     │       ├── provider.rs      # Provider/ProviderStream traits + registry
-    │       ├── provider/        # openai, anthropic, gemini: wire ↔ canonical
+    │       ├── provider/        # route.rs (compiled route facts), then openai, anthropic, gemini: wire ↔ canonical
     │       ├── stream/
     │       │   └── sse.rs       # shared SSE framing, no vendor semantics
-    │       ├── filter.rs        # route exchange: decode → endpoint/encode → response/stream
-    │       └── model.rs         # logical ↔ physical model mapping
+    │       ├── filter.rs        # route exchange: endpoint → decode → encode → response/stream
+    │       └── filter/          # error.rs (failure vocabulary), stream.rs (per-response encoder); model map lives on provider/route.rs
     ├── nico-config/         # ConfigSource trait, local source, LKG cache, fakes
     │   └── src/
     │       ├── lib.rs

@@ -16,6 +16,8 @@ thiserror.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# Locks the serialized spelling of `ErrorCategory`; no production dependency on it.
+serde_json.workspace = true
 
 [lints]
 workspace = true

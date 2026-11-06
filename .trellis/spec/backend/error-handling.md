@@ -309,12 +309,48 @@ credential in"), not one per reason a credential can fail.
 
 ### LLM provider errors (`nico-llm`)
 
-A provider adapter turns a provider status/body into a `CanonicalError` (category, stable code,
-retryable, safe message); a client codec encodes that value in the client protocol's error envelope.
-The provider body, headers and credential never reach the client or the request record. A capability
-the `(client protocol, provider)` pair does not support is refused at publication when it is
-configuration, and at request time as a typed client error when it depends on the body — never
-silently dropped.
+Two independent axes meet in one exchange: a client protocol and a provider. `CanonicalError` is the
+only failure value both sides share — it is not any vendor's error object. A provider adapter turns a
+provider status and body into it; a client codec renders it in the client protocol's error envelope.
+The provider body, headers and credential never reach the client or the request record, and the
+adapter's parser diagnostic stays in the log.
+
+The codes below are the gateway's, not a provider's. Each is a compile-time constant owned by
+`nico-llm`'s exchange module: renaming one is a breaking change, and none is configurable. A
+provider's own code travels in `CanonicalError::provider_code` for structured logs only.
+
+| Source | Canonical code | Status | Decision |
+|---|---|---|---|
+| the request needs a capability the `(client protocol, provider)` pair does not share | `unsupported_capability` | 422 | the document is well formed and the route cannot serve it |
+| the client codec cannot read the client document | `invalid_request` | 400 | the caller's document is malformed; the diagnostic names a field, never the payload |
+| the client codec cannot encode the canonical answer | `client_encode_failed` | 500 | gateway defect |
+| the provider adapter cannot encode the canonical request | `provider_encode_failed` | 500 | gateway defect |
+| the route's base URL or credential makes an unusable endpoint | `upstream_endpoint_invalid` | 500 | configuration defect; refused at publication when it is static |
+| the provider's bytes are not a document of its own protocol | `upstream_protocol_error` | 502 | the peer failed |
+| the provider answered a failure status | the adapter's `CanonicalError` | the adapter's status | the provider body is not forwarded |
+| a canonical invariant fails after a codec or adapter produced a value | `internal_error` | 500 | gateway defect: a value crossed the boundary without its constructors |
+
+- **422 is a deliberate refinement of the `Client` row above.** The request is well formed, so `400`
+  would tell the caller to fix a document with nothing wrong in it. The entry is protocol-neutral —
+  it names a capability, not a wire field — so every codec renders it without translating.
+- **The status of a failure belongs to the canonical error.** `ClientCodec::encode_error` therefore
+  returns only the body, and the exchange takes the status from `CanonicalError::http_status`.
+- **The status of a success belongs to the client codec.** `ClientCodec::encode_response` returns a
+  `ClientReply { status, body }`: a complete answer is a success in the client's own vocabulary, and
+  a provider's 2xx variant describes that provider's framing, not the caller's request. Forwarding it
+  would put a provider detail into the one header the caller reads.
+- **Nothing is retried after the first streamed byte.** The canonical error carries `retryable` for a
+  retry budget above the exchange; once a byte reached the caller, a failure ends the stream and no
+  second status is written.
+- **`CanonicalError` validates on construction.** Its crate-private `from_static_parts` constructor
+  exists for the constant table above and skips validation, which is why the mapping's tests call
+  `validate()` on every value the table can produce. It never receives caller or provider input.
+- **The category travels as its lowercase name.** That spelling is `ErrorCategory`'s serde form, a
+  diagnostic/fixture representation rather than a protocol status, and it is pinned by a test in
+  `nico-core` so renaming a variant cannot silently change a fixture or a log record.
+
+A capability the pair does not support is refused at publication when it is configuration, and at
+request time as a typed client error when it depends on the body — never silently dropped.
 
 ### What a plugin may and may not change
 
