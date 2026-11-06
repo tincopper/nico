@@ -17,7 +17,7 @@
 //! protocol can express, `facts` owns the exchange's framework-free views, and each concrete codec
 //! gets a module named after its protocol.
 
-use std::{collections::BTreeMap, fmt, sync::Arc};
+use std::{borrow::Cow, collections::BTreeMap, fmt, sync::Arc};
 
 use crate::schema::{CanonicalError, ChatRequest, ChatResponse, StreamEvent};
 
@@ -105,7 +105,11 @@ pub enum CodecError {
         /// The protocol that cannot carry the field.
         protocol: ProtocolId,
         /// The dotted path of the wire field, without any part of its value.
-        field: String,
+        ///
+        /// A wire path is sometimes built from a decode position, so the type carries an owned
+        /// spelling for that case and a borrowed one for the fixed names — the split the crate's
+        /// error vocabulary keeps everywhere else.
+        field: Cow<'static, str>,
     },
 }
 

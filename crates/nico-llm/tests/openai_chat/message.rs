@@ -59,7 +59,7 @@ fn an_inline_image_is_refused_by_field() {
         error,
         CodecError::UnsupportedField {
             protocol: nico_llm::protocol::openai_chat::PROTOCOL,
-            field: "messages[0].content[0].image_url.url".to_owned()
+            field: "messages[0].content[0].image_url.url".into()
         }
     );
 }
@@ -140,6 +140,20 @@ fn an_unknown_member_of_a_modelled_object_is_refused_with_its_path() {
 }
 
 #[test]
+fn an_unprintable_unknown_member_is_refused_without_being_quoted() {
+    // A member name is the caller's text too, and the refusal reaches a log record: a name carrying
+    // a newline (or kilobytes of data) must not be able to forge or bloat that record.
+    let error = decode_err(
+        r#"{"model":"m","messages":[{"role":"user","content":"hi","evil\nkey":"MARKER"}]}"#,
+    );
+    assert!(
+        matches!(&error, CodecError::InvalidRequest { reason, .. }
+            if !reason.contains("evil") && reason.contains("does not model")),
+        "the member must be refused without being quoted: {error:?}"
+    );
+}
+
+#[test]
 fn a_message_field_the_canonical_model_lacks_is_refused_by_name() {
     for (member, field) in [
         (r#""name":"bob""#, "messages[0].name"),
@@ -152,7 +166,7 @@ fn a_message_field_the_canonical_model_lacks_is_refused_by_name() {
             decode_err(&body),
             CodecError::UnsupportedField {
                 protocol: nico_llm::protocol::openai_chat::PROTOCOL,
-                field: field.to_owned()
+                field: field.into()
             },
             "the message member {member} must be refused"
         );

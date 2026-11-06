@@ -200,9 +200,7 @@ fn debug_records_never_print_a_prompt_a_credential_or_an_answer() {
 #[test]
 fn the_endpoint_exists_before_the_body_does() {
     let exchange = exchange(Capabilities::all(), Capabilities::all());
-    let endpoint = exchange
-        .endpoint()
-        .expect("the route names a usable endpoint");
+    let endpoint = exchange.endpoint();
     assert_eq!(endpoint.path(), "/v1/mock");
     assert_eq!(endpoint.destination().host(), "127.0.0.1");
     assert_eq!(
@@ -215,7 +213,7 @@ fn the_endpoint_exists_before_the_body_does() {
 }
 
 #[test]
-fn prepare_asks_for_the_endpoint_before_it_decodes_the_body() {
+fn the_endpoint_is_compiled_once_at_publication() {
     let trace = Trace::default();
     let exchange = Exchange::try_new(
         MockCodec::traced(Capabilities::all(), trace.clone()),
@@ -223,14 +221,21 @@ fn prepare_asks_for_the_endpoint_before_it_decodes_the_body() {
         route(ExchangeMode::Convert),
     )
     .expect("the mocks pair on the route");
-
-    exchange
-        .prepare(&request_facts(), &body("chat-small", "hello"))
-        .expect("a well-formed request prepares");
     assert_eq!(
         trace.steps(),
-        ["endpoint", "decode", "encode"],
-        "the upstream head is derived from route facts, so it is ready before the body is decoded"
+        ["endpoint"],
+        "pairing the route resolves the endpoint it will send to"
+    );
+
+    for _ in 0..2 {
+        exchange
+            .prepare(&request_facts(), &body("chat-small", "hello"))
+            .expect("a well-formed request prepares");
+    }
+    assert_eq!(
+        trace.steps(),
+        ["endpoint", "decode", "encode", "decode", "encode"],
+        "preparing a request never re-reads the route's base URL"
     );
 }
 
@@ -350,7 +355,7 @@ fn every_failure_maps_to_a_valid_canonical_error() {
         (
             ExchangeError::Codec(CodecError::UnsupportedField {
                 protocol: PROTOCOL,
-                field: "n".to_owned(),
+                field: "n".into(),
             }),
             ("unsupported_capability", 422),
         ),
@@ -358,6 +363,13 @@ fn every_failure_maps_to_a_valid_canonical_error() {
             ExchangeError::Provider(ProviderError::Unsupported {
                 kind: KIND,
                 feature: Capability::Images,
+            }),
+            ("unsupported_capability", 422),
+        ),
+        (
+            ExchangeError::Provider(ProviderError::UnsupportedField {
+                kind: KIND,
+                field: "message.content".into(),
             }),
             ("unsupported_capability", 422),
         ),

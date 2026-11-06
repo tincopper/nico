@@ -44,6 +44,7 @@ mod tool;
 mod usage;
 
 pub use conversation::{ContentPart, ImageSource, Item, Message, Reasoning, Role};
+pub(crate) use error::MAX_PROVIDER_CODE_BYTES;
 pub use error::{CanonicalError, SchemaError};
 pub use extension::{Extensions, RawJson};
 pub use model::{ModelId, ModelRef};

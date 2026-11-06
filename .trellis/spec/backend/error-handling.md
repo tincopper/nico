@@ -325,7 +325,7 @@ provider's own code travels in `CanonicalError::provider_code` for structured lo
 | the client codec cannot read the client document | `invalid_request` | 400 | the caller's document is malformed; the diagnostic names a field, never the payload |
 | the client codec cannot encode the canonical answer | `client_encode_failed` | 500 | gateway defect |
 | the provider adapter cannot encode the canonical request | `provider_encode_failed` | 500 | gateway defect |
-| the route's base URL or credential makes an unusable endpoint | `upstream_endpoint_invalid` | 500 | configuration defect; refused at publication when it is static |
+| the route's base URL or credential makes an unusable endpoint | `upstream_endpoint_invalid` | 500 | configuration defect, refused at publication: `Exchange::try_new` resolves the route's endpoint once, so a published route always addresses one |
 | the provider's bytes are not a document of its own protocol | `upstream_protocol_error` | 502 | the peer failed |
 | the provider answered a failure status | the adapter's `CanonicalError` | the adapter's status | the provider body is not forwarded |
 | a canonical invariant fails after a codec or adapter produced a value | `internal_error` | 500 | gateway defect: a value crossed the boundary without its constructors |
@@ -339,7 +339,14 @@ provider's own code travels in `CanonicalError::provider_code` for structured lo
   it asks for. Inventing a capability per such field would create an axis the request path can never
   compute, so the refusal names the field instead of pretending it is a capability. An *unknown*
   top-level field is preserved in `extensions` instead; refusal is for what the codec knows it
-  cannot serve. Neither refusal carries the field's value.
+  cannot serve. Neither the capability nor the field refusal carries the value.
+- **The provider side has the same refusal.** A capability names a feature, not where it may appear:
+  the OpenAI Chat wire carries an image in a user turn and nowhere else, and the canonical model
+  permits one anywhere. `ProviderError::UnsupportedField` names the canonical field
+  (`message.content`, `tool_result.content`, `tool_result.is_error`, `reasoning.signature`) and maps
+  to the same `unsupported_capability` / `422`. `provider_encode_failed` / `500` stays for a
+  canonical value the adapter cannot serialize at all — a gateway defect, not a request it
+  understood and could not place.
 - **The status of a failure belongs to the canonical error.** `ClientCodec::encode_error` therefore
   returns only the body, and the exchange takes the status from `CanonicalError::http_status`.
 - **The status of a success belongs to the client codec.** `ClientCodec::encode_response` returns a
@@ -358,6 +365,27 @@ provider's own code travels in `CanonicalError::provider_code` for structured lo
 
 A capability the pair does not support is refused at publication when it is configuration, and at
 request time as a typed client error when it depends on the body — never silently dropped.
+
+A provider's failure status maps to one fixed row, so the same failure always reads the same way and
+an alert can name the code it fired on. The codes are `nico-llm`'s, not the provider's; the provider's
+own `error.code` travels in `provider_code` for the log only, and its message, type and body are never
+read into the answer.
+
+| Provider status | Category | Code | Caller status | Retryable |
+|---|---|---|---|---|
+| 400 | `Client` | `upstream_rejected` | 400 | no |
+| 401, 403 | `Upstream` | `upstream_auth_failed` | 502 | no |
+| 404 | `Client` | `upstream_model_not_found` | 404 | no |
+| 408 | `Upstream` | `upstream_timeout` | 504 | yes |
+| 429 | `Limit` | `upstream_rate_limited` | 429 | yes |
+| other 4xx | `Client` | `upstream_rejected` | the provider's status | no |
+| 5xx | `Upstream` | `upstream_error` | 502 | yes |
+| anything else | `Upstream` | `upstream_error` | 502 | no |
+
+A credential failure is the route's configuration problem, not the caller's, so it answers `502`; a
+missing model is the caller's request and keeps `404`; a rate limit keeps `429` so the caller's own
+retry policy still works. A failure frame inside an established stream is `upstream_error` / `502`
+and **not** retryable: a byte already reached the caller, and a second attempt would be a second answer.
 
 ### What a plugin may and may not change
 

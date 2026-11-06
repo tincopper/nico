@@ -23,14 +23,6 @@
 //! - **No silent truncation.** A stream that ends in the middle of an event is an error, so a caller
 //!   never mistakes a cut-off frame for a complete one.
 
-// The decoder's first production consumer is an upstream adapter, which decodes an event stream; the
-// framing lands together with the client encoder because both halves must agree on one splitter.
-// This expectation disappears — and warns — as soon as that adapter uses the decoder.
-#![expect(
-    dead_code,
-    reason = "the decoder half of the framing gains its first consumer in the provider step"
-)]
-
 use std::fmt;
 
 /// Largest event this decoder buffers, in bytes.

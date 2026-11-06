@@ -15,7 +15,10 @@ const MAX_CODE_BYTES: usize = 64;
 /// Longest caller-safe message accepted, in bytes.
 const MAX_MESSAGE_BYTES: usize = 256;
 /// Longest provider error code accepted, in bytes.
-const MAX_PROVIDER_CODE_BYTES: usize = 128;
+///
+/// Shared with the adapters that decide whether to attach a provider's own code: the bound the
+/// constructor enforces and the bound a reader screens with are one number, not two.
+pub(crate) const MAX_PROVIDER_CODE_BYTES: usize = 128;
 /// Longest request text a diagnostic error echoes, in bytes.
 const MAX_EXCERPT_BYTES: usize = 64;
 /// Inclusive range of HTTP statuses a canonical error may carry.

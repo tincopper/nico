@@ -9,7 +9,7 @@
 3. **核心不 switch 厂商**：`schema/` 与 `filter.rs` 不出现厂商名/分支；厂商名只出现在 `protocol/<name>` 与 `provider/<name>`。新增厂商只加一个文件，不改核心。
 4. **请求可重放**：convert 模式的 AI 路由有界缓冲客户端 body，canonical 是值；重试/fallback 重新编码，不重放原始 body，也不要求 Pingora 重放。
 5. **响应永不整块**：SSE 逐块 `provider chunk → canonical event → client chunk`；非流式响应才允许有界缓冲。
-6. **失败闭集**：未知 protocol/provider kind、缺失能力、插件与 AI 缓冲冲突都在发布期拒绝；运行期不支持的能力返回 typed error，不静默丢字段。
+6. **失败闭集**：未知 protocol/provider kind、缺失能力、路由的 base_url 不可寻址、插件与 AI 缓冲冲突都在发布期拒绝；运行期不支持的能力返回 typed error，不静默丢字段。
 7. **数据面仍是唯一写出点**：连接、TLS、预算、帧化、错误写出归 `nico-http`；`nico-llm` 只产出 `Endpoint`（destination/path/headers）、wire body 与响应转换器。
 8. **raw 逃生口**：客户端协议与 provider 原生协议一致且路由声明 `mode: passthrough` 时跳过 canonical，字节直通；convert 是默认。
 
@@ -142,7 +142,7 @@ pub trait ClientStreamEncoder: Send {
 
 ### 4.2 上游 provider
 
-`ProviderRoute` 是编译后的路由事实：`route_id`、`protocol`、`provider_kind`、`model_map`、`mode`，以及已解析的 base_url/credential 句柄；它由 `LlmPlan` 在发布期构建，请求期只读。
+`ProviderRoute` 是编译后的路由事实：`route_id`、`protocol`、`provider_kind`、`model_map`、`mode`，以及 base_url 字符串与已 materialize 的 credential；它由 `LlmPlan` 在发布期构建，请求期只读。base_url 的**解释**（destination + path）属于 adapter，不是路由事实：`Exchange::try_new` 在配对时调用一次 `Provider::endpoint` 并把结果编进 `Exchange`，所以发布成功的路由一定有一个可寻址的 endpoint，请求期不再重读 base_url。
 
 ```rust
 pub trait Provider: Send + Sync {
@@ -160,7 +160,7 @@ pub trait ProviderStream: Send {
 }
 ```
 
-- `endpoint()` 只依赖路由/provider 配置（base_url、协议、固定 path），**不依赖请求体**。这样上游请求头可以在 body 解码前确定；`encode()` 在 body 缓冲后生成 wire body。OpenAI/Anthropic/Responses 的 endpoint 是固定路径，满足这一条；Gemini 的 path 含模型名，是 1.4b 的专门设计项（见 §10）。
+- `endpoint()` 只依赖路由/provider 配置（base_url、协议、固定 path），**不依赖请求体**。`Exchange::try_new` 在发布期调用它一次，结果成为 `Exchange` 的一部分：上游请求头在请求到达时就已确定（远早于 body 解码），不可寻址的 base_url 是发布失败（保留 LKG），而不是该路由每个请求的 500。`encode()` 在 body 缓冲后生成 wire body。OpenAI/Anthropic/Responses 的 endpoint 是固定路径，满足这一条；Gemini 的 path 含模型名，是 1.4b 的专门设计项（见 §10）。
 - `encode(route, request)` 接收路由，因为物理模型来自 `route.model()` 对编译后 `model_map` 的解析；adapter 因此保持单例无 per-request 状态。canonical 请求保留逻辑名，重试或换路由时重新解析。
 - `Endpoint { destination, path, headers }` 与 `encode()` 的 body 由 `Exchange` 组装成 `WireRequest { endpoint, body }`。method 不在其中：chat 交换恒为 `POST`，由数据面写出。将来出现非 POST 能力时，动词是 `Provider` 契约的显式扩展，不会从 path/header 里猜。
 - provider 不拥有连接、TLS、超时、重试或帧化；这些仍归数据面。
@@ -195,7 +195,7 @@ EOS: Exchange::prepare
 - convert 路由在 `request_body_filter` 里把 chunk 扣住并累加；上限 `request.max_body_bytes`，超限 413。EOS 后只调用一次 `decode_request`，canonical 请求可重放。
 - `RouteTarget::Provider` + `mode: convert` 是 **AI route mode**，与插件 `buffers_body` 是两件事；同一路由同时出现时发布期拒绝，避免两套 hold-back 语义。
 - passthrough 路由不构建 `Exchange`：客户端协议等于 provider 原生协议，`request_body_filter` 直接转发字节，canonical decode 与 capability gate 都不参与。
-- 上游请求头由 provider 的 `endpoint()` 提供（path/headers/destination），在 body 解码前即可确定；请求体在 EOS 后用 chunked 写出（移除客户端 `content-length`，由数据面重新帧化）。固定 endpoint 的 provider 走这条路；Gemini 的模型在 path 里，见 §10。
+- 上游请求头来自 `Exchange` 在发布期编好的 `Endpoint`（path/headers/destination），请求到达时即可写出；请求体在 EOS 后用 chunked 写出（移除客户端 `content-length`，由数据面重新帧化）。固定 endpoint 的 provider 走这条路；Gemini 的模型在 path 里，见 §10。
 - LLM 路由的请求插件只支持头阶段（认证/限流）；body 阶段插件在 1.4a 不支持，发布期拒绝。日志阶段照常。
 
 ### 6.2 响应
@@ -211,7 +211,7 @@ pub trait ResponseTransform: Send {
 ```
 
 - LLM 路由在响应头钩子安装 transform，在 `upstream_response_body_filter` 逐块调用；`response_filter` 仍负责 1xx 保护与预算复核。
-- SSE：每个 provider chunk 交给 `ProviderStream`，产出的 canonical 事件交给该响应的 `ClientStreamEncoder` 编码为客户端 SSE；`content-length` 永远不保留，数据面走 chunked。终止符由 `ClientStreamEncoder::finish()` 在 body 结束时写出，而不是在 `Finish` 事件写出：provider 可以在 finish 之后再用一个 chunk 报 usage，于是 usage chunk 仍然排在终止符之前。
+- SSE：每个 provider chunk 交给 `ProviderStream`，产出的 canonical 事件交给该响应的 `ClientStreamEncoder` 编码为客户端 SSE；`content-length` 永远不保留，数据面走 chunked。终止符由 `ClientStreamEncoder::finish()` 在 body 结束时写出，而不是在 `Finish` 事件写出：provider 可以在 finish 之后再用一个 chunk 报 usage，于是 usage chunk 仍然排在终止符之前。provider 流的完整性标记是 finish reason：`[DONE]` 是冗余终止符，缺失不视为截断（兼容端点会省略），但 body 在 finish reason 之前结束是 `upstream_protocol_error`（502）——不能把没人宣布过的结束告诉调用方。
 - 非流式：`push` 在 `request.max_response_bytes` 内累积，`finish` 时 `decode_response` → `encode_response`；超限 502 + `upstream_response_too_large`。
 - provider 非 2xx：`Provider::decode_response` 返回 `ProviderError::Upstream { error }`，`Exchange::respond` 用 `ClientCodec::encode_error` 生成客户端错误体；不转发 provider body。
 - 成功响应：`Exchange::respond` 返回 codec 的 `ClientReply`，状态由 codec 决定（`200`），不是 provider 的 2xx。`Exchange` 只负责 `decode_response`→`validate`→`encode_response`，不拥有任何状态映射。
@@ -230,6 +230,7 @@ pub trait ResponseTransform: Send {
 | 客户端 body 超限 | — | 413 | 数据面在 decode 前拒绝 |
 | 不支持的 protocol/provider kind | — | 发布失败 | 未知注册项不进入请求路径；保留 LKG |
 | 请求需要的能力超出交集 | `CanonicalError`（`unsupported_capability`） | 422 | 发布期记录交集；请求体声明的需求在 `Exchange::prepare` 拒绝 |
+| canonical 值在该协议里没有位置（image 在非 user 轮次、signed reasoning、failed tool result） | `CanonicalError`（`unsupported_capability`） | 422 | `ProviderError::UnsupportedField` 命名字段；文档合法、路由不能服务，不是网关缺陷 |
 | 客户端文档不合法 | `CanonicalError`（`invalid_request`） | 400 | codec 的 `InvalidRequest`；诊断只进日志 |
 | 网关编码/canonical 不变量失败 | `CanonicalError`（`client_encode_failed` / `provider_encode_failed` / `internal_error`） | 500 | 网关缺陷；诊断只进日志 |
 | provider 4xx/5xx | `CanonicalError`（类别/稳定 code） | 客户端协议错误体 | 不泄露 provider body |
@@ -262,6 +263,7 @@ pub trait ResponseTransform: Send {
 | 非流式响应缓冲 = `request.max_response_bytes` × 并发 | 新字段，默认 8 MiB，路由只能收紧；SSE 不适用 |
 | Gemini endpoint 的 model 在 path 里，而 model 在请求 body 里 | **1.4b 专门设计**：要么路由/provider 固定物理模型（body model 只校验），要么实现 pre-body exchange（需验证 Pingora 能否在 upstream head 前读 body）；1.4a 不假装已解决 |
 | canonical 无法表达某些厂商字段 | `extensions` + `RawJson` + capability matrix；不支持的能力显式报错；raw passthrough 兜底 |
+| OpenAI adapter 无法在某个位置承载 canonical 值（image 只在 user 轮次可表达；signed reasoning、failed tool result 无字段） | `ProviderError::UnsupportedField` 命名 canonical 字段，exchange 报 `unsupported_capability` 422：文档合法、路由不能服务，不是网关缺陷。OpenAI client codec 本来就接受任意 role 的 image part，所以这条路径是**可达**的，不能报 500。`provider_encode_failed` 500 只留给 adapter 无法序列化的值（编码器缺陷）。1.4b 的新形状复用同一变体，不需要新的状态决策 |
 | `Sampling` 的范围取各协议最宽者（`temperature` 到 2.0），比 Anthropic 的 0.0..=1.0 宽 | canonical 不取交集（否则拒绝 OpenAI 合法的温度），**1.4b** 的 Anthropic codec/provider 在自己协议的范围外拒绝，不 clamp：静默改小温度是在改变调用方要的输出 |
 | SSE 转换状态跨块 | 每响应一个 `ProviderStream` 与一个 `ClientStreamEncoder`；不放在 `Provider`/`ClientCodec` 单例或 `Plugin` 里 |
 | provider 在 finish 之后才报 usage（部分 OpenAI 兼容实现的 `include_usage` 形状） | 终止符推迟到 body 结束写出；usage 事件在 finish 前后都落在正确位置 |

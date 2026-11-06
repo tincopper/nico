@@ -38,12 +38,14 @@ pub use stream::StreamEncoder;
 /// Built once per route at publication (the codecs and adapters themselves are shared) and held by
 /// the data plane as an `Arc`: the value is stateless, so a request clones a pointer and
 /// [`Exchange::prepare`] produces the request's own canonical value and wire bytes. It holds the
-/// capability intersection the publication computed, so a request that needs something the pair does
-/// not share is refused here instead of failing inside a vendor encoder.
+/// capability intersection the publication computed and the endpoint the adapter compiled from the
+/// route facts, so a request that needs something the pair does not share is refused here instead of
+/// failing inside a vendor encoder, and no request re-reads the route's base URL.
 pub struct Exchange {
     codec: Arc<dyn ClientCodec>,
     provider: Arc<dyn Provider>,
     route: Arc<ProviderRoute>,
+    endpoint: Endpoint,
     capabilities: Capabilities,
 }
 
@@ -52,9 +54,10 @@ impl Exchange {
     ///
     /// # Errors
     /// Returns [`ExchangeBuildError::ProtocolMismatch`] when the codec's protocol is not the route's,
-    /// [`ExchangeBuildError::ProviderMismatch`] when the adapter's kind is not the route's, and
+    /// [`ExchangeBuildError::ProviderMismatch`] when the adapter's kind is not the route's,
     /// [`ExchangeBuildError::NotConverted`] for a passthrough route, which moves bytes without a
-    /// canonical value and therefore has no exchange.
+    /// canonical value and therefore has no exchange, and [`ExchangeBuildError::Endpoint`] when the
+    /// adapter cannot compile the route into an addressable endpoint.
     pub fn try_new(
         codec: Arc<dyn ClientCodec>,
         provider: Arc<dyn Provider>,
@@ -78,10 +81,14 @@ impl Exchange {
             });
         }
         let capabilities = codec.capabilities().intersection(provider.capabilities());
+        let endpoint = provider
+            .endpoint(&route)
+            .map_err(|source| ExchangeBuildError::Endpoint { source })?;
         Ok(Self {
             codec,
             provider,
             route,
+            endpoint,
             capabilities,
         })
     }
@@ -98,15 +105,14 @@ impl Exchange {
         self.capabilities
     }
 
-    /// Resolves the upstream endpoint the route names.
+    /// Returns the endpoint compiled when the exchange was published.
     ///
-    /// The result depends on the route facts only, so the data plane may ask before the request body
-    /// arrives and send the upstream head early.
-    ///
-    /// # Errors
-    /// Returns the adapter's error when the route's base URL or credential cannot form an endpoint.
-    pub fn endpoint(&self) -> Result<Endpoint, ProviderError> {
-        self.provider.endpoint(&self.route)
+    /// [`Exchange::try_new`] resolved it from the route facts once, so a published route always
+    /// addresses its endpoint: the data plane may send the upstream head before the request body is
+    /// decoded, and no request re-reads the route's base URL.
+    #[must_use]
+    pub fn endpoint(&self) -> &Endpoint {
+        &self.endpoint
     }
 
     /// Decodes the buffered client body once and encodes it for the provider.
@@ -118,14 +124,12 @@ impl Exchange {
     /// Returns [`ExchangeError::Codec`] when the client codec rejects the body,
     /// [`ExchangeError::InvalidCanonical`] when the decoded value breaks a canonical invariant,
     /// [`ExchangeError::Unsupported`] when the request needs a capability the pair does not share,
-    /// and [`ExchangeError::Provider`] when the adapter cannot build its endpoint or encode the
-    /// request.
+    /// and [`ExchangeError::Provider`] when the adapter cannot encode the request.
     pub fn prepare(
         &self,
         facts: &RequestFacts,
         body: &[u8],
     ) -> Result<PreparedExchange, ExchangeError> {
-        let endpoint = self.provider.endpoint(&self.route)?;
         let request = self.codec.decode_request(facts, body)?;
         request
             .validate()
@@ -142,7 +146,7 @@ impl Exchange {
         Ok(PreparedExchange {
             request,
             model,
-            wire: WireRequest::new(endpoint, body),
+            wire: WireRequest::new(self.endpoint.clone(), body),
         })
     }
 
@@ -192,6 +196,11 @@ impl Exchange {
     ///
     /// The provider decoder is created fresh here, so a partial frame from one response can never be
     /// completed by another one's bytes.
+    ///
+    /// The encoder carries no status, so a failed response must not reach it: hand the failure to
+    /// [`Exchange::respond`], which maps the provider's status and body into a canonical error. A
+    /// provider's failure envelope is a document, not an event stream, so decoding it here would
+    /// report a malformed stream instead of the provider's own failure.
     #[must_use]
     pub fn stream(&self) -> StreamEncoder {
         StreamEncoder::new(self.codec.stream_encoder(), self.provider.stream_decoder())
@@ -206,6 +215,7 @@ impl fmt::Debug for Exchange {
             .field("protocol", &self.route.protocol())
             .field("provider_kind", &self.route.provider_kind())
             .field("capabilities", &self.capabilities)
+            .field("endpoint", &self.endpoint)
             .finish()
     }
 }

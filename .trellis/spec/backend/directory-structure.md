@@ -96,9 +96,11 @@ nico/
     │       ├── protocol/openai_chat/  # one codec's documents: {request,declaration,message,response,stream,error,usage}.rs
     │       ├── provider.rs      # Provider/ProviderStream traits + registry
     │       ├── provider/        # route.rs (compiled route facts), then openai, anthropic, gemini: wire ↔ canonical
+    │       ├── provider/openai/  # one adapter's documents: {url,request,request/message,response,stream,error,usage,base64}.rs
     │       ├── stream.rs        # declares the shared framing submodule
     │       ├── stream/
     │       │   └── sse.rs       # shared SSE framing (event boundaries, cross-chunk UTF-8, terminator), no vendor semantics
+    │       ├── diagnostic.rs    # crate-private: what a refusal may quote (a bounded name, never a payload)
     │       ├── filter.rs        # route exchange: endpoint → decode → encode → response/stream
     │       └── filter/          # error.rs (failure vocabulary), stream.rs (one client encoder + one provider decoder per response); model map lives on provider/route.rs
     ├── nico-config/         # ConfigSource trait, local source, LKG cache, fakes
@@ -296,9 +298,12 @@ publication failure, never a silent skip. That is what lets a second source of p
 teaching the document model any policy: `nico-core` never learns what a phase is or what a kind's
 fields are, and `nico-http` never learns what a plugin is.
 
-`is_secret_ref` (`nico-core`) is the one vocabulary both sides share: the document model checks a
-provider's `credential_ref` with it, and a kind's `config` module checks its own `secret_ref` fields
-with it, so "a credential is a reference" has one spelling.
+`is_secret_ref` and `validate_host` (`nico-core::config`) are the vocabulary the crates share: the
+document model checks a provider's `credential_ref` and every `host` field with them, and a provider
+adapter checks the host it parsed out of a `base_url` with `validate_host`, so "a credential is a
+reference" and "a host is a name" each have one spelling. The consequence is the point: an adapter
+cannot produce a `Destination` the data plane would write as an unreadable `Host`, because the rule
+that refuses one already exists and every producer applies it rather than a subset of it.
 
 A credential reference is materialized when the document is compiled, not per request: `env:VAR`
 reads the variable and `file:/path` reads the file **byte for byte**, so a trailing newline written

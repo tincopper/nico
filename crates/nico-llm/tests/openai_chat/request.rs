@@ -274,7 +274,7 @@ fn a_known_field_the_canonical_model_cannot_carry_is_refused_by_name() {
             decode_err(&with_extra(extra)),
             CodecError::UnsupportedField {
                 protocol: PROTOCOL,
-                field: field.to_owned()
+                field: field.into()
             },
             "the field `{field}` must be refused, never dropped"
         );
@@ -371,7 +371,7 @@ fn a_response_format_this_gateway_cannot_carry_is_refused_by_field() {
         decode_err(&with_extra(r#""response_format":{"type":"grammar"}"#)),
         CodecError::UnsupportedField {
             protocol: PROTOCOL,
-            field: "response_format.type".to_owned()
+            field: "response_format.type".into()
         }
     );
     assert!(

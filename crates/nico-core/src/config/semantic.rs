@@ -14,7 +14,7 @@
 use std::{borrow::Cow, collections::HashSet};
 
 use super::{
-    error::DocumentError, plugin::PluginSpec, provider::Provider, request::RequestBounds,
+    error::DocumentError, host, plugin::PluginSpec, provider::Provider, request::RequestBounds,
     route::Route, secret_ref::is_secret_ref, upstream::Upstream,
 };
 
@@ -22,8 +22,6 @@ use super::{
 const MAX_TIMEOUT_MS: u32 = 600_000;
 /// Upper bound for a route id, an upstream name or a provider name.
 const MAX_NAME_BYTES: usize = 63;
-/// Upper bound for `routes[].host` and `upstreams[].host`, matching the DNS name limit.
-const MAX_HOST_BYTES: usize = 253;
 /// Upper bound for `routes[].path_prefix`.
 const MAX_PATH_PREFIX_BYTES: usize = 256;
 /// Upper bound for a rejection `content-type`.
@@ -161,31 +159,13 @@ const fn is_lowercase_alphanumeric(byte: u8) -> bool {
     byte.is_ascii_lowercase() || byte.is_ascii_digit()
 }
 
-/// Checks a host name: no scheme, no port, no whitespace, at most 253 bytes.
+/// Checks a host name, naming the field that broke.
 ///
-/// One rule serves both hosts a document declares — `routes[].host` (the `Host` value a request
-/// must present) and `upstreams[].host` (a destination) — so a host is either a name or nothing.
-/// `field` names the one that broke.
+/// The rule itself is [`host::validate_host`]'s, so the document model and an adapter that derives a
+/// destination from a base URL cannot disagree about what a host may be. `field` names the one that
+/// broke.
 fn validate_host(field: &'static str, host: &str) -> Result<(), DocumentError> {
-    if host.is_empty() {
-        return Err(invalid(field, "must not be empty"));
-    }
-    if host.len() > MAX_HOST_BYTES {
-        return Err(invalid(
-            field,
-            format!("must be at most {MAX_HOST_BYTES} bytes"),
-        ));
-    }
-    if host.contains("://") {
-        return Err(invalid(field, "must not include a scheme"));
-    }
-    if host.contains(':') {
-        return Err(invalid(field, "must not include a port"));
-    }
-    if has_whitespace(host) {
-        return Err(invalid(field, "must not contain whitespace"));
-    }
-    Ok(())
+    host::validate_host(host).map_err(|problem| invalid(field, problem.reason()))
 }
 
 /// Checks a path prefix: rooted, no parent segment, no whitespace, at most 256 bytes.

@@ -31,9 +31,10 @@
 //! response format. Files are *not* declared: this document can reference a file by id, and the
 //! canonical model carries inline file bytes, so there is no truthful mapping yet.
 
-use std::collections::BTreeMap;
+use std::{borrow::Cow, collections::BTreeMap};
 
 use crate::{
+    diagnostic,
     protocol::{
         Capabilities, Capability, ClientCodec, ClientReply, ClientStreamEncoder, CodecError,
         ProtocolId, RequestFacts,
@@ -113,7 +114,10 @@ fn invalid(reason: impl Into<String>) -> CodecError {
 }
 
 /// Refuses a known wire field the canonical model cannot carry.
-fn unsupported(field: impl Into<String>) -> CodecError {
+///
+/// The field names are literals, and a decode path is built from the position it stands at, so the
+/// payload is a [`Cow`]: borrowed for the fixed names, owned for the computed ones.
+fn unsupported(field: impl Into<Cow<'static, str>>) -> CodecError {
     CodecError::UnsupportedField {
         protocol: PROTOCOL,
         field: field.into(),
@@ -129,13 +133,21 @@ fn unsupported_capability(feature: Capability) -> CodecError {
 }
 
 /// Refuses the first key of an object whose shape this codec fully types.
+///
+/// The key is the caller's, so it is quoted only when [`diagnostic::quoted`] allows it; a field whose
+/// name cannot be printed is still refused, just not named.
 fn reject_extra(extra: &BTreeMap<String, RawJson>, path: &str) -> Result<(), CodecError> {
-    match extra.keys().next() {
-        Some(key) => Err(invalid(format!(
-            "field `{path}.{key}` is not part of this document"
-        ))),
-        None => Ok(()),
-    }
+    let Some(key) = extra.keys().next() else {
+        return Ok(());
+    };
+    Err(
+        match diagnostic::quoted(key, diagnostic::MAX_QUOTED_FIELD_BYTES) {
+            Some(key) => invalid(format!("field `{path}.{key}` is not part of this document")),
+            None => invalid(format!(
+                "`{path}` carries a field this document does not model"
+            )),
+        },
+    )
 }
 
 /// Reports a canonical invariant the wire value broke, naming the field.

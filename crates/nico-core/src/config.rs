@@ -14,6 +14,7 @@
 mod bounds;
 mod document;
 mod error;
+mod host;
 mod parse;
 mod plugin;
 mod provider;
@@ -32,6 +33,7 @@ mod test_support;
 pub use bounds::{Bound, BoundsError, ParseLimits, SchemaBounds};
 pub use document::{API_VERSION, Document};
 pub use error::DocumentError;
+pub use host::{HostError, MAX_HOST_BYTES, validate_host};
 pub use plugin::{
     BodyValue, DEFAULT_CONTENT_TYPE, ErrorBody, ErrorResponse, PluginSpec, is_json_content_type,
 };

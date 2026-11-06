@@ -14,12 +14,14 @@
 //! - [`protocol`] — the [`ClientCodec`] contract, its registry, the [`Capabilities`] a protocol
 //!   declares, and the framework-free facts of one HTTP exchange.
 //! - [`provider`] — the [`Provider`] and [`ProviderStream`] contracts, their registry, and the
-//!   compiled route facts an adapter reads.
+//!   compiled route facts an adapter reads. The OpenAI adapter lives in [`provider::openai`].
 //! - [`filter`] — [`Exchange`], the one place a codec and an adapter meet.
 //!
 //! The shared SSE framing lives in `stream/` (crate-private: it is a framing detail, not a contract),
-//! and the OpenAI Chat Completions codec lives in [`protocol::openai_chat`]. Vendor names belong only
-//! in those modules; the canonical model, the two contracts and the exchange never learn them.
+//! the shared diagnostic rules live in `diagnostic/` (crate-private: what a refusal may quote), the
+//! OpenAI Chat Completions codec lives in [`protocol::openai_chat`], and the OpenAI provider adapter
+//! lives in [`provider::openai`]. Vendor names belong only in those modules; the canonical model, the
+//! two contracts and the exchange never learn them.
 //!
 //! # Invariants
 //!
@@ -43,6 +45,7 @@ pub mod protocol;
 pub mod provider;
 pub mod schema;
 
+mod diagnostic;
 mod stream;
 
 pub use filter::{Exchange, ExchangeBuildError, ExchangeError, PreparedExchange, StreamEncoder};

@@ -288,7 +288,7 @@ impl PartWire {
                 reject_extra(&self.extra, path)?;
                 image.decode(path)
             }
-            "input_audio" => Err(unsupported(path)),
+            "input_audio" => Err(unsupported(path.to_owned())),
             "file" => Err(unsupported_capability(Capability::Files)),
             _ => Err(invalid(format!(
                 "field `{path}.type` is not a content part this gateway understands"

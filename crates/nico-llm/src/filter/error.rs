@@ -42,6 +42,18 @@ pub enum ExchangeBuildError {
         /// The route that asked for passthrough.
         route_id: String,
     },
+    /// The adapter cannot compile the route into an endpoint.
+    ///
+    /// The failure is static — [`Provider::endpoint`](crate::Provider::endpoint) reads route facts
+    /// only — so an unusable `base_url` or a capability the adapter lacks is refused while the
+    /// document is compiled, and the previously published generation keeps serving. Without this
+    /// check an unaddressable route would answer `500` on every one of its requests instead.
+    #[error("the route does not address an endpoint: {source}")]
+    Endpoint {
+        /// The adapter's reason.
+        #[source]
+        source: ProviderError,
+    },
 }
 
 /// A failed exchange.
@@ -86,14 +98,14 @@ impl ExchangeError {
         match self {
             Self::Unsupported { .. }
             | Self::Codec(CodecError::Unsupported { .. } | CodecError::UnsupportedField { .. })
-            | Self::Provider(ProviderError::Unsupported { .. }) => {
-                CanonicalError::from_static_parts(
-                    ErrorCategory::Client,
-                    "unsupported_capability",
-                    "the route does not support a capability this request needs",
-                    422,
-                )
-            }
+            | Self::Provider(
+                ProviderError::Unsupported { .. } | ProviderError::UnsupportedField { .. },
+            ) => CanonicalError::from_static_parts(
+                ErrorCategory::Client,
+                "unsupported_capability",
+                "the route does not support a capability this request needs",
+                422,
+            ),
             Self::Codec(CodecError::InvalidRequest { .. }) => CanonicalError::from_static_parts(
                 ErrorCategory::Client,
                 "invalid_request",

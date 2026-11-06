@@ -16,7 +16,7 @@
 //!   takes `&self`, and the only mutable state a response needs lives in the [`ProviderStream`] that
 //!   [`Provider::stream_decoder`] returns.
 
-use std::{collections::BTreeMap, fmt, sync::Arc};
+use std::{borrow::Cow, collections::BTreeMap, fmt, sync::Arc};
 
 use nico_core::ErrorCategory;
 use nico_http::Destination;
@@ -28,6 +28,9 @@ use crate::{
 
 mod route;
 
+pub mod openai;
+
+pub use openai::OpenAiProvider;
 pub use route::{Credential, ExchangeMode, ProviderRoute, RouteError};
 
 /// One provider's identifier, for example `vendor`; the value is also its registry key.
@@ -69,6 +72,21 @@ pub enum EndpointError {
     /// The path is not an absolute request target, or holds a control character.
     #[error("the endpoint path must be absolute and free of control characters")]
     Path,
+    /// A route's `base_url` is not an absolute `http(s)` URL an adapter can address.
+    ///
+    /// The adapter refuses the forms it would otherwise have to reinterpret: a missing or unsupported
+    /// scheme, user information (a credential belongs in `credential_ref`), a query or fragment, an
+    /// empty host, a host that is not a name (see [`nico_core::validate_host`]), a port that is not a
+    /// number, is zero, or is out of range, and whitespace or a control character anywhere. `reason`
+    /// is a description of the rule that broke, never the value itself: a rejected URL can carry user
+    /// information, and a diagnostic must not quote it.
+    #[error("`{field}` is not an addressable URL: {reason}")]
+    BaseUrl {
+        /// Dotted path of the configuration field.
+        field: &'static str,
+        /// The rule the value broke, as a diagnostic.
+        reason: Cow<'static, str>,
+    },
     /// A header name is not an HTTP token.
     #[error("`{name}` is not a valid header name")]
     HeaderName {
@@ -205,6 +223,20 @@ pub enum ProviderError {
         /// The capability the canonical value needs.
         feature: Capability,
     },
+    /// This adapter cannot carry a canonical value in the position it appears in.
+    ///
+    /// A [`Capability`] names a feature the canonical shapes can express, not where they may appear:
+    /// this protocol accepts an image in a user turn but not in a system, assistant or tool turn, and
+    /// no capability says "images here". The refusal names the canonical field instead of inventing
+    /// an axis the request path could never compute, and it is the same refusal as
+    /// [`ProviderError::Unsupported`]: the document is well formed and this route cannot serve it.
+    #[error("`{kind}` cannot express the field `{field}`")]
+    UnsupportedField {
+        /// The adapter that cannot carry the field.
+        kind: ProviderKind,
+        /// Dotted path of the canonical field, without any part of its value.
+        field: Cow<'static, str>,
+    },
     /// The canonical request cannot be encoded for this provider.
     #[error("`{kind}` could not encode the canonical request: {reason}")]
     InvalidRequest {
@@ -247,7 +279,7 @@ impl ProviderError {
     #[must_use]
     pub fn category(&self) -> ErrorCategory {
         match self {
-            Self::Unsupported { .. } => ErrorCategory::Client,
+            Self::Unsupported { .. } | Self::UnsupportedField { .. } => ErrorCategory::Client,
             Self::InvalidRequest { .. } | Self::InvalidEndpoint { .. } => ErrorCategory::Internal,
             Self::Malformed { .. } => ErrorCategory::Upstream,
             Self::Upstream { error } => error.category(),
@@ -296,8 +328,11 @@ pub trait Provider: Send + Sync {
 
     /// Resolves the route's base URL and credential into the endpoint the data plane will contact.
     ///
-    /// The result depends on the route only. The data plane calls this before the request body is
-    /// decoded, which is what lets the upstream head go out while the client is still uploading.
+    /// The result depends on the route only, so it is **compiled once**, when the exchange pairs the
+    /// route: the data plane asks the exchange for it before the request body is decoded, which is
+    /// what lets the upstream head go out while the client is still uploading, and no request
+    /// re-reads the base URL. An unaddressable route is therefore a publication failure, not a
+    /// failure every one of its requests would report.
     ///
     /// # Errors
     /// Returns [`ProviderError::InvalidEndpoint`] when the route's base URL or credential cannot form
@@ -313,7 +348,8 @@ pub trait Provider: Send + Sync {
     ///
     /// # Errors
     /// Returns [`ProviderError::Unsupported`] when the request needs a capability this adapter does
-    /// not have, and [`ProviderError::InvalidRequest`] when the encoder fails.
+    /// not have, [`ProviderError::UnsupportedField`] when a canonical value has no place in this
+    /// wire format, and [`ProviderError::InvalidRequest`] when the encoder itself fails.
     fn encode(
         &self,
         route: &ProviderRoute,
@@ -337,6 +373,11 @@ pub trait Provider: Send + Sync {
     ) -> Result<ChatResponse, ProviderError>;
 
     /// Creates a decoder for one streamed response.
+    ///
+    /// A failure status is not a stream: the provider's failure envelope is a document, not an event
+    /// stream, so the caller must pass it to [`Provider::decode_response`] and hand only a success
+    /// body to the decoder. The decoder is not told the status, and feeding it an error document
+    /// would report a malformed stream instead of the provider's own failure.
     ///
     /// # Errors
     /// The decoder reports parse failures from [`ProviderStream::push`] and
