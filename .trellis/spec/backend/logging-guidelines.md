@@ -85,7 +85,8 @@ Rules:
 | `llm.mode` | string | `convert` or `passthrough`, as the route itself reports it |
 | `llm.model_map` | bool | Whether the route renames models; never the map's contents |
 | `llm.routes` | u64 | Provider routes the published generation covers |
-| `llm.protocols` / `llm.providers` | `?` debug | Registered built-in kind names, emitted once per process |
+| `llm.capabilities` | string | The capability axes one side declares, comma-joined (`streaming,tools,…`), or `none` |
+| `llm.version` | string | The wire revision the side is pinned to; **absent** when the vendor has no versioned spelling |
 | `error.stage` | string | Which publication stage refused a document: `document`, `plugin` or `llm` |
 
 ### LLM request fields
@@ -109,6 +110,10 @@ them from the request context, never from a vendor:
   `Authorization` or a provider credential. The LLM seam's values (`LlmRequest`, `LlmPrepared`,
   `LlmExchange`, `Endpoint`, `WireRequest`, the prepared exchange) have hand-written `Debug`
   implementations that print names and lengths only.
+- Assembly adds one `info!` line per registered codec and per registered adapter: the registry key,
+  `llm.capabilities`, and `llm.version` when that side answers with one. It is the only place an
+  operator can read what this build serves before a request runs, and the revision is a field and never
+  a placeholder — a protocol with no versioned spelling reports none.
 - Publication adds one `info!` line per AI route: `route_id`, `llm.protocol`, `llm.provider`,
   `llm.mode` and `llm.model_map` (whether the route renames models, never the map's contents). It is
   a lifecycle event, not a per-request one, and it is emitted **after** the snapshot store: a line

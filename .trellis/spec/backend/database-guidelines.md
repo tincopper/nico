@@ -110,11 +110,13 @@ The gateway is a read-only consumer of its own config.
   router would serve as one route.
 - Secrets appear only as **references** (`env:VAR`, `file:/path`), never as literal values in the
   document.
-- A field the schema accepts but no consumer reads is a field an operator will believe is in force.
-  `providers[].model_allowlist` is parsed and carried today and enforced by nothing, so a document that
-  sets it is accepted and the models it names are still served. Either give a carried field a consumer
-  in the same change that accepts it, or refuse it with `InvalidField` until one exists; leaving it
-  silently inert is the one option that is wrong.
+- A field the schema accepts must have a consumer in the same change. An operator who writes a control
+  believes it is in force, so a carried-but-inert field is worse than an absent one: either read it
+  where its effect belongs, or leave it out of the schema so `deny_unknown_fields` refuses the document.
+  `providers[].model_allowlist` is the worked example in both directions — it is the *provider's* model
+  names, checked on the resolved name while the exchange prepares a request (an alias from `model_map`
+  that resolves onto a listed name is served), and it refuses the rest with `403 model_not_allowed`
+  before anything is encoded.
 
 ---
 

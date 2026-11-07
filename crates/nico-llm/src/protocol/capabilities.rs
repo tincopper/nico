@@ -154,3 +154,24 @@ impl Capabilities {
             .filter(move |capability| self.supports(*capability))
     }
 }
+
+impl fmt::Display for Capabilities {
+    /// Prints the set the way a log field reads: comma-joined names in [`Capability::ALL`] order.
+    ///
+    /// The empty set prints `none` rather than nothing, because "this side declares no capability" is
+    /// a fact — plain text needs none — while a blank value reads as "the field was lost".
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut printed = false;
+        for capability in self.iter() {
+            if printed {
+                formatter.write_str(",")?;
+            }
+            printed = true;
+            formatter.write_str(capability.name())?;
+        }
+        if !printed {
+            formatter.write_str("none")?;
+        }
+        Ok(())
+    }
+}

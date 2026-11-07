@@ -11,6 +11,7 @@
 )]
 
 mod mocks;
+mod models;
 mod response;
 mod stream;
 

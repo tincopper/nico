@@ -53,6 +53,7 @@
 - provider **不拥有** HTTP/TLS/预算：连接、超时、TLS 策略仍归 `nico-http`。
 - provider 4xx/5xx → `CanonicalError`（保留稳定 code 与类别），不把 provider body 原样泄露给客户端；凭证不写日志。
 - `Provider` 单例无 per-request 状态；`ProviderStream` 每次响应新建。
+- `providers[].model_allowlist` 是**provider 的**模型名（不是调用方写的别名），在 `Exchange::prepare` 里对 `model_map` **解析后**的名字检查：命中即放行（`fast -> gpt-4o` + `[gpt-4o]` 合法），否则在编码前拒绝，`403 model_not_allowed`；空列表 = 不限制。名字在发布期解析为 `ModelId`，非法名是发布失败（`RouteError::InvalidModel`）。
 
 ### R5：路由与数据面缝
 
@@ -72,7 +73,8 @@
 - 日志字段：`llm.protocol`、`llm.provider`、`llm.model`（逻辑/物理）、`llm.stream`、`config.generation`、`http.status`、`elapsed_ms`。
 - 不记录 prompt/response body、`Authorization`、provider key；错误响应不复述 provider 内部原因。
 - 交换类型的 `Debug` 不打印 header 值、prompt 或响应体：凭证、prompt、body 在日志里没有拼写。
-- 发布期每个 protocol/provider 一行 `info`（kind、能力、版本）。
+- 装配期每个注册的 codec / adapter 一行 `info`：`llm.protocol`（或 `llm.provider`）、`llm.capabilities`（逗号连接的轴名，空集为 `none`）、`llm.version`（只在厂商有 wire 版本时出现，否则字段缺席）。注册表是进程事实，所以这一行在装配时打一次；每代发布的事实是每路由那一行。
+- 发布期每个 LLM 路由一行 `info`（`route_id`、`llm.protocol`、`llm.provider`、`llm.mode`、`llm.model_map`），在快照入库之后写出。
 
 ### R7：形状先行的验证
 
@@ -94,6 +96,8 @@
 - [x] AI 路由有界请求体缓冲（`request.max_body_bytes`）与非流式响应缓冲（`request.max_response_bytes`）：请求体超限 413；非流式响应声明长度超限时写头前 502，长度未知时在头已提交后切流（不伪造第二个状态，见 `pingora-guidelines.md`）。
 - [x] 端到端 OpenAI→OpenAI（convert + passthrough）、SSE、错误、日志字段有测试。
 - [x] 插件 `buffers_body` 与 AI 路由缓冲冲突在发布期拒绝；LLM 路由的 body/response 插件限制有测试。
+- [x] `providers[].model_allowlist` 生效：对解析后的物理模型名检查，越界在编码前 `403 model_not_allowed`；空列表不限制；非法名是发布失败。
+- [x] 装配期每个 codec/adapter 一行 `info`，带 `llm.capabilities` 与（有则）`llm.version`；`llm.version` 在厂商无版本时**缺席**而非占位。
 - [x] 五条基线全绿；`nico-core` 不新增网络/密码学依赖；`nico-http` 不依赖 `nico-llm`。
 
 ## Out of Scope

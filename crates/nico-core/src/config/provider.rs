@@ -61,6 +61,12 @@ impl Provider {
     }
 
     /// Returns the models this provider may serve; empty means "no restriction".
+    ///
+    /// The names are the **provider's** (`gpt-4o`), not the aliases a caller writes: `model_map`
+    /// resolves an alias to a physical name, and this list is the operator's statement about which of
+    /// those the endpoint may reach. The check runs on the resolved name while the request is prepared,
+    /// so a model this list does not name is refused before anything is encoded — the field is a
+    /// control, not a comment, and a document that sets it changes what the route will serve.
     #[must_use]
     pub fn model_allowlist(&self) -> &[String] {
         &self.model_allowlist

@@ -10,7 +10,7 @@ use nico_core::ErrorCategory;
 use crate::{
     protocol::{Capability, CodecError, ProtocolId},
     provider::{ProviderError, ProviderKind},
-    schema::{CanonicalError, SchemaError},
+    schema::{CanonicalError, ModelId, SchemaError},
 };
 
 /// Why a route, a codec and a provider adapter cannot be assembled into a front-end.
@@ -96,6 +96,17 @@ pub enum ExchangeError {
         /// The capability the request needs.
         capability: Capability,
     },
+    /// The resolved model is not one this route serves.
+    ///
+    /// The operator's `model_allowlist` refused it after the route mapped the caller's alias. The name
+    /// here is the *resolved* one, which is endpoint configuration: it reaches the log and never the
+    /// client's answer, because the map exists to keep the provider's catalogue out of the caller's
+    /// vocabulary.
+    #[error("the route does not serve the model `{model}`")]
+    ModelNotAllowed {
+        /// The physical model the route resolved to.
+        model: ModelId,
+    },
     /// A canonical value crossed the boundary without satisfying its invariants.
     ///
     /// Every canonical shape validates at construction, so this means a codec produced a value that
@@ -131,6 +142,12 @@ impl ExchangeError {
                 "unsupported_capability",
                 "the route does not support a capability this request needs",
                 422,
+            ),
+            Self::ModelNotAllowed { .. } => CanonicalError::from_static_parts(
+                ErrorCategory::Client,
+                "model_not_allowed",
+                "the route does not serve this model",
+                403,
             ),
             Self::Codec(CodecError::InvalidRequest { .. }) => CanonicalError::from_static_parts(
                 ErrorCategory::Client,

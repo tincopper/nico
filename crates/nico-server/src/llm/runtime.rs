@@ -30,11 +30,7 @@ impl LlmRuntime {
     #[must_use]
     pub fn builtin() -> Self {
         let (protocols, providers) = nico_llm::builtin_registry();
-        tracing::info!(
-            llm.protocols = ?protocols,
-            llm.providers = ?providers,
-            "LLM registries assembled"
-        );
+        log_registries(&protocols, &providers);
         Self::with_parts(protocols, providers, Arc::new(EnvFileCredentials::new()))
     }
 
@@ -99,3 +95,46 @@ const _: fn() = || {
     const fn assert_send_sync_static<T: Send + Sync + 'static>() {}
     assert_send_sync_static::<LlmRuntime>();
 };
+
+/// Reports which protocols and providers this build assembled, one line per registered side.
+///
+/// An operator reads what the process can serve before a request ever runs: the registry key, the
+/// capability axes that side declares, and — only when the vendor has one — the wire revision. The
+/// revision is a field and never a placeholder: a protocol with no versioned spelling reports none,
+/// and writing a value on the wire's behalf would be a value the wire never carried.
+pub(super) fn log_registries(protocols: &ProtocolRegistry, providers: &ProviderRegistry) {
+    for codec in protocols.iter() {
+        let protocol = codec.protocol();
+        let capabilities = codec.capabilities();
+        match codec.version() {
+            Some(version) => tracing::info!(
+                llm.protocol = %protocol,
+                llm.capabilities = %capabilities,
+                llm.version = %version,
+                "LLM client protocol registered"
+            ),
+            None => tracing::info!(
+                llm.protocol = %protocol,
+                llm.capabilities = %capabilities,
+                "LLM client protocol registered"
+            ),
+        }
+    }
+    for adapter in providers.iter() {
+        let kind = adapter.kind();
+        let capabilities = adapter.capabilities();
+        match adapter.version() {
+            Some(version) => tracing::info!(
+                llm.provider = %kind,
+                llm.capabilities = %capabilities,
+                llm.version = %version,
+                "LLM provider registered"
+            ),
+            None => tracing::info!(
+                llm.provider = %kind,
+                llm.capabilities = %capabilities,
+                "LLM provider registered"
+            ),
+        }
+    }
+}

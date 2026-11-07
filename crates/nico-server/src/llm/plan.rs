@@ -275,6 +275,11 @@ fn compile_route(
         .map_err(|source| LlmBuildError::Route {
             route: route_id.to_owned(),
             source,
+        })?
+        .with_model_allowlist(entry.model_allowlist().to_vec())
+        .map_err(|source| LlmBuildError::Route {
+            route: route_id.to_owned(),
+            source,
         })?;
     let facts = Arc::new(facts);
 

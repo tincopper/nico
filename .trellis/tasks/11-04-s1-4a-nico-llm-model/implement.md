@@ -320,6 +320,23 @@
 
 **门（真实输出）**：`cargo +nightly fmt --all --check` 通过；`cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` 无 issue；`cargo test --workspace --all-features` **1126 passed / 47 suites**；`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` 通过；`cargo deny check` 四类全 ok；`cargo check --workspace --no-default-features` 通过；**文件预算：无文件超过 500 行**（最接近的是 `nico-server/tests/pipeline.rs` 496）。
 
+## 10. 需求缺口收尾（R6 的观测行 + 惰性字段）
+
+对 PRD 正文逐条复核代码后，发现两处"勾选已过但要求没落实"，本轮补齐：
+
+| 缺口 | 处理 |
+|---|---|
+| R6「每个 protocol/provider 一行 `info`（kind、能力、版本）」只做到了 kind | `ClientCodec`/`Provider` 各加一个**带默认实现**的 `version() -> Option<&'static str>`（默认 `None`）：版本是适配器的事实，1.4b 的 Anthropic 直接 override，现有实现零改动；`Capabilities` 实现 `Display`（`streaming,tools,…`，空集 `none`）；两个 registry 加 `iter()`；`llm::runtime::log_registries` 每个注册项一行，`llm.version` **只在有值时**出现（缺席即事实）。放在装配期而非每代发布：注册表是进程事实，每代发布的事实是每路由那一行 |
+| `providers[].model_allowlist` 被接受却无消费者 | 落实它已经写在自己文档里的契约：`ProviderRoute::with_model_allowlist` 在发布期把名字解析成 `ModelId`（非法名 → `RouteError::InvalidModel`），`Exchange::prepare` 在能力门旁边、编码之前检查**解析后**的物理名，越界 → 新 `ExchangeError::ModelNotAllowed`（`403 model_not_allowed`，`Client`），错误正文不点名路由服务的模型。空列表 = 不限制 |
+
+**一处方向修正（记录在案）**：`model_allowlist` 最初按"删除惰性字段"处理，删到一半发现它是 `config/parse.rs` 里 5 个 **YAML 锚点/别名/节点界**测试的载体（`document_with_allowlist`），删除会逼着重写那些安全测试的精确节点计数。改判：实现它比删它风险更低，且它本就是"修正一个被写进文档的谎言"，而不是新增未被要求的功能。
+
+**结构测试抓到我自己**：`provider/route.rs` 与 `protocol.rs` 属 `VENDOR_FREE`，而我在这两个文件里写了 `gpt-4o`/`openai.chat` 作为文档举例——`tests/structure.rs` 立刻失败，例子改成中性拼写。这正是那条测试存在的意义。
+
+**门（真实输出）**：`cargo +nightly fmt --all --check` 通过；`cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` 无 issue；`cargo test --workspace --all-features` **1132 passed / 47 suites**（新增 6 个用例：capabilities 装配行 1、版本行 1、白名单按解析名检查 1、越界拒绝 1、非法名 1、发布期接线 1）；`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` 通过；`cargo deny check` 四类全 ok；`cargo check --workspace --no-default-features` 通过；**无文件超过 500 行**（`tests/exchange/main.rs` 曾因 +3 测试到 512，已把模型策略测试拆到 `tests/exchange/models.rs`）。
+
+**规范同步**：`logging-guidelines.md` 的保留字段表加 `llm.capabilities`/`llm.version`，并把"装配期一行 + 发布期每路由一行"写清；`database-guidelines.md` 把 `model_allowlist` 从"接受却不生效的反例"改成"两个方向都示范过的正面规则"。PRD 的 R4/R6 与验收清单同步补齐。
+
 ## 回滚点
 
 - 第 1 步（schema）独立提交：只增类型/测试，可单独回退。

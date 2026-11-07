@@ -52,7 +52,8 @@ pub(super) struct RawProvider {
     pub(super) base_url: String,
     pub(super) credential_ref: String,
     /// `None` and `[]` mean the same thing — no model restriction — so the empty case does not have
-    /// to be written out; the field is still rejected when it contains the wrong type.
+    /// to be written out; the field is still rejected when it contains the wrong type. Its entries are
+    /// the provider's own model names, enforced on the resolved name while a request is prepared.
     pub(super) model_allowlist: Option<Vec<String>>,
     /// Logical model name → the name this provider expects. `None` and `{}` mean the same thing —
     /// send the caller's name unchanged — so an unmapped provider does not have to write an empty

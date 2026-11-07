@@ -127,6 +127,17 @@ pub trait ClientCodec: Send + Sync {
     /// Returns what this protocol can express.
     fn capabilities(&self) -> Capabilities;
 
+    /// Returns the vendor's wire revision this codec is pinned to, when the vendor publishes one.
+    ///
+    /// Most client protocols have no versioned spelling — one document shape at one path — so the
+    /// default is `None` and the assembly log leaves the field out: absence is the fact,
+    /// and printing a placeholder would put a word on the wire's behalf that it never carried. A
+    /// vendor that does version (a dated header, a `v1beta` path) reports the revision here, so an
+    /// operator can see which one this build speaks without reading the codec.
+    fn version(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Decodes one buffered client body and the facts around it into the canonical request.
     ///
     /// The body is complete: a convert-mode exchange buffers it before calling here, so a codec may
@@ -288,6 +299,15 @@ impl ProtocolRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Iterates the registered codecs, in registry-key order.
+    ///
+    /// The assembly reports one line per codec, and this registry is the only value that knows which
+    /// ones exist: a caller that asked for the names and then looked each one up would be reading a
+    /// snapshot of a map it does not own.
+    pub fn iter(&self) -> impl Iterator<Item = &dyn ClientCodec> {
+        self.codecs.values().map(AsRef::as_ref)
     }
 
     /// Adds one client protocol's codec.

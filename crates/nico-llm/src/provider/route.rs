@@ -7,7 +7,10 @@
 //! the canonical request is what lets one request value be re-encoded for a different route without
 //! rewriting it.
 
-use std::{collections::BTreeMap, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
 use super::ProviderKind;
 use crate::{
@@ -94,6 +97,7 @@ pub struct ProviderRoute {
     base_url: String,
     credential: Option<Credential>,
     model_map: BTreeMap<ModelId, ModelId>,
+    model_allowlist: BTreeSet<ModelId>,
     mode: ExchangeMode,
 }
 
@@ -125,6 +129,7 @@ impl ProviderRoute {
             base_url,
             credential: None,
             model_map: BTreeMap::new(),
+            model_allowlist: BTreeSet::new(),
             mode: ExchangeMode::Convert,
         })
     }
@@ -170,6 +175,38 @@ impl ProviderRoute {
         }
         self.model_map = parsed;
         Ok(self)
+    }
+
+    /// Restricts the route to the physical models it may serve.
+    ///
+    /// The names are the **provider's** — what the request will reach the vendor as — because that is
+    /// what an operator reads out of a vendor's catalogue, and `model_map` exists precisely so a caller
+    /// can write an alias instead. The check therefore runs on the resolved name, not on the one the
+    /// caller wrote: `alias -> vendor-model` with `[vendor-model]` is allowed, and the same route with
+    /// `[other-model]` is not.
+    ///
+    /// An empty list means no restriction, which is what a document that omits the field gets.
+    ///
+    /// # Errors
+    /// Returns [`RouteError::InvalidModel`] when an entry is not a model name.
+    pub fn with_model_allowlist(mut self, allowlist: Vec<String>) -> Result<Self, RouteError> {
+        let mut parsed = BTreeSet::new();
+        for name in allowlist {
+            let id = ModelId::try_new(name.clone())
+                .map_err(|source| RouteError::InvalidModel { name, source })?;
+            parsed.insert(id);
+        }
+        self.model_allowlist = parsed;
+        Ok(self)
+    }
+
+    /// Reports whether this route may serve the resolved model.
+    ///
+    /// Membership, not a ranking: an empty list allows everything, so a route that declares nothing
+    /// keeps passing names through as before.
+    #[must_use]
+    pub fn allows(&self, physical: &ModelId) -> bool {
+        self.model_allowlist.is_empty() || self.model_allowlist.contains(physical)
     }
 
     /// Resolves the name the client wrote to the name the provider serves.

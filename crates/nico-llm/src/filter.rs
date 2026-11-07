@@ -154,6 +154,14 @@ impl Exchange {
             return Err(ExchangeError::Unsupported { capability });
         }
         let model = self.route.model(request.model());
+        // The operator's allowlist, checked where the other request-time policy is: after the route
+        // resolved the caller's alias, and before anything is encoded, so a model this route does not
+        // serve never reaches the provider.
+        if !self.route.allows(model.physical()) {
+            return Err(ExchangeError::ModelNotAllowed {
+                model: model.physical().clone(),
+            });
+        }
         let body = self.provider.encode(&self.route, &request)?;
         Ok(PreparedExchange {
             request,

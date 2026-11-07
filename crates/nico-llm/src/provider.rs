@@ -191,6 +191,16 @@ pub trait Provider: Send + Sync {
     /// Returns what this provider can express.
     fn capabilities(&self) -> Capabilities;
 
+    /// Returns the wire revision this adapter is pinned to, when the vendor publishes one.
+    ///
+    /// The same rule as [`ClientCodec::version`](crate::ClientCodec::version): `None` is the default
+    /// because most vendors have no versioned spelling, and the assembly log leaves the field out
+    /// rather than inventing a value. An adapter whose vendor does version reports it here — that
+    /// revision is then visible per process without a request ever running.
+    fn version(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Resolves the route's base URL and credential into the endpoint the data plane will contact.
     ///
     /// The result depends on the route only, so it is **compiled once**, when the exchange pairs the
@@ -280,6 +290,14 @@ impl ProviderRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Iterates the registered adapters, in registry-key order.
+    ///
+    /// The counterpart of [`ProtocolRegistry::iter`](crate::ProtocolRegistry::iter): the assembly
+    /// reports one line per adapter, and only this value knows which ones exist.
+    pub fn iter(&self) -> impl Iterator<Item = &dyn Provider> {
+        self.providers.values().map(AsRef::as_ref)
     }
 
     /// Adds one provider kind's adapter.
