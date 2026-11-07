@@ -289,3 +289,45 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 
 - 1.4 nico-ai: OpenAI provider, model mapping and SSE passthrough on the plugin-driven data plane
 - parent task 11-04-s1-mvp is now 3/4; the TLS provider still gates every https provider
+
+
+## Session 7: 1.4a 收口：三轮复审修复 + 两个需求缺口 + 归档
+<!-- trellis-session: v=2 fp=8325e63363f07a1d -->
+
+**Date**: 2026-11-07
+**Task**: 1.4a 收口：三轮复审修复 + 两个需求缺口 + 归档
+**Branch**: `main`
+
+### Summary
+
+对 1.4a 的全部改动做了规范符合性审查（6 个维度）、rust-review 安全审查（17 个 cluster）与文档/预算收尾：修掉 1 个 BLOCKER、10+ 个 MAJOR、6 个安全 TRUE_POSITIVE；随后又补上 PRD 里两条只有散文、勾选已过但未落实的要求（装配期能力/版本行、providers[].model_allowlist），最后归档任务。
+
+### Main Changes
+
+- 数据平面拥有内容编码：convert 路由移除调用方 accept-encoding、拒绝非 identity 的 content-encoding；路由与调用方都不能重新协商
+- 诊断链：HttpError::internal 保留类型化 cause，UpstreamFailed/Internal 的 Display 插值 {source}（请求记录只打 Display，此前细节哪儿都没去）
+- LlmRoute::converting() 取代 LlmMode，passthrough 不能再被要求解码；providers[].kind 变成形状校验的不透明 token，加 provider 不再改 nico-core
+- 安全修复：SSE 扫描高水位（去二次方）、tool-call 上界与统一 wire token 界、nico_config::read_bounded（界由读强制、拒非普通文件）、hosts_match/host_key 单一定义、watch sink 背压、PluginContext::uri() 返回字节
+- 需求缺口：装配期每 codec/adapter 一行 info（llm.capabilities + 有则 llm.version，provided method 默认 None）；model_allowlist 在 Exchange::prepare 按解析后的物理名强制，越界 403 model_not_allowed
+- 文档与预算：cache.rs 拆分后全树无文件超 500 行；6 份 spec 与 PRD 的 R4/R6/验收清单同步；tests/exchange/main.rs 拆出 models.rs
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `7aca80f` | fix(gateway): close the spec and security review of the LLM data plane |
+| `5a454a1` | feat(llm): report capabilities and revision at assembly, and enforce the model allowlist |
+
+### Testing
+
+- [OK] cargo test --workspace --all-features：1132 passed / 47 suites
+- [OK] cargo +nightly fmt --all --check、clippy --all-targets --all-features -D warnings、RUSTDOCFLAGS=-D warnings cargo doc、cargo deny check、--no-default-features 全绿
+- [OK] 结构测试 tests/structure.rs 抓到本次文档举例里的 vendor 名（provider/route.rs、protocol.rs 属 VENDOR_FREE），已改中性拼写
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 11-05-s1-4b：Anthropic / Responses / Gemini 的协议矩阵；ClientCodec::version 已就位，可直接报 anthropic-version 这类 wire 版本
