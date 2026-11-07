@@ -178,7 +178,7 @@ routes:
   - id: llm
     path_prefix: /v1/
     provider: primary
-    protocol: openai.responses
+    protocol: openai.assistants
 ",
     );
 
@@ -187,7 +187,7 @@ routes:
         matches!(
             &error,
             LlmBuildError::UnknownProtocol { route, protocol }
-                if route == "llm" && protocol == "openai.responses"
+                if route == "llm" && protocol == "openai.assistants"
         ),
         "expected UnknownProtocol, got {error:?}"
     );

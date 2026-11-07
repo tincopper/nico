@@ -120,12 +120,20 @@
 
 ## 7. OpenAI Responses 客户端 codec
 
-- [ ] `protocol/openai_responses.rs` + `openai_responses/{request,items,response,stream,error,usage}.rs`：`PROTOCOL = "openai.responses"`，`version() = None`。
-- [ ] decode：`input` 字符串/item 数组、`instructions`、`text.format`、`tools`（扁平 function 形状）、`tool_choice` 四种、拒绝表（§4.3）、`metadata`/`user` → `extensions`。
-- [ ] encode：`output[]`（message/output_text、function_call）、`status`/`incomplete_details`、usage。
-- [ ] `stream_encoder`：`sequence_number` 递增、`output_item.added`/`content_part.added`、累积出 `response.completed` 的完整 `output`、无 `[DONE]`。
-- [ ] 测试：`tests/openai_responses_client/{main,request,items,response,stream,error,support}.rs`，含 `previous_response_id`/`store: true`/内置工具的拒绝与“不静默丢”。
-- [ ] **检查点 G**：`(openai.responses → openai_responses)` 的往返语义相等；错误包络与 chat 方言共用一份实现（测试断言两者输出结构一致）。
+- [x] `protocol/openai_responses.rs` + `openai_responses/{request,items,response,stream,error,usage}.rs`：`PROTOCOL = "openai.responses"`，`version() = None`。
+- [x] decode：`input` 字符串/item 数组、`instructions`、`text.format`、`tools`（扁平 function 形状）、`tool_choice` 四种、拒绝表（§4.3）、`metadata`/`user` → `extensions`。
+- [x] encode：`output[]`（message/output_text、function_call）、`status`/`incomplete_details`、usage。
+- [x] `stream_encoder`：`sequence_number` 递增、`output_item.added`/`content_part.added`、累积出 `response.completed` 的完整 `output`、无 `[DONE]`。
+- [x] 测试：`tests/openai_responses_client/{main,request,items,response,stream,error,support}.rs`，含 `previous_response_id`/`store: true`/内置工具的拒绝与“不静默丢”。
+- [x] **检查点 G**：`(openai.responses → openai_responses)` 的往返语义相等；错误包络与 chat 方言共用一份实现（测试断言两者输出结构一致）。
+
+  **落地记录（第 7 步）**
+  - 新增 `protocol/openai_responses.rs`（`OpenAiResponsesCodec`、`PROTOCOL = "openai.responses"`、无版本拼写）与 `openai_responses/{request,items,response,stream,error,usage}.rs`；错误包络直接复用 `protocol/openai_error`（与 chat 方言同一份实现），`lib.rs` 的 `builtin_registry()` 变成 3 个 codec、`tests/registry.rs` 断言 3 个协议。
+  - decode：`instructions` → 前导 system item；`input` 是字符串或 item 数组，每个 item 恰好一个 canonical item（`message`/`function_call`/`function_call_output`）；`input_image` 同时接受 http(s) 与 `data:`（base64 解码）；`tools` 是扁平 function 形状（先读 `type` 再类型化解码，所以内置工具报 `tools[i].type` 而不是“缺 name”）；`tool_choice` 三种模式 + 具名；`text.format` 三种；`store: false` 接受、`true` 422；12 个已知字段（`previous_response_id`/`reasoning`/`truncation`/`parallel_tool_calls`/`include`/`service_tier`/`background`/`prompt`/`stop`/`seed`/两个 penalty）422；`metadata`/`user` 进 `extensions`；`reasoning` item → 422 缺能力；会话中间的 system/developer 消息 → 422 按字段。
+  - encode：`status` 闭表（`Stop`/`ToolCalls` → completed，`Length` → incomplete+`max_output_tokens`，`ContentFilter` → incomplete+`content_filter`，`Error` → failed）；`output[]` 是 message/function_call（reasoning summary 有则一并渲染）；`usage` 用该协议自己的 `input_tokens`/`output_tokens`/`total_tokens` + 两个 details。
+  - stream：`sequence_number` 从 0 递增、事件名与 payload `type` 同拼写；文本（item.added → content_part.added → delta → done → item.done）与工具（item.added → arguments.delta → item.done）；**`response.completed` 推迟到 body 结束写出**（`finish()`），因为 provider 可能在 finish 之后才报 usage，而该协议只有这一个终止事件；没有 finish 事件就什么都不写（不把截断说成完整）；失败走共用包络的 `data:` 帧。
+  - 修了两处既有测试的“未知协议”夹具：`openai.responses` 现在是本 build 服务的协议，改成 `openai.assistants`（`nico-server` 的 plan 与 publication 各一处）。
+  - 测试：`tests/openai_responses_client/{main,support,request,response,stream,error}.rs` **25 个**。工作区 **1564 passed / 52 suites**；fmt/clippy/doc/文件预算全绿。
 
 ## 8. Gemini 客户端 codec
 

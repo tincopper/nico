@@ -11,6 +11,7 @@ use nico_llm::{
     protocol::{
         anthropic::{AnthropicMessagesCodec, PROTOCOL as ANTHROPIC_MESSAGES},
         openai_chat::{OpenAiChatCodec, PROTOCOL},
+        openai_responses::{OpenAiResponsesCodec, PROTOCOL as RESPONSES_MESSAGES},
     },
     provider::{
         anthropic::{NATIVE_PROTOCOL as ANTHROPIC_PROTOCOL, PROVIDER_KIND as ANTHROPIC_KIND},
@@ -39,7 +40,20 @@ fn the_builtin_registry_answers_both_lookups_a_publication_makes() {
         Some(nico_llm::protocol::anthropic::VERSION),
         "the assembly log reports the wire revision this build speaks"
     );
-    assert_eq!(protocols.len(), 2, "this build serves two client protocols");
+    let responses = protocols
+        .codec(RESPONSES_MESSAGES.as_str())
+        .expect("the registered Responses codec resolves");
+    assert_eq!(responses.protocol(), RESPONSES_MESSAGES);
+    assert_eq!(
+        responses.version(),
+        None,
+        "this vendor has no dated spelling for the dialect, so the log leaves the field out"
+    );
+    assert_eq!(
+        protocols.len(),
+        3,
+        "this build serves three client protocols"
+    );
     assert!(!protocols.is_empty());
 
     let adapter = providers
@@ -104,6 +118,7 @@ fn a_duplicate_registration_is_refused_rather_than_overwritten() {
     let (mut protocols, mut providers) = builtin_registry();
     let codec: Arc<dyn ClientCodec> = Arc::new(OpenAiChatCodec::new());
     let messages: Arc<dyn ClientCodec> = Arc::new(AnthropicMessagesCodec::new());
+    let responses: Arc<dyn ClientCodec> = Arc::new(OpenAiResponsesCodec::new());
     let adapter: Arc<dyn Provider> = Arc::new(nico_llm::provider::OpenAiProvider::new());
 
     assert_eq!(
@@ -121,6 +136,12 @@ fn a_duplicate_registration_is_refused_rather_than_overwritten() {
         "a second codec for one protocol is refused for the same reason"
     );
     assert_eq!(
+        protocols.register(responses),
+        Err(RegistryError::DuplicateKind {
+            kind: RESPONSES_MESSAGES.as_str().to_owned(),
+        })
+    );
+    assert_eq!(
         providers.register(adapter),
         Err(RegistryError::DuplicateKind {
             kind: PROVIDER_KIND.as_str().to_owned(),
@@ -128,7 +149,7 @@ fn a_duplicate_registration_is_refused_rather_than_overwritten() {
     );
     assert_eq!(
         protocols.len(),
-        2,
+        3,
         "the refused registration changed nothing"
     );
     assert_eq!(providers.len(), 4);

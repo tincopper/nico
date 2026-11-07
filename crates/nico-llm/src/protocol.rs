@@ -27,6 +27,7 @@ mod openai_error;
 
 pub mod anthropic;
 pub mod openai_chat;
+pub mod openai_responses;
 
 pub use capabilities::{Capabilities, Capability};
 pub(crate) use facts::header_names;

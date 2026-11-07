@@ -118,7 +118,7 @@ async fn an_ai_route_is_published_with_its_snapshot_and_survives_a_refused_plan(
     // the registry is what refuses it — so the plan refuses the publication, and the previously
     // published pair keeps serving.
     source
-        .push_comparable(2, &document(&credential, "openai.responses", 2048))
+        .push_comparable(2, &document(&credential, "openai.assistants", 2048))
         .await;
     let status = harness
         .advance_until(|harness| harness.status().degraded)
