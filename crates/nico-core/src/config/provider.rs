@@ -4,9 +4,10 @@
 //! The credential itself never appears in the document, and this module never resolves it: reading
 //! `env:`/`file:` references belongs to the data plane that makes the call.
 //!
-//! It also carries the logical → physical model map. The route forwards the name the caller wrote;
-//! which name the upstream is asked for is a property of the endpoint, so the map lives here rather
-//! than on the route. Two endpoints that need different parameters are two provider entries.
+//! It also carries the logical → physical model map and the endpoint's own output ceiling. The route
+//! forwards the name the caller wrote; which name the upstream is asked for, and how large an answer
+//! it may produce when the caller names no limit, is a property of the endpoint, so both live here
+//! rather than on the route. Two endpoints that need different parameters are two provider entries.
 
 use std::collections::BTreeMap;
 
@@ -27,6 +28,7 @@ pub struct Provider {
     pub(super) credential_ref: String,
     pub(super) model_allowlist: Vec<String>,
     pub(super) model_map: BTreeMap<String, String>,
+    pub(super) max_output_tokens: Option<u32>,
     pub(super) timeout_ms: Option<u32>,
 }
 
@@ -81,6 +83,18 @@ impl Provider {
     #[must_use]
     pub fn model_map(&self) -> &BTreeMap<String, String> {
         &self.model_map
+    }
+
+    /// Returns the output ceiling this endpoint uses when the request names none.
+    ///
+    /// The value is endpoint policy, not a default the gateway invents: a dialect that requires an
+    /// output ceiling cannot be served from a request that omits one unless the route answers for it,
+    /// and a constant would silently cap a caller who named nothing. `None` means the endpoint
+    /// imposes none, and a request's own limit always takes precedence. Zero is refused while the
+    /// document is validated, so "set, but not a ceiling" cannot be spelled.
+    #[must_use]
+    pub const fn max_output_tokens(&self) -> Option<u32> {
+        self.max_output_tokens
     }
 
     /// Returns the provider-level timeout in milliseconds, when the document sets one.

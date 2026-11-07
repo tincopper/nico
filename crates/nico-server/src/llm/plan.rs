@@ -42,7 +42,7 @@
 //! after the snapshot it describes is stored. Nothing else here is logged: a base URL, a header value
 //! and a credential never enter the log, and a model map's contents are the document's, not the log's.
 
-use std::{collections::BTreeMap, fmt, sync::Arc};
+use std::{collections::BTreeMap, fmt, num::NonZeroU32, sync::Arc};
 
 use nico_core::{Document, Provider, Route, RouteMode, RouteTarget};
 use nico_http::{
@@ -50,8 +50,8 @@ use nico_http::{
     llm::{LlmRoute, LlmRoutes},
 };
 use nico_llm::{
-    ConvertRoute, Credential, Exchange, ExchangeMode, PassthroughRoute, ProtocolRegistry,
-    ProviderRegistry, ProviderRoute,
+    ConvertRoute, Credential, Exchange, ExchangeMode, PassthroughRoute, ProtocolId,
+    ProtocolRegistry, ProviderKind, ProviderRegistry, ProviderRoute, RouteError,
 };
 
 use super::{CredentialResolver, LlmBuildError};
@@ -262,26 +262,14 @@ fn compile_route(
     // The protocol and the kind are the registries' own spellings, not the document's: the entry was
     // only a lookup key, and the compiled facts must name what will actually run. Both are read before
     // the values are moved into a constructor, so the publication log still names them afterwards.
-    let protocol_id = codec.protocol();
-    let provider_kind = adapter.kind();
-    let facts = ProviderRoute::try_new(route_id, protocol_id, provider_kind, entry.base_url())
-        .map_err(|source| LlmBuildError::Route {
-            route: route_id.to_owned(),
-            source,
-        })?
-        .with_mode(mode)
-        .with_credential(credential)
-        .with_model_map(entry.model_map().clone())
-        .map_err(|source| LlmBuildError::Route {
-            route: route_id.to_owned(),
-            source,
-        })?
-        .with_model_allowlist(entry.model_allowlist().to_vec())
-        .map_err(|source| LlmBuildError::Route {
-            route: route_id.to_owned(),
-            source,
-        })?;
-    let facts = Arc::new(facts);
+    let facts = Arc::new(route_facts(
+        route_id,
+        codec.protocol(),
+        adapter.kind(),
+        entry,
+        credential,
+        mode,
+    )?);
 
     let front_end: Arc<dyn LlmRoute> = match mode {
         ExchangeMode::Convert => {
@@ -325,6 +313,54 @@ fn provider_entry<'a>(document: &'a Document, name: &str) -> Option<&'a Provider
         .providers()
         .iter()
         .find(|provider| provider.name() == name)
+}
+
+/// Compiles one provider entry into the route facts its adapter reads.
+///
+/// Every value here is read once per publication: the base URL as written, the materialized
+/// credential, the model map in both directions, and the endpoint's own output ceiling. `route_id`
+/// only names the route in a refusal, so it is not stored twice.
+///
+/// # Errors
+/// Returns [`LlmBuildError::Route`] when the entry cannot form route facts: an empty base URL, a model
+/// name that is not a name, or an output ceiling of zero.
+pub(super) fn route_facts(
+    route_id: &str,
+    protocol: ProtocolId,
+    provider_kind: ProviderKind,
+    entry: &Provider,
+    credential: Credential,
+    mode: ExchangeMode,
+) -> Result<ProviderRoute, LlmBuildError> {
+    let to_build_error = |source| LlmBuildError::Route {
+        route: route_id.to_owned(),
+        source,
+    };
+    let facts = ProviderRoute::try_new(route_id, protocol, provider_kind, entry.base_url())
+        .map_err(to_build_error)?
+        .with_mode(mode)
+        .with_credential(credential)
+        .with_model_map(entry.model_map().clone())
+        .map_err(to_build_error)?
+        .with_model_allowlist(entry.model_allowlist().to_vec())
+        .map_err(to_build_error)?;
+    // The document already refuses a ceiling of zero, so a `None` here means the entry sets none. The
+    // conversion is still spelled out rather than unwrapped: facts built from a document that skipped
+    // its own validation must refuse themselves, not panic during a publication.
+    let max_output_tokens = entry
+        .max_output_tokens()
+        .map(|value| {
+            NonZeroU32::new(value).ok_or_else(|| {
+                to_build_error(RouteError::Empty {
+                    field: "providers[].max_output_tokens",
+                })
+            })
+        })
+        .transpose()?;
+    Ok(match max_output_tokens {
+        Some(ceiling) => facts.with_max_output_tokens(ceiling),
+        None => facts,
+    })
 }
 
 /// Translates the document's mode into the exchange's.

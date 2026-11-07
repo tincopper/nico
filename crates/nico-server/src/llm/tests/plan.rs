@@ -17,6 +17,8 @@ use nico_llm::{
 
 use super::*;
 
+mod facts;
+
 #[test]
 fn a_provider_route_becomes_one_published_front_end() {
     let plan = compile(&with_provider(CONVERT)).expect("the fixture compiles");
@@ -452,46 +454,4 @@ routes:
         .expect("no exchange means no body ownership to disagree about");
     assert_eq!(plan.len(), 0, "an upstream document publishes no front-end");
     assert_eq!(plan.route_ids().count(), 0);
-}
-
-#[test]
-fn the_operators_allowlist_reaches_the_published_front_end() {
-    // This module is the only place the document's allowlist meets the compiled route facts, so the
-    // seam needs its own assertion: a unit test of the enforcement would still pass if the wiring were
-    // dropped here.
-    let document = document(&format!(
-        "\
-providers:
-  - name: primary
-    kind: openai
-    base_url: http://127.0.0.1:8080
-    credential_ref: env:PRIMARY_KEY
-    model_allowlist: [gpt-allowed]
-plugins: []
-upstreams: []
-{CONVERT}"
-    ));
-    let plan = compile(&document).expect("the fixture compiles");
-    let route = plan.route("llm").expect("the route is published");
-    let converting = route
-        .converting()
-        .expect("a convert route has a translation half");
-    let view = nico_http::llm::LlmRequest::new(
-        "POST",
-        "/v1/chat/completions",
-        Vec::new(),
-        br#"{"model":"gpt-other","messages":[{"role":"user","content":"hi"}]}"#,
-    );
-
-    let error = converting
-        .prepare(&view)
-        .expect_err("the route serves one model, and this is not it");
-
-    match error {
-        nico_http::error::HttpError::LlmRejected { rejection } => {
-            assert_eq!(rejection.status(), 403);
-            assert_eq!(rejection.code(), "model_not_allowed");
-        }
-        other => panic!("expected the client codec's refusal, got {other:?}"),
-    }
 }

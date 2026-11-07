@@ -25,13 +25,20 @@ use crate::{
     schema::{CanonicalError, ChatRequest, ChatResponse, StreamEvent},
 };
 
+mod base_url;
 mod endpoint;
 mod route;
 
+pub mod anthropic;
+pub mod gemini;
 pub mod openai;
+pub mod openai_responses;
 
+pub use anthropic::AnthropicProvider;
 pub use endpoint::{Endpoint, EndpointError, WireRequest};
+pub use gemini::GeminiProvider;
 pub use openai::OpenAiProvider;
+pub use openai_responses::OpenAiResponsesProvider;
 pub use route::{Credential, ExchangeMode, ProviderRoute, RouteError};
 
 /// One provider's identifier, for example `vendor`; the value is also its registry key.
@@ -102,6 +109,13 @@ pub enum ProviderError {
         reason: String,
     },
     /// The route facts do not describe an addressable endpoint.
+    ///
+    /// Covers both an address this adapter cannot use (an unparseable `base_url`, a host the data
+    /// plane could not write) and a route fact the adapter needs **before** it can produce bytes: the
+    /// physical model its path names, or the output ceiling its dialect requires when the caller names
+    /// none ([`EndpointError::RouteFact`]). Both are publication failures — the endpoint is compiled
+    /// once from route facts, before any request body exists — so the document is refused and the
+    /// previously published generation keeps serving.
     #[error("`{kind}` reports an unusable endpoint")]
     InvalidEndpoint {
         /// The adapter that could not build the endpoint.
@@ -211,8 +225,9 @@ pub trait Provider: Send + Sync {
     ///
     /// # Errors
     /// Returns [`ProviderError::InvalidEndpoint`] when the route's base URL or credential cannot form
-    /// an endpoint, and [`ProviderError::Unsupported`] when the route names something this provider
-    /// cannot serve.
+    /// an endpoint, when a route fact this adapter requires is missing
+    /// ([`EndpointError::RouteFact`]), and [`ProviderError::Unsupported`] when the route names
+    /// something this provider cannot serve.
     fn endpoint(&self, route: &ProviderRoute) -> Result<Endpoint, ProviderError>;
 
     /// Encodes the canonical request as this provider's request body.

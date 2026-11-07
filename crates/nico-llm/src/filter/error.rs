@@ -71,9 +71,12 @@ pub enum ExchangeBuildError {
     /// The adapter cannot compile the route into an endpoint.
     ///
     /// The failure is static — [`Provider::endpoint`](crate::Provider::endpoint) reads route facts
-    /// only — so an unusable `base_url` or a capability the adapter lacks is refused while the
-    /// document is compiled, and the previously published generation keeps serving. Without this
-    /// check an unaddressable route would answer `500` on every one of its requests instead.
+    /// only — so an unusable `base_url`, a capability the adapter lacks, or a route fact the adapter
+    /// must have before it can produce bytes (`EndpointError::RouteFact`; the physical model a path
+    /// names, or the output ceiling a dialect requires) is refused while the document is compiled, and
+    /// the previously published generation keeps serving. Without this check the route would answer
+    /// `500` on every one of its requests instead. A refused route fact keeps the last known good
+    /// publication in service like every other publication failure.
     #[error("the route does not address an endpoint: {source}")]
     Endpoint {
         /// The adapter's reason.
@@ -98,8 +101,10 @@ pub enum ExchangeError {
     },
     /// The resolved model is not one this route serves.
     ///
-    /// The operator's `model_allowlist` refused it after the route mapped the caller's alias. The name
-    /// here is the *resolved* one, which is endpoint configuration: it reaches the log and never the
+    /// Two request-time policies produce it, and both compare the *resolved* name before anything is
+    /// encoded: the operator's `model_allowlist` refused it, or the endpoint's path already names a
+    /// different physical model (an endpoint whose request target carries the model cannot take it
+    /// from the body). The name here is endpoint configuration: it reaches the log and never the
     /// client's answer, because the map exists to keep the provider's catalogue out of the caller's
     /// vocabulary.
     #[error("the route does not serve the model `{model}`")]

@@ -49,19 +49,71 @@ fn an_array_content_decodes_text_and_a_remote_image() {
 }
 
 #[test]
-fn an_inline_image_is_refused_by_field() {
-    let error = decode_err(
+fn an_inline_image_decodes_to_bytes() {
+    let request = decode(
         r#"{"model":"m","messages":[{"role":"user","content":[
-            {"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}
+            {"type":"image_url","image_url":{"url":"data:image/png;base64,Zg=="}}
         ]}]}"#,
     );
-    assert_eq!(
-        error,
-        CodecError::UnsupportedField {
-            protocol: nico_llm::protocol::openai_chat::PROTOCOL,
-            field: "messages[0].content[0].image_url.url".into()
-        }
-    );
+    match &request.conversation()[0] {
+        Item::Message(message) => assert_eq!(
+            message.content()[0],
+            ContentPart::Image(ImageSource::Base64 {
+                media_type: "image/png".to_owned(),
+                data: b"f".to_vec(),
+            })
+        ),
+        other => panic!("expected a message, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_inline_image_that_is_not_base64_is_refused_by_field() {
+    for url in ["data:image/png,abc", "data:image/png;charset=utf-8,abc"] {
+        let body = format!(
+            r#"{{"model":"m","messages":[{{"role":"user","content":[
+                {{"type":"image_url","image_url":{{"url":"{url}"}}}}
+            ]}}]}}"#
+        );
+        assert_eq!(
+            decode_err(&body),
+            CodecError::UnsupportedField {
+                protocol: nico_llm::protocol::openai_chat::PROTOCOL,
+                field: "messages[0].content[0].image_url.url".into()
+            },
+            "{url} is an inline image this codec cannot carry"
+        );
+    }
+}
+
+#[test]
+fn a_malformed_inline_image_is_refused_by_field_without_the_payload() {
+    // The last case carries a marker so the assertion can tell a field-path refusal from one that
+    // quoted the payload; an inline payload is the image itself.
+    for url in [
+        "data:image/png;base64,",
+        "data:;base64,Zg==",
+        "data:text/plain;base64,Zg==",
+        "data:image/png;charset=utf-8;base64,Zg==",
+        "data:image/png;base64",
+        "data:image/png;base64,MARKER**",
+    ] {
+        let body = format!(
+            r#"{{"model":"m","messages":[{{"role":"user","content":[
+                {{"type":"image_url","image_url":{{"url":"{url}"}}}}
+            ]}}]}}"#
+        );
+        let error = decode_err(&body);
+        assert!(
+            matches!(&error, CodecError::InvalidRequest { reason, .. }
+                if reason.contains("messages[0].content[0].image_url.url")),
+            "{url} must be refused by field: {error:?}"
+        );
+        assert!(
+            !error.to_string().contains("MARKER"),
+            "the payload must not be quoted: {error}"
+        );
+    }
 }
 
 #[test]

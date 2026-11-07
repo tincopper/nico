@@ -13,13 +13,14 @@
 
 use serde::Serialize;
 
-use super::super::{base64, unsupported, unsupported_field};
+use super::super::{unsupported, unsupported_field};
 use crate::{
     protocol::Capability,
     provider::ProviderError,
     schema::{
         ChatRequest, ContentPart, ImageSource, Item, Message, Reasoning, Role, ToolCall, ToolResult,
     },
+    wire::base64,
 };
 
 /// One conversation entry.

@@ -30,6 +30,10 @@
 //! The codec declares what it actually maps: streaming, tools, images, reasoning and a structured
 //! response format. Files are *not* declared: this document can reference a file by id, and the
 //! canonical model carries inline file bytes, so there is no truthful mapping yet.
+//!
+//! An image part is either a remote URL or an inline `data:` URL whose payload is base64; the two
+//! canonical [`ImageSource`](crate::schema::ImageSource) variants are exactly those spellings, so both
+//! directions of the image mapping are covered by the `images` declaration.
 
 use std::{borrow::Cow, collections::BTreeMap};
 

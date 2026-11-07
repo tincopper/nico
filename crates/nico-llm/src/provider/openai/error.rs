@@ -42,7 +42,11 @@ use crate::{
 const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
 
 /// Builds the canonical error a failure status describes.
-pub(super) fn failure(status: u16, body: &[u8]) -> CanonicalError {
+///
+/// Visible to this vendor's sibling dialect module (`provider/openai_responses`) so both dialects
+/// answer the same status with the same category, code and caller status: a second table would be a
+/// second answer to the same question.
+pub(in crate::provider) fn failure(status: u16, body: &[u8]) -> CanonicalError {
     let shape = shape(status);
     let code = envelope_code(body);
     decorate(
@@ -56,8 +60,9 @@ pub(super) fn failure(status: u16, body: &[u8]) -> CanonicalError {
 ///
 /// A stream that fails after it started is never retryable: the caller already received bytes, and a
 /// second attempt would be a second answer. The frame's `code` is kept for the log for the same reason
-/// a status error's code is.
-pub(super) fn stream_failure(code: Option<&RawJson>) -> CanonicalError {
+/// a status error's code is. The sibling dialect module reuses this so a failed `response.*` frame
+/// reads exactly like a failed chat chunk.
+pub(in crate::provider) fn stream_failure(code: Option<&RawJson>) -> CanonicalError {
     decorate(
         CanonicalError::from_static_parts(
             ErrorCategory::Upstream,

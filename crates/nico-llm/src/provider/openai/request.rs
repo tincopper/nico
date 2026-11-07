@@ -75,7 +75,7 @@ pub(super) fn encode(
     serde_json::to_vec(&wire).map_err(|error| {
         invalid_request(format!(
             "the request could not be serialized ({} error)",
-            super::error_class(&error)
+            crate::wire::json::error_class(&error)
         ))
     })
 }

@@ -192,7 +192,7 @@ struct PartWire {
     extra: BTreeMap<String, RawJson>,
 }
 
-/// One remote image reference.
+/// One image reference: a remote URL, or an inline image as a `data:` URL.
 #[derive(Deserialize)]
 struct ImageUrlWire {
     url: String,
@@ -308,15 +308,75 @@ impl ImageUrlWire {
         if self.url.trim().is_empty() {
             return Err(invalid(format!("field `{value}.url` is required")));
         }
-        // An inline `data:` URL carries the bytes base64-encoded; decoding it needs a codec this
-        // step does not have, so it is refused instead of being forwarded as an unvalidated URL.
-        if self
-            .url
-            .get(..5)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"))
-        {
-            return Err(unsupported(format!("{value}.url")));
-        }
-        Ok(ContentPart::Image(ImageSource::Url(self.url)))
+        let image = if is_data_url(&self.url) {
+            inline_image(&self.url, &format!("{value}.url"))?
+        } else {
+            ImageSource::Url(self.url)
+        };
+        Ok(ContentPart::Image(image))
     }
+}
+
+/// The prefix that makes a URL an inline payload rather than a remote reference.
+const DATA_PREFIX: &str = "data:";
+
+/// The parameter a `data:` URL's payload must declare; its media type is the rest of the header.
+const BASE64_PARAMETER: &str = ";base64";
+
+/// Reports whether a URL is an inline `data:` URL.
+fn is_data_url(url: &str) -> bool {
+    url.get(..DATA_PREFIX.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(DATA_PREFIX))
+}
+
+/// Decodes an inline `data:` URL into the canonical base64 image.
+///
+/// The accepted spelling is `data:<media-type>;base64,<payload>`. It is the one image spelling all four
+/// target protocols can carry, so the protocol matrix uses it in every fixture; a remote URL is the
+/// other canonical form, and the two together are what the `images` capability names.
+///
+/// Media-type parameters are refused rather than folded into the media type: another protocol writes a
+/// bare `image/<subtype>` (`inlineData.mimeType`), so a value carrying `;charset=…` would become a
+/// type that protocol cannot read back.
+///
+/// Every refusal names the field and never the URL: the URL's payload is the image itself.
+fn inline_image(url: &str, field: &str) -> Result<ImageSource, CodecError> {
+    let not_a_data_url = || invalid(format!("field `{field}` is not a data URL"));
+    let rest = url.get(DATA_PREFIX.len()..).ok_or_else(not_a_data_url)?;
+    let (header, payload) = rest.split_once(',').ok_or_else(not_a_data_url)?;
+    let parameter_at = header.len().saturating_sub(BASE64_PARAMETER.len());
+    let media_type = header
+        .get(parameter_at..)
+        .filter(|suffix| suffix.eq_ignore_ascii_case(BASE64_PARAMETER))
+        .map(|_| &header[..parameter_at])
+        .ok_or_else(|| unsupported(field.to_owned()))?;
+    if !is_image_media_type(media_type) {
+        return Err(invalid(format!("field `{field}` is not an image data URL")));
+    }
+    if payload.is_empty() {
+        return Err(invalid(format!(
+            "field `{field}` carries an empty inline image"
+        )));
+    }
+    let data = crate::wire::base64::decode(payload).map_err(|error| {
+        invalid(format!(
+            "field `{field}` is not a valid inline image: {error}"
+        ))
+    })?;
+    Ok(ImageSource::Base64 {
+        media_type: media_type.to_owned(),
+        data,
+    })
+}
+
+/// Reports whether a `data:` URL's media type is a bare `image/<subtype>`.
+fn is_image_media_type(media_type: &str) -> bool {
+    let Some((kind, subtype)) = media_type.split_once('/') else {
+        return false;
+    };
+    kind.eq_ignore_ascii_case("image")
+        && !subtype.is_empty()
+        && subtype
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() && byte != b';' && byte != b',')
 }

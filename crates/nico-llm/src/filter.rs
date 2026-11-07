@@ -136,7 +136,9 @@ impl Exchange {
     /// Returns [`ExchangeError::Codec`] when the client codec rejects the body,
     /// [`ExchangeError::InvalidCanonical`] when the decoded value breaks a canonical invariant,
     /// [`ExchangeError::Unsupported`] when the request needs a capability the pair does not share,
-    /// and [`ExchangeError::Provider`] when the adapter cannot encode the request.
+    /// [`ExchangeError::ModelNotAllowed`] when the route's allowlist or its endpoint's pinned model
+    /// refuses the resolved model, and [`ExchangeError::Provider`] when the adapter cannot encode the
+    /// request.
     pub fn prepare(
         &self,
         facts: &RequestFacts,
@@ -158,6 +160,18 @@ impl Exchange {
         // resolved the caller's alias, and before anything is encoded, so a model this route does not
         // serve never reaches the provider.
         if !self.route.allows(model.physical()) {
+            return Err(ExchangeError::ModelNotAllowed {
+                model: model.physical().clone(),
+            });
+        }
+        // Some endpoints write the physical model into the request target, because their upstream
+        // head precedes the body that would otherwise carry it. Such an endpoint served a different
+        // physical model than the one this request resolved to, so the request is refused rather than
+        // quietly answered by a model the route did not choose. The comparison is vendor-free: it reads
+        // the endpoint's own answer and the route's compiled map, nothing else.
+        if let Some(pinned) = self.endpoint.model()
+            && pinned != model.physical()
+        {
             return Err(ExchangeError::ModelNotAllowed {
                 model: model.physical().clone(),
             });

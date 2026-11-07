@@ -76,6 +76,19 @@ fn with_provider(sections: &str) -> Document {
     document(&format!("{PROVIDER}plugins: []\nupstreams: []\n{sections}"))
 }
 
+/// The fixture provider with an output ceiling, which is endpoint policy rather than a gateway default.
+fn provider_with_ceiling(ceiling: u32) -> String {
+    format!("{PROVIDER}    max_output_tokens: {ceiling}\n")
+}
+
+/// Parses a document carrying the provider with `ceiling` plus `sections`.
+fn with_ceiling(ceiling: u32, sections: &str) -> Document {
+    document(&format!(
+        "{}plugins: []\nupstreams: []\n{sections}",
+        provider_with_ceiling(ceiling)
+    ))
+}
+
 /// The registries a process assembles.
 fn registries() -> (ProtocolRegistry, ProviderRegistry) {
     nico_llm::builtin_registry()

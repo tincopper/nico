@@ -14,17 +14,24 @@
 //! - [`protocol`] — the [`ClientCodec`] contract, its registry, the [`Capabilities`] a protocol
 //!   declares, and the framework-free facts of one HTTP exchange.
 //! - [`provider`] — the [`Provider`] and [`ProviderStream`] contracts, their registry, and the
-//!   compiled route facts an adapter reads. The OpenAI adapter lives in [`provider::openai`].
+//!   compiled route facts an adapter reads. One module per wire dialect: [`provider::openai`] speaks
+//!   Chat Completions, [`provider::openai_responses`] speaks Responses (the same vendor's second
+//!   dialect is a second kind, because a kind names one document shape), and
+//!   [`provider::anthropic`] speaks Messages, and [`provider::gemini`] speaks `generateContent`.
 //! - [`filter`] — [`Exchange`], the one place a codec and an adapter meet.
 //! - [`route`] — the front-ends the data plane publishes: one converting route (exchange plus a
 //!   per-response transform) and one passthrough route (endpoint only).
 //!
 //! The shared SSE framing lives in `stream/` (crate-private: it is a framing detail, not a contract),
-//! the shared diagnostic rules live in `diagnostic.rs` (crate-private: what a refusal may quote), the
-//! OpenAI Chat Completions codec lives in [`protocol::openai_chat`], and the OpenAI provider adapter
-//! lives in [`provider::openai`]. Vendor names belong only in those modules; the canonical model, the
-//! two contracts and the exchange never learn them. [`builtin_registry`] is the one place the kinds
-//! this build serves are listed, so the process assembles a registry rather than a vendor table.
+//! the shared wire helpers live in `wire/` (crate-private: bytes and JSON, no protocol semantics), the
+//! shared diagnostic rules live in `diagnostic.rs` (crate-private: what a refusal may quote), the
+//! OpenAI Chat Completions codec lives in [`protocol::openai_chat`], and the provider adapters live in
+//! [`provider::openai`], [`provider::openai_responses`], [`provider::anthropic`] and
+//! [`provider::gemini`]. Vendor names
+//! belong only in those modules; the
+//! canonical model, the two contracts and the exchange never learn them. [`builtin_registry`] is the
+//! one place the kinds this build serves are listed, so the process assembles a registry rather than a
+//! vendor table.
 //!
 //! # Invariants
 //!
@@ -53,6 +60,7 @@ pub mod schema;
 
 mod diagnostic;
 mod stream;
+mod wire;
 
 pub use filter::{Exchange, ExchangeBuildError, ExchangeError, PreparedExchange, StreamEncoder};
 pub use protocol::{
@@ -87,8 +95,10 @@ pub use schema::{
 #[must_use]
 pub fn builtin_registry() -> (ProtocolRegistry, ProviderRegistry) {
     let mut protocols = ProtocolRegistry::new();
-    let codecs: [Arc<dyn ClientCodec>; 1] =
-        [Arc::new(protocol::openai_chat::OpenAiChatCodec::new())];
+    let codecs: [Arc<dyn ClientCodec>; 2] = [
+        Arc::new(protocol::openai_chat::OpenAiChatCodec::new()),
+        Arc::new(protocol::anthropic::AnthropicMessagesCodec::new()),
+    ];
     for codec in codecs {
         if let Err(error) = protocols.register(codec) {
             tracing::warn!(%error, "a built-in client protocol was registered twice");
@@ -96,7 +106,12 @@ pub fn builtin_registry() -> (ProtocolRegistry, ProviderRegistry) {
     }
 
     let mut providers = ProviderRegistry::new();
-    let adapters: [Arc<dyn Provider>; 1] = [Arc::new(provider::OpenAiProvider::new())];
+    let adapters: [Arc<dyn Provider>; 4] = [
+        Arc::new(provider::openai::OpenAiProvider::new()),
+        Arc::new(provider::OpenAiResponsesProvider::new()),
+        Arc::new(provider::AnthropicProvider::new()),
+        Arc::new(provider::GeminiProvider::new()),
+    ];
     for adapter in adapters {
         if let Err(error) = providers.register(adapter) {
             tracing::warn!(%error, "a built-in provider was registered twice");

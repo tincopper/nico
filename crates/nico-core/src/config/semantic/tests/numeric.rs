@@ -57,6 +57,30 @@ fn a_zero_provider_timeout_is_rejected() {
 }
 
 #[test]
+fn a_zero_provider_max_output_tokens_is_rejected() {
+    // A ceiling of zero is not a ceiling: it would ask the endpoint for answers it cannot produce.
+    // The request path already carries the value as a `NonZeroU32`, so this is the only place the
+    // "set, but not a ceiling" spelling can be refused.
+    let providers = format!(
+        "{}    max_output_tokens: 0\n",
+        provider_entry("https://api.openai.com", "env:OPENAI_API_KEY")
+    );
+    let error = parse(&document(&providers, NO_ENTRIES, NO_ENTRIES))
+        .expect_err("a zero output ceiling is not a ceiling");
+    assert!(
+        matches!(
+            error,
+            DocumentError::LimitOutOfRange {
+                field: "providers[].max_output_tokens",
+                value: 0
+            }
+        ),
+        "expected LimitOutOfRange for providers[].max_output_tokens, got {error:?}"
+    );
+    assert_eq!(error.category(), ErrorCategory::Limit);
+}
+
+#[test]
 fn a_route_body_bound_above_the_document_bound_is_rejected() {
     let routes = format!(
         "{}    max_body_bytes: 2000000\n",

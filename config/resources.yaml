@@ -30,6 +30,12 @@ providers:
     # because that is configuration of the endpoint rather than of one request.
     model_map:
       fast: gpt-4o-mini
+    # Optional output ceiling this endpoint uses when the request sets none: a positive count, and a
+    # request's own limit always wins. It is endpoint policy, not a gateway default — a protocol that
+    # requires an output limit (`/v1/messages` does) cannot be served from a request that omits one
+    # unless the route answers for it, while a dialect that allows omission needs no value here.
+    # Zero is a schema error: it is not a ceiling. Nothing in this document needs it.
+    # max_output_tokens: 8192
 
 # Plain HTTP upstreams. The scheme is `http` or `https`; the port is required.
 upstreams:

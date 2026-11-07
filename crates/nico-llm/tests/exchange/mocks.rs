@@ -185,6 +185,9 @@ pub(crate) struct MockProvider {
     capabilities: Capabilities,
     stream: StreamBehaviour,
     trace: Option<Trace>,
+    /// The model this provider's endpoint path names, as an adapter whose request target carries the
+    /// physical model does; `None` means the model travels in the body.
+    pinned_model: Option<ModelId>,
 }
 
 impl MockProvider {
@@ -193,6 +196,7 @@ impl MockProvider {
             capabilities,
             stream,
             trace: None,
+            pinned_model: None,
         })
     }
 
@@ -206,6 +210,20 @@ impl MockProvider {
             capabilities,
             stream,
             trace: Some(trace),
+            pinned_model: None,
+        })
+    }
+
+    /// Returns the same provider, whose endpoint path names `model`.
+    ///
+    /// The mock therefore answers the two questions an adapter with a model in its path answers: the
+    /// endpoint carries a model, and the body still carries the one the route resolved.
+    pub(crate) fn pinning(self: &Arc<Self>, model: ModelId) -> Arc<Self> {
+        Arc::new(Self {
+            capabilities: self.capabilities,
+            stream: self.stream,
+            trace: self.trace.clone(),
+            pinned_model: Some(model),
         })
     }
 
@@ -237,12 +255,16 @@ impl Provider for MockProvider {
         let authorization = route.credential().map_or_else(String::new, |credential| {
             format!("Bearer {}", credential.expose())
         });
-        Endpoint::try_new(
+        let endpoint = Endpoint::try_new(
             Destination::new(nico_core::Scheme::Http, "127.0.0.1", 8080),
             "/v1/mock",
             vec![("authorization".to_owned(), authorization)],
         )
-        .map_err(|source| ProviderError::InvalidEndpoint { kind: KIND, source })
+        .map_err(|source| ProviderError::InvalidEndpoint { kind: KIND, source })?;
+        Ok(match &self.pinned_model {
+            Some(model) => endpoint.with_model(model.clone()),
+            None => endpoint,
+        })
     }
 
     fn encode(

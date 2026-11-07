@@ -8,8 +8,18 @@ use std::sync::Arc;
 
 use nico_llm::{
     ClientCodec, Provider, RegistryError, builtin_registry,
-    protocol::openai_chat::{OpenAiChatCodec, PROTOCOL},
-    provider::openai::PROVIDER_KIND,
+    protocol::{
+        anthropic::{AnthropicMessagesCodec, PROTOCOL as ANTHROPIC_MESSAGES},
+        openai_chat::{OpenAiChatCodec, PROTOCOL},
+    },
+    provider::{
+        anthropic::{NATIVE_PROTOCOL as ANTHROPIC_PROTOCOL, PROVIDER_KIND as ANTHROPIC_KIND},
+        gemini::{NATIVE_PROTOCOL as GEMINI_PROTOCOL, PROVIDER_KIND as GEMINI_KIND},
+        openai::PROVIDER_KIND,
+        openai_responses::{
+            NATIVE_PROTOCOL as RESPONSES_PROTOCOL, PROVIDER_KIND as RESPONSES_KIND,
+        },
+    },
 };
 
 #[test]
@@ -20,14 +30,52 @@ fn the_builtin_registry_answers_both_lookups_a_publication_makes() {
         .codec(PROTOCOL.as_str())
         .expect("the built-in client protocol resolves");
     assert_eq!(codec.protocol(), PROTOCOL);
-    assert_eq!(protocols.len(), 1, "this build serves one client protocol");
+    let messages = protocols
+        .codec(ANTHROPIC_MESSAGES.as_str())
+        .expect("the registered Anthropic codec resolves");
+    assert_eq!(messages.protocol(), ANTHROPIC_MESSAGES);
+    assert_eq!(
+        messages.version(),
+        Some(nico_llm::protocol::anthropic::VERSION),
+        "the assembly log reports the wire revision this build speaks"
+    );
+    assert_eq!(protocols.len(), 2, "this build serves two client protocols");
     assert!(!protocols.is_empty());
 
     let adapter = providers
         .provider(PROVIDER_KIND.as_str())
         .expect("the built-in provider kind resolves");
     assert_eq!(adapter.kind(), PROVIDER_KIND);
-    assert_eq!(providers.len(), 1, "this build serves one provider kind");
+
+    let anthropic = providers
+        .provider(ANTHROPIC_KIND.as_str())
+        .expect("the registered Anthropic adapter resolves");
+    assert_eq!(anthropic.kind(), ANTHROPIC_KIND);
+    assert_eq!(
+        anthropic.native_protocol(),
+        ANTHROPIC_PROTOCOL,
+        "a passthrough route compares this with the client codec's protocol"
+    );
+
+    let responses = providers
+        .provider(RESPONSES_KIND.as_str())
+        .expect("the registered Responses adapter resolves");
+    assert_eq!(responses.kind(), RESPONSES_KIND);
+    assert_eq!(
+        responses.native_protocol(),
+        RESPONSES_PROTOCOL,
+        "one kind names one dialect, so the second OpenAI dialect is a second kind"
+    );
+    let gemini = providers
+        .provider(GEMINI_KIND.as_str())
+        .expect("the registered Gemini adapter resolves");
+    assert_eq!(gemini.kind(), GEMINI_KIND);
+    assert_eq!(
+        gemini.native_protocol(),
+        GEMINI_PROTOCOL,
+        "one kind names one dialect, so the equality a passthrough route needs is still equality"
+    );
+    assert_eq!(providers.len(), 4, "this build serves four provider kinds");
     assert!(!providers.is_empty());
 }
 
@@ -41,12 +89,21 @@ fn an_unknown_key_is_absent_rather_than_guessed() {
     );
     assert!(providers.provider("OpenAI").is_none());
     assert!(providers.provider("").is_none());
+    assert!(
+        providers.provider("messages").is_none(),
+        "the kind is `anthropic`; a wire dialect name is not a registry key"
+    );
+    assert!(
+        providers.provider("openai.chat").is_none(),
+        "a protocol identifier is not a provider kind"
+    );
 }
 
 #[test]
 fn a_duplicate_registration_is_refused_rather_than_overwritten() {
     let (mut protocols, mut providers) = builtin_registry();
     let codec: Arc<dyn ClientCodec> = Arc::new(OpenAiChatCodec::new());
+    let messages: Arc<dyn ClientCodec> = Arc::new(AnthropicMessagesCodec::new());
     let adapter: Arc<dyn Provider> = Arc::new(nico_llm::provider::OpenAiProvider::new());
 
     assert_eq!(
@@ -57,6 +114,13 @@ fn a_duplicate_registration_is_refused_rather_than_overwritten() {
         "which codec a protocol reached would otherwise depend on assembly order"
     );
     assert_eq!(
+        protocols.register(messages),
+        Err(RegistryError::DuplicateKind {
+            kind: ANTHROPIC_MESSAGES.as_str().to_owned(),
+        }),
+        "a second codec for one protocol is refused for the same reason"
+    );
+    assert_eq!(
         providers.register(adapter),
         Err(RegistryError::DuplicateKind {
             kind: PROVIDER_KIND.as_str().to_owned(),
@@ -64,8 +128,8 @@ fn a_duplicate_registration_is_refused_rather_than_overwritten() {
     );
     assert_eq!(
         protocols.len(),
-        1,
+        2,
         "the refused registration changed nothing"
     );
-    assert_eq!(providers.len(), 1);
+    assert_eq!(providers.len(), 4);
 }

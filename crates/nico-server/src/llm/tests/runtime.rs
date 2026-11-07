@@ -140,12 +140,42 @@ fn every_registered_side_is_reported_with_its_capabilities() {
     assert_eq!(
         text.matches("llm.capabilities=streaming,tools,images,reasoning,response_format")
             .count(),
-        2,
-        "both sides declare the same five axes, and `files` is the one neither has: {text}"
+        3,
+        "the OpenAI codec and adapter and the Gemini adapter declare the same five axes, and \
+         `files` is the one none of them has: {text}"
+    );
+    let openai = text
+        .lines()
+        .find(|line| line.contains("llm.provider=openai"))
+        .expect("the OpenAI adapter is reported");
+    assert!(
+        !openai.contains("llm.version="),
+        "`openai.chat` has no versioned spelling, so the field is absent rather than empty: {openai}"
+    );
+    let anthropic = text
+        .lines()
+        .find(|line| line.contains("llm.provider=anthropic"))
+        .expect("the Anthropic adapter is reported");
+    assert!(
+        anthropic.contains("llm.version=2023-06-01"),
+        "a vendor that versions reports the revision the adapter sends: {anthropic}"
     );
     assert!(
-        !text.contains("llm.version="),
-        "`openai.chat` has no versioned spelling, so the field is absent rather than empty: {text}"
+        anthropic.contains("llm.capabilities=streaming,tools,images"),
+        "the adapter declares only what it maps: {anthropic}"
+    );
+    assert!(
+        !anthropic.contains("reasoning"),
+        "a thinking block cannot be written back, so the axis is not declared: {anthropic}"
+    );
+    let gemini = text
+        .lines()
+        .find(|line| line.contains("llm.provider=gemini"))
+        .expect("the Gemini adapter is reported");
+    assert!(
+        gemini.contains("llm.version=v1beta"),
+        "the revision this adapter writes into the request path is the one the assembly reports: \
+         {gemini}"
     );
 }
 

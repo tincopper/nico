@@ -1,5 +1,6 @@
 {"file": ".trellis/tasks/11-05-s1-4b-nico-llm-protocols/prd.md", "reason": "acceptance criteria for the protocol matrix"}
-{"file": ".trellis/tasks/11-04-s1-4a-nico-llm-model/design.md", "reason": "shapes and contracts that must not be changed by adapters"}
-{"file": ".trellis/spec/backend/directory-structure.md", "reason": "no-vendor-switch ownership rule"}
+{"file": ".trellis/tasks/11-05-s1-4b-nico-llm-protocols/design.md", "reason": "what each protocol must map, refuse, or declare"}
+{"file": ".trellis/tasks/archive/2026-11/11-04-s1-4a-nico-llm-model/design.md", "reason": "shapes and contracts that must not be changed by adapters"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "no-vendor-switch ownership rule and the file budget"}
 {"file": ".trellis/spec/backend/error-handling.md", "reason": "canonical error and client error envelope mapping"}
 {"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "llm.* fields and secret-free request records"}

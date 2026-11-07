@@ -10,6 +10,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
+    num::NonZeroU32,
 };
 
 use super::ProviderKind;
@@ -88,8 +89,9 @@ pub enum RouteError {
 /// The identity fields ([`ProviderRoute::route_id`], [`ProviderRoute::protocol`],
 /// [`ProviderRoute::provider_kind`]) are how a publication pairs a document route with a codec and an
 /// adapter; the operational fields ([`ProviderRoute::base_url`], [`ProviderRoute::credential`],
-/// [`ProviderRoute::model_map`]) are what an adapter needs to encode a request. The type is shared
-/// through an `Arc`, so a request clones a pointer, not a model map.
+/// [`ProviderRoute::model_map`], [`ProviderRoute::max_output_tokens`]) are what an adapter needs to
+/// encode a request. The type is shared through an `Arc`, so a request clones a pointer, not a model
+/// map.
 pub struct ProviderRoute {
     route_id: String,
     protocol: ProtocolId,
@@ -98,6 +100,7 @@ pub struct ProviderRoute {
     credential: Option<Credential>,
     model_map: BTreeMap<ModelId, ModelId>,
     model_allowlist: BTreeSet<ModelId>,
+    max_output_tokens: Option<NonZeroU32>,
     mode: ExchangeMode,
 }
 
@@ -130,8 +133,28 @@ impl ProviderRoute {
             credential: None,
             model_map: BTreeMap::new(),
             model_allowlist: BTreeSet::new(),
+            max_output_tokens: None,
             mode: ExchangeMode::Convert,
         })
+    }
+
+    /// Sets the output ceiling this endpoint uses when the request names none.
+    ///
+    /// The value is the endpoint's policy, not a canonical default: a dialect that requires an output
+    /// ceiling (`/v1/messages` does) cannot be served from a request that omits one unless the route
+    /// answers for it. `NonZeroU32` is the whole rule — [`RouteError`] needs no variant for "set, but
+    /// not a ceiling", because zero cannot be built — and a caller's own limit always wins: an adapter
+    /// reads this value only when the canonical request carries none.
+    #[must_use]
+    pub const fn with_max_output_tokens(mut self, max_output_tokens: NonZeroU32) -> Self {
+        self.max_output_tokens = Some(max_output_tokens);
+        self
+    }
+
+    /// Returns the endpoint's default output ceiling; `None` means the endpoint imposes none.
+    #[must_use]
+    pub const fn max_output_tokens(&self) -> Option<NonZeroU32> {
+        self.max_output_tokens
     }
 
     /// Sets how the route moves bytes; [`ExchangeMode::Convert`] is the default.
@@ -274,6 +297,7 @@ impl fmt::Debug for ProviderRoute {
             .field("base_url", &self.base_url)
             .field("credential", &self.credential.is_some())
             .field("model_map", &self.model_map)
+            .field("max_output_tokens", &self.max_output_tokens)
             .field("mode", &self.mode)
             .finish()
     }

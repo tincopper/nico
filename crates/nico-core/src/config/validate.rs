@@ -75,6 +75,7 @@ pub(super) fn assemble(
             credential_ref: raw.credential_ref,
             model_allowlist: raw.model_allowlist.unwrap_or_default(),
             model_map: raw.model_map.unwrap_or_default(),
+            max_output_tokens: raw.max_output_tokens,
             timeout_ms: raw.timeout_ms,
         })
         .collect::<Vec<_>>();

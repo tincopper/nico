@@ -23,7 +23,9 @@ use crate::schema::{CanonicalError, ChatRequest, ChatResponse, StreamEvent};
 
 mod capabilities;
 mod facts;
+mod openai_error;
 
+pub mod anthropic;
 pub mod openai_chat;
 
 pub use capabilities::{Capabilities, Capability};

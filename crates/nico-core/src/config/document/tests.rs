@@ -108,6 +108,11 @@ routes:
             "without a map the caller's model name is sent unchanged"
         );
         assert_eq!(provider.timeout_ms(), None);
+        assert_eq!(
+            provider.max_output_tokens(),
+            None,
+            "without the field the endpoint imposes no output ceiling"
+        );
 
         let upstream = &document.upstreams()[0];
         assert_eq!(upstream.name(), "api-backend");
@@ -453,3 +458,5 @@ routes: []
 mod bounds;
 mod llm;
 mod plugins;
+
+mod providers;

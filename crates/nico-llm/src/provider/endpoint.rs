@@ -17,7 +17,7 @@ use std::{borrow::Cow, fmt};
 
 use nico_http::Destination;
 
-use crate::protocol::header_names;
+use crate::{protocol::header_names, schema::ModelId};
 
 /// Why an [`Endpoint`] could not be built.
 ///
@@ -57,6 +57,25 @@ pub enum EndpointError {
         /// The header whose value was rejected.
         name: String,
     },
+    /// The route facts do not answer a question this adapter needs before it can produce bytes.
+    ///
+    /// Some adapters can only address an endpoint when the route decides something the canonical
+    /// request does not carry: the physical model a path names, or the output ceiling the dialect
+    /// requires when the caller names none. The endpoint is derived from route facts alone, and the
+    /// upstream head goes out before the request body is read, so a missing fact cannot be filled in
+    /// later — the route is refused instead.
+    ///
+    /// This is therefore a **publication** failure: the document is refused and the previously
+    /// published generation keeps serving. `field` is the dotted path of the configuration field, and
+    /// `reason` describes the rule that broke, never the value it held: a route fact can name an
+    /// endpoint's model or credential, and a diagnostic must not quote either.
+    #[error("`{field}` does not answer a route fact this provider needs: {reason}")]
+    RouteFact {
+        /// Dotted path of the configuration field, for example `providers[].max_output_tokens`.
+        field: &'static str,
+        /// The rule the facts broke, as a diagnostic.
+        reason: Cow<'static, str>,
+    },
 }
 
 /// Where one upstream request goes and what it presents: destination, path and headers.
@@ -73,6 +92,7 @@ pub struct Endpoint {
     destination: Destination,
     path: String,
     headers: Vec<(String, String)>,
+    model: Option<ModelId>,
 }
 
 impl fmt::Debug for Endpoint {
@@ -83,6 +103,7 @@ impl fmt::Debug for Endpoint {
             .field("destination", &self.destination)
             .field("path", &self.path)
             .field("headers", &header_names(&self.headers))
+            .field("model", &self.model)
             .finish()
     }
 }
@@ -106,7 +127,30 @@ impl Endpoint {
             destination,
             path,
             headers,
+            model: None,
         })
+    }
+
+    /// Records the physical model this endpoint's path already names.
+    ///
+    /// A provider whose request target carries the model (`/models/{model}:…`) cannot take it from
+    /// the request body: the path is a publication-time value and the upstream head is written before
+    /// the body is decoded. Such an adapter writes the pinned model into the path and records it here,
+    /// so the exchange can refuse a request that resolved to a different model instead of silently
+    /// sending the caller's bytes to a model the route did not choose.
+    ///
+    /// [`Endpoint::model`] therefore answers one question for every adapter: does the path already
+    /// name a model? `None` — the default — means the model travels in the body and no pinning applies.
+    #[must_use]
+    pub fn with_model(mut self, model: ModelId) -> Self {
+        self.model = Some(model);
+        self
+    }
+
+    /// Returns the model this endpoint's path already names; `None` means the model goes in the body.
+    #[must_use]
+    pub const fn model(&self) -> Option<&ModelId> {
+        self.model.as_ref()
     }
 
     /// Returns the peer to connect to; TLS policy and budgets stay with the data plane.

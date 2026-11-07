@@ -6,7 +6,7 @@
     reason = "a test that cannot build its fixture has nothing useful to return"
 )]
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, num::NonZeroU32};
 
 use nico_core::Scheme;
 use nico_http::Destination;
@@ -144,6 +144,71 @@ fn an_endpoint_rejects_a_header_that_could_split_the_request() {
         EndpointError::HeaderName {
             name: "bad name".to_owned()
         }
+    );
+}
+
+#[test]
+fn an_endpoint_records_the_model_its_path_names() {
+    let endpoint =
+        Endpoint::try_new(destination(), "/v1/mock", Vec::new()).expect("a valid endpoint");
+    assert_eq!(
+        endpoint.model(),
+        None,
+        "a model in the body is the default: nothing is pinned unless an adapter says so"
+    );
+
+    let pinned = endpoint.clone().with_model(model("chat-small-2026-01-01"));
+    assert_eq!(pinned.model(), Some(&model("chat-small-2026-01-01")));
+    assert_eq!(
+        pinned.path(),
+        endpoint.path(),
+        "recording the model does not rewrite the path the adapter built"
+    );
+    assert_eq!(
+        pinned,
+        Endpoint::try_new(destination(), "/v1/mock", Vec::new())
+            .expect("a valid endpoint")
+            .with_model(model("chat-small-2026-01-01")),
+        "the pin is part of the endpoint's identity"
+    );
+
+    let printed = format!("{pinned:?}");
+    assert!(printed.contains("chat-small-2026-01-01"), "{printed}");
+}
+
+#[test]
+fn a_route_fact_refusal_names_the_field_and_the_rule() {
+    // The adapter refused a set of route facts it could not encode from. The message is a publication
+    // log line, so it names the configuration field and the rule that broke — never a value, which
+    // could be a model, a base URL or a credential.
+    let error = EndpointError::RouteFact {
+        field: "providers[].max_output_tokens",
+        reason: "this dialect requires an output ceiling the route does not set".into(),
+    };
+    let printed = error.to_string();
+    assert!(
+        printed.contains("providers[].max_output_tokens"),
+        "{printed}"
+    );
+    assert!(printed.contains("output ceiling"), "{printed}");
+}
+
+#[test]
+fn a_route_carries_the_endpoint_output_ceiling() {
+    let route = route();
+    assert_eq!(
+        route.max_output_tokens(),
+        None,
+        "a route that sets no ceiling imposes none"
+    );
+    assert!(!format!("{route:?}").contains("max_output_tokens: Some"));
+
+    let ceiling = NonZeroU32::new(4096).expect("4096 is not zero");
+    let route = route.with_max_output_tokens(ceiling);
+    assert_eq!(route.max_output_tokens(), Some(ceiling));
+    assert!(
+        format!("{route:?}").contains("max_output_tokens: Some(4096)"),
+        "the ceiling is a route fact, so a logged route reports it"
     );
 }
 

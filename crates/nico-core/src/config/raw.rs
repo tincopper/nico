@@ -59,6 +59,10 @@ pub(super) struct RawProvider {
     /// send the caller's name unchanged — so an unmapped provider does not have to write an empty
     /// mapping out.
     pub(super) model_map: Option<BTreeMap<String, String>>,
+    /// Output ceiling this endpoint uses when the request names none. `None` means the endpoint
+    /// imposes none; `0` is refused by semantic validation, because a ceiling of zero is not a
+    /// ceiling. A request that sets its own limit always wins.
+    pub(super) max_output_tokens: Option<u32>,
     pub(super) timeout_ms: Option<u32>,
 }
 

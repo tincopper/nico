@@ -85,17 +85,19 @@ use std::collections::BTreeMap;
 
 use super::{Endpoint, Provider, ProviderError, ProviderKind, ProviderRoute, ProviderStream};
 use crate::{
-    diagnostic,
     protocol::{Capabilities, Capability, ProtocolId, ResponseFacts},
     schema::{CanonicalError, ChatRequest, ChatResponse, FinishReason, RawJson, SchemaError},
+    wire::json,
 };
 
-mod base64;
-mod error;
+// The status table and the base-URL operation helper are shared with this vendor's second dialect
+// (`provider/openai_responses`). One table, one set of URL rules: a second copy would be a second
+// answer to the same question, and the two dialects would drift.
+pub(in crate::provider) mod error;
 mod request;
 mod response;
 mod stream;
-mod url;
+pub(in crate::provider) mod url;
 mod usage;
 
 /// The provider kind this adapter registers under.
@@ -229,45 +231,17 @@ fn schema_failure(error: SchemaError) -> ProviderError {
 
 /// Parses one JSON document, reporting only the error class and the position.
 ///
-/// `serde_json`'s own message can quote the offending value, and a provider body is the model's
-/// answer: the diagnostic says *where* the document broke, never *what* it held.
+/// The shared helper owns the rule; this is the adapter's mapping of it into a malformed answer.
 fn parse<T: serde::de::DeserializeOwned>(body: &[u8], what: &str) -> Result<T, ProviderError> {
-    serde_json::from_slice(body).map_err(|error| {
-        malformed(format!(
-            "{what} is not a valid document ({} error at line {}, column {})",
-            error_class(&error),
-            error.line(),
-            error.column()
-        ))
-    })
-}
-
-/// Names the class of a parse failure.
-fn error_class(error: &serde_json::Error) -> &'static str {
-    match error.classify() {
-        serde_json::error::Category::Io => "i/o",
-        serde_json::error::Category::Syntax => "syntax",
-        serde_json::error::Category::Data => "data",
-        serde_json::error::Category::Eof => "end of input",
-    }
+    json::parse(body, what).map_err(|error| malformed(error.to_string()))
 }
 
 /// Reports a document whose shape this adapter fully types and does not extend.
 ///
-/// The key is the provider's, so it is quoted only when [`diagnostic::quoted`] allows it; a document
+/// The key is the provider's, so it is quoted only when [`crate::diagnostic::quoted`] allows it; a document
 /// carrying a member whose name cannot be printed is still refused, just not named.
 fn reject_extra(extra: &BTreeMap<String, RawJson>, path: &str) -> Result<(), ProviderError> {
-    let Some(key) = extra.keys().next() else {
-        return Ok(());
-    };
-    Err(
-        match diagnostic::quoted(key, diagnostic::MAX_QUOTED_FIELD_BYTES) {
-            Some(key) => malformed(format!("field `{path}.{key}` is not part of this document")),
-            None => malformed(format!(
-                "`{path}` carries a field this document does not model"
-            )),
-        },
-    )
+    json::reject_extra(extra, path).map_err(|error| malformed(error.reason()))
 }
 
 /// Returns the canonical finish reason for its wire spelling.

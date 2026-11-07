@@ -53,8 +53,9 @@ const REJECTION_STATUS: std::ops::RangeInclusive<u16> = 400..=499;
 /// # Errors
 /// - [`DocumentError::InvalidField`] for a malformed name, host, path prefix, base URL, credential
 ///   reference, upstream host or port, protocol id or model map entry.
-/// - [`DocumentError::LimitOutOfRange`] for a timeout outside `1..=600_000`, a route body bound
-///   above `request.max_body_bytes`, or a route response bound above `request.max_response_bytes`.
+/// - [`DocumentError::LimitOutOfRange`] for a timeout outside `1..=600_000`, an output ceiling of
+///   zero, a route body bound above `request.max_body_bytes`, or a route response bound above
+///   `request.max_response_bytes`.
 /// - [`DocumentError::DuplicateId`] when two routes share the same `(host, path_prefix)` pair.
 pub(super) fn validate(
     routes: &[Route],
@@ -73,7 +74,8 @@ pub(super) fn validate(
     validate_routes(routes, request)
 }
 
-/// Checks one provider: name, kind, base URL, credential reference, model map and optional timeout.
+/// Checks one provider: name, kind, base URL, credential reference, model map, output ceiling and
+/// optional timeout.
 fn validate_provider(provider: &Provider) -> Result<(), DocumentError> {
     validate_name("providers[].name", provider.name())?;
     validate_token("providers[].kind", provider.kind(), MAX_PROVIDER_KIND_BYTES)?;
@@ -97,6 +99,12 @@ fn validate_provider(provider: &Provider) -> Result<(), DocumentError> {
 
     if let Some(timeout_ms) = provider.timeout_ms() {
         validate_timeout("providers[].timeout_ms", timeout_ms)?;
+    }
+    if provider.max_output_tokens() == Some(0) {
+        return Err(DocumentError::LimitOutOfRange {
+            field: "providers[].max_output_tokens",
+            value: 0,
+        });
     }
     validate_model_map(provider.model_map())?;
     Ok(())
