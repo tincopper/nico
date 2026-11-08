@@ -356,3 +356,25 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 ### Status
 
 [OK] **Completed**
+
+
+## Session 9: 阶段 1 收官：MVP 伞任务与架构分析任务归档
+<!-- trellis-session: v=2 fp=160d47bc1e10d3bf -->
+
+**Date**: 2026-11-08
+**Task**: 阶段 1 收官：MVP 伞任务与架构分析任务归档
+**Branch**: `main`
+
+### Summary
+
+两个遗留任务收口并归档。11-04-s1-mvp（阶段 1 伞任务）：五个子任务（1.1 route-schema、1.2 http-data-plane、1.3 nico-plugins、1.4a nico-llm-model、1.4b nico-llm-protocols）全部交付归档，Cross-child 验收清单逐项核对后勾销——五基线 1626/55、nico-core/nico-config 依赖树无越界项、链路/热重载/矩阵 fixture/文档/日志字段均有测试证据，--no-default-features 可编译。11-03-unified-gateway-analysis：交付物（架构 design + 阶段 0 取证计划）已被阶段 1 消费，implement.md 的阶段 1 各项勾销并指向归档子任务；重试与 fallback 明确留为阶段 2 范围未交付；两个待决门（quick/QUIC 确认、第二期 provider 范围）保留在案，作为阶段 2 规划的前置。工作树干净。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `27ed43a` | test(llm): close the protocol matrix with one conversation, two e2e routes and the specs |
+
+### Status
+
+[OK] **Completed**
