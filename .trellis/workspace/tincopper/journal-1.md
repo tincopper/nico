@@ -331,3 +331,28 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 ### Next Steps
 
 - 11-05-s1-4b：Anthropic / Responses / Gemini 的协议矩阵；ClientCodec::version 已就位，可直接报 anthropic-version 这类 wire 版本
+
+
+## Session 8: 1.4b 步骤 7–9：Responses 与 Gemini 客户端 codec、矩阵收口与 spec
+<!-- trellis-session: v=2 fp=141e101bd8ce71b3 -->
+
+**Date**: 2026-11-08
+**Task**: 1.4b 步骤 7–9：Responses 与 Gemini 客户端 codec、矩阵收口与 spec
+**Branch**: `main`
+
+### Summary
+
+完成 1.4b 剩余三步。第 7 步：OpenAI Responses 客户端 codec（错误包络复用 openai_error，response.completed 推迟到 finish()）。第 8 步：Gemini generate_content 客户端 codec（从 RequestFacts::path 解析模型与操作，数据面改传 path_and_query；CALL_ID_PREFIX 移至 codec 模块）。第 9 步：16 行显式矩阵 + 每行能力交集断言 + 4 个原生 passthrough 对（gemini 拒绝原因为路由事实）、16 份 wire fixture（同一 canonical 对话四方言四方向）、registry 拼写锁定、llm_anthropic/llm_gemini 两条跨方言 e2e（钉住的请求行、SSE 折叠、403、passthrough 发布失败保 LKG）、四份 spec 与 resources.yaml 收口。e2e 顺带修复真漏洞：转换路由现在剥除调用方凭证的全部三种拼写（authorization/x-api-key/x-goog-api-key）。检查点 I 全绿：1626 tests / 55 suites，fmt/clippy/doc/deny/no-default-features/依赖边界/文件预算。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a21a289` | feat(llm): add the OpenAI Responses client codec on the shared error envelope |
+| `bf33085` | feat(llm): add the Gemini client codec on the request-target facts |
+| `57a0130` | fix(gateway): drop the caller's credential in every client-protocol spelling |
+| `27ed43a` | test(llm): close the protocol matrix with one conversation, two e2e routes and the specs |
+
+### Status
+
+[OK] **Completed**

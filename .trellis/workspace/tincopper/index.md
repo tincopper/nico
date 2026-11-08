@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 7
-- **Last Active**: 2026-11-07
+- **Total Sessions**: 8
+- **Last Active**: 2026-11-08
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~333 | Active |
+| `journal-1.md` | ~358 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 8 | 2026-11-08 | 1.4b 步骤 7–9：Responses 与 Gemini 客户端 codec、矩阵收口与 spec | `a21a289`, `bf33085`, `57a0130`, `27ed43a` | `main` |
 | 7 | 2026-11-07 | 1.4a 收口：三轮复审修复 + 两个需求缺口 + 归档 | `7aca80f`, `5a454a1` | `main` |
 | 6 | 2026-11-05 | s1-3 plugins: five-stage contract, kind-owned envelope, and gate C | `a45c93e`, `e822900`, `4725afa` | `main` |
 | 5 | 2026-11-04 | Workspace renamed to the product name (nico-*) | `a7faee3` | `main` |
