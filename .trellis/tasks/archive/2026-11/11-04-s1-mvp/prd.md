@@ -32,16 +32,16 @@
 
 ## Cross-child Acceptance Criteria
 
-- [ ] 五个基线命令全绿：`cargo +nightly fmt --all -- --check`、`cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`、`cargo test --workspace --all-features --locked`、`cargo deny check`、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`。
-- [ ] 依赖方向不变：`nico-core` 的依赖树无 `pingora` / `nico-http` / `nico-llm` / `nico-config`；`nico-http` 不 import `nico-llm`。
-- [ ] 一次 HTTP 请求的完整链路可跑通：local 配置 → 快照发布 → 路由匹配 → 上游转发 → 响应流式返回。
-- [ ] 路由选择不读取请求 body；AI convert 路由在路由确定后有界缓冲 body（`request.max_body_bytes`），canonical 可重放；非 AI 路由不读 body。
-- [ ] canonical 是客户端 codec 与 provider adapter 之间唯一的公共词汇；`schema/` 与 `filter.rs` 无厂商 switch；`(protocol, provider)` 矩阵有 golden fixture。
-- [ ] 响应转换逐块进行（SSE 不整块），非流式响应受 `request.max_response_bytes` 约束；`nico-http` 不依赖 `nico-llm`。
-- [ ] 配置热重载期间在途请求继续使用旧 generation；非法配置保留 LKG 且不中断服务。
-- [ ] 所有新 crate 有 `//!` 文档、公开项 `///`、可失败函数 `# Errors`；新错误映射到 `ErrorCategory`。
-- [ ] 新日志字段沿用 `config.generation` / `route_id` / `upstream` / `error.category`；不记录 body、请求头凭证或文档内容。
-- [ ] 每个子任务的 Feature 影响写清；阶段 1 至少保证 `--no-default-features` 与 `--all-features` 可编译。
+- [x] 五个基线命令全绿：`cargo +nightly fmt --all -- --check`、`cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`、`cargo test --workspace --all-features --locked`（1626 passed / 55 suites）、`cargo deny check`、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`。
+- [x] 依赖方向不变：`nico-core` 的依赖树无 `pingora` / `nico-http` / `nico-llm` / `nico-config`；`nico-http` 不 import `nico-llm`（`cargo tree` 逐项无输出；`nico-llm/tests/structure.rs` 锁定）。
+- [x] 一次 HTTP 请求的完整链路可跑通：local 配置 → 快照发布 → 路由匹配 → 上游转发 → 响应流式返回（`nico-server/tests/local_file.rs`、`http_*.rs`、`llm_*.rs`）。
+- [x] 路由选择不读取请求 body；AI convert 路由在路由确定后有界缓冲 body（`request.max_body_bytes`），canonical 可重放；非 AI 路由不读 body（`hooks` 契约测试与 e2e 断言）。
+- [x] canonical 是客户端 codec 与 provider adapter 之间唯一的公共词汇；`schema/` 与 `filter.rs` 无厂商 switch；`(protocol, provider)` 矩阵有 golden fixture（`nico-llm/tests/matrix/` 16 行 + 每方言 4 份 wire fixture，1.4b 第 9 步）。
+- [x] 响应转换逐块进行（SSE 不整块），非流式响应受 `request.max_response_bytes` 约束；`nico-http` 不依赖 `nico-llm`（transform 测试 + `cargo tree`）。
+- [x] 配置热重载期间在途请求继续使用旧 generation；非法配置保留 LKG 且不中断服务（`llm_publication.rs`、`plugins_config.rs`、`schema_bounds.rs`）。
+- [x] 所有新 crate 有 `//!` 文档、公开项 `///`、可失败函数 `# Errors`（workspace `missing_docs` deny + clippy）；新错误映射到 `ErrorCategory`。
+- [x] 新日志字段沿用 `config.generation` / `route_id` / `upstream` / `error.category`；不记录 body、请求头凭证或文档内容（logging spec + e2e 记录断言）。
+- [x] 每个子任务的 Feature 影响写清；阶段 1 至少保证 `--no-default-features` 与 `--all-features` 可编译（`cargo check --no-default-features --workspace` 通过）。
 
 ## Out of Scope
 
