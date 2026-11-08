@@ -144,3 +144,66 @@ fn the_http_data_plane_does_not_depend_on_this_crate() {
         "`nico-http` must reach LLM support through its own byte-level traits, never through this crate"
     );
 }
+
+/// The registry keys are log fields, so their spelling is a contract, not an implementation detail.
+///
+/// `llm.protocol` and `llm.provider` are written once at assembly and read by everything that
+/// consumes the logs; a silent respelling would change what operators see without changing any type.
+/// The four dialect pairs must also agree on the protocol identifier, because a `passthrough` route
+/// is legal exactly when both sides name the same one.
+#[test]
+fn the_registry_keys_are_spelled_as_the_log_contract_promises() {
+    use nico_llm::{ProtocolId, ProviderKind, protocol, provider};
+
+    assert_eq!(
+        protocol::openai_chat::PROTOCOL,
+        ProtocolId::new("openai.chat")
+    );
+    assert_eq!(
+        protocol::openai_responses::PROTOCOL,
+        ProtocolId::new("openai.responses")
+    );
+    assert_eq!(
+        protocol::anthropic::PROTOCOL,
+        ProtocolId::new("anthropic.messages")
+    );
+    assert_eq!(
+        protocol::gemini::PROTOCOL,
+        ProtocolId::new("gemini.generate_content")
+    );
+
+    assert_eq!(provider::openai::PROVIDER_KIND, ProviderKind::new("openai"));
+    assert_eq!(
+        provider::openai_responses::PROVIDER_KIND,
+        ProviderKind::new("openai_responses")
+    );
+    assert_eq!(
+        provider::anthropic::PROVIDER_KIND,
+        ProviderKind::new("anthropic")
+    );
+    assert_eq!(provider::gemini::PROVIDER_KIND, ProviderKind::new("gemini"));
+
+    for (native, protocol) in [
+        (
+            provider::openai::NATIVE_PROTOCOL,
+            protocol::openai_chat::PROTOCOL,
+        ),
+        (
+            provider::openai_responses::NATIVE_PROTOCOL,
+            protocol::openai_responses::PROTOCOL,
+        ),
+        (
+            provider::anthropic::NATIVE_PROTOCOL,
+            protocol::anthropic::PROTOCOL,
+        ),
+        (
+            provider::gemini::NATIVE_PROTOCOL,
+            protocol::gemini::PROTOCOL,
+        ),
+    ] {
+        assert_eq!(
+            native, protocol,
+            "a passthrough route of this dialect is legal only when both sides name the same protocol"
+        );
+    }
+}

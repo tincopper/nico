@@ -50,6 +50,8 @@ nico/
     │       ├── support/        # one server per test binary: bootstrap, source, client, mock upstream
     │       ├── llm_convert.rs  # OpenAI client → OpenAI provider: conversion, SSE, refusals, llm.* record
     │       ├── llm_convert/    # fixtures.rs: the documents and wire bodies the conversion scenarios share
+    │       ├── llm_anthropic.rs # Anthropic client → OpenAI provider: one answer, one stream, one refusal, one record
+    │       ├── llm_gemini.rs   # OpenAI client → Gemini provider: the pinned path, the folded answer, the 403, the refused passthrough
     │       ├── llm_passthrough.rs # byte-for-byte forwarding through the published endpoint
     │       └── llm_publication.rs # the plan a document publishes, and what a refused one leaves alone
     ├── nico-core/           # small kernel shared by every data plane
@@ -99,21 +101,29 @@ nico/
     │       └── upstream.rs     # crate-private: Destination → HttpPeer
     ├── nico-llm/            # canonical LLM model + client codecs + provider adapters
     │   └── src/
-    │       ├── lib.rs
+    │       ├── lib.rs           # //! + builtin_registry(): the four codecs and four adapters this build serves
     │       ├── schema.rs        # canonical shape root; schema/ split by data boundary
     │       ├── schema/          # request/conversation/tool/extension/response/stream/usage/error/model/sampling
     │       ├── protocol.rs      # ClientCodec + ClientStreamEncoder traits, ClientReply (the status a client protocol answers with), registry
-    │       ├── protocol/        # capabilities.rs (what a side can express), facts.rs (framework-free exchange facts), then openai_chat, openai_responses, anthropic, gemini
-    │       ├── protocol/openai_chat/  # one codec's documents: {request,declaration,message,response,stream,error,usage}.rs
+    │       ├── protocol/        # capabilities.rs (what a side can express), facts.rs (framework-free exchange facts), openai_error.rs (the two OpenAI codecs' shared envelope), then one module per wire dialect
+    │       ├── protocol/openai_chat/       # {request,declaration,message,response,stream,error,usage}.rs
+    │       ├── protocol/openai_responses/  # {request,items,response,stream,error,usage}.rs
+    │       ├── protocol/anthropic/         # {request,blocks,response,stream,error,usage}.rs
+    │       ├── protocol/gemini/            # {target,request,parts,response,stream,error,usage}.rs — `target` reads the model and operation out of the request target
     │       ├── provider.rs      # Provider/ProviderStream traits + registry
-    │       ├── provider/        # endpoint.rs (one request's address and bytes), route.rs (compiled route facts), then openai, anthropic, gemini: wire ↔ canonical
-    │       ├── provider/openai/  # one adapter's documents: {url,request,request/message,response,stream,error,usage,base64}.rs
+    │       ├── provider/        # endpoint.rs (the pinned model + RouteFact), route.rs (compiled route facts), base_url.rs (vendor-free URL rules), then one module per wire dialect
+    │       ├── provider/openai/            # {url,request,response,stream,error,usage}.rs
+    │       ├── provider/openai_responses/  # {request,response,stream,usage}.rs
+    │       ├── provider/anthropic/         # {url,request,request/conversation,response,stream,stream/decoder,error,usage}.rs
+    │       ├── provider/gemini/            # {url,request/request/conversation,parts,response,stream,fold,error,usage}.rs — `fold` rebuilds one buffered answer from the event stream
+    │       ├── wire.rs          # crate-private shared wire helpers root: bytes and JSON, no vendor semantics
+    │       ├── wire/            # base64.rs (RFC 4648 both directions), json.rs (parse, error class, reject_extra)
     │       ├── stream.rs        # declares the shared framing submodule
     │       ├── stream/
     │       │   └── sse.rs       # shared SSE framing (event boundaries, cross-chunk UTF-8, terminator), no vendor semantics
     │       ├── diagnostic.rs    # crate-private: what a refusal may quote (a bounded name, never a payload)
-    │       ├── filter.rs        # route exchange: endpoint → decode → encode → response/stream
-    │       ├── filter/          # error.rs (failure vocabulary), stream.rs (one client encoder + one provider decoder per response); model map lives on provider/route.rs
+    │       ├── filter.rs        # route exchange: endpoint → decode → capability gate → model gate → encode → response/stream
+    │       ├── filter/          # error.rs (failure vocabulary), stream.rs (one client encoder + one provider decoder per response)
     │       ├── route.rs         # the published front-ends as `nico_http::llm::LlmRoute`: ConvertRoute and PassthroughRoute
     │       └── route/           # convert.rs, passthrough.rs, transform.rs (one response's translation)
     ├── nico-config/         # ConfigSource trait, local source, LKG cache, fakes

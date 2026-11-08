@@ -176,7 +176,7 @@ reaches the data plane through `llm.rs` and changes four of the rules above:
 | Step | What happens |
 |---|---|
 | routing | after `bind_route`, `state::llm_for_route` looks the route id up in the published plan. A provider route with no front-end is refused `502 provider_unavailable` — never forwarded and never resolved against a guessed address |
-| upstream head | `hooks::llm::apply_upstream_request` writes the front-end's path and headers over the client's. `Host` and `X-Forwarded-*` are written after it, so a route can never choose the peer. `convert` drops the caller's `authorization` and its content codings — `accept-encoding` is removed, and a `content-encoding` other than `identity` is refused `400`: the answer's head is rewritten from the front-end's own headers, so a coding negotiated here would describe bytes this data plane never decodes and arrive as a parse failure behind a committed status — then the head is framed `transfer-encoding: chunked` because the body is re-encoded; `passthrough` keeps the caller's framing, coding and credential, except that a route presenting its own credential replaces the caller's: a route that materializes a key is the gateway authenticating to that peer |
+| upstream head | `hooks::llm::apply_upstream_request` writes the front-end's path and headers over the client's. `Host` and `X-Forwarded-*` are written after it, so a route can never choose the peer. `convert` drops the caller's credential in every spelling its protocol uses (`authorization`, `x-api-key`, `x-goog-api-key`: the credential describes the caller–gateway relationship, and a converted request replaces that relationship with the route's own) and its content codings — `accept-encoding` is removed, and a `content-encoding` other than `identity` is refused `400`: the answer's head is rewritten from the front-end's own headers, so a coding negotiated here would describe bytes this data plane never decodes and arrive as a parse failure behind a committed status — then the head is framed `transfer-encoding: chunked` because the body is re-encoded; `passthrough` keeps the caller's framing, coding and credential, except that a route presenting its own credential replaces the caller's: a route that materializes a key is the gateway authenticating to that peer |
 | request body | `convert` holds every chunk back like a buffered route, then calls `prepare` **once** at end of stream and writes the returned bytes as the final chunk. A request with no body still reaches it (`None` + end), so an empty document is a `400` from the codec, not a request forwarded half-encoded. `passthrough` writes the bytes as they arrive. Neither runs a plugin body stage |
 | response head | `hooks::llm::install_transform` creates one transform per response and calls `head(provider_status, provider_headers)`. The returned head **replaces** the provider's: every provider header is removed (they describe bytes the caller never receives), its status and headers are written, and `x-nico-trace-id` is added. `content-length` is never carried, so the framework frames the body chunked. A response that cannot carry a body (`HEAD`, `204`/`304`, `content-length: 0`) is not translated: nothing will be decoded, and a client envelope cannot be invented. An answer that arrives before the client's body ends — a provider refusing a credential it never had to read a body for — is translated as a **buffered** answer: no event stream begins before its request finishes, and answering `500` would report the provider's own `401` as this side's defect. `passthrough` forwards the provider head untouched |
 | response body | `hooks::llm::transform_response_body` drives `push` per provider chunk and `finish` at end of body, writing what they return. A returned empty vector writes nothing for that task (an event may span chunks) and is not the end of the body. No plugin body stage runs |
@@ -188,6 +188,19 @@ of stream (`400`/`422`, or a codec defect) may therefore already have opened the
 written a head with no body. That is not a forwarded request: no prompt byte reaches the origin, and
 the refusal is the only answer the caller receives. The end-to-end scenarios assert on the received
 body, not on the absence of a connection.
+
+**When the model lives in the request path.** One dialect writes the physical model (and the
+operation) into the request line instead of the body. Because the head precedes the body, that model
+cannot be read per request, which fixes three constraints on the route:
+
+1. the model is **pinned at publication** — the route's `model_map` must resolve to one physical
+   model, which is written into the path and recorded on the endpoint, and a request that resolved
+   elsewhere is `403 model_not_allowed` instead of quietly served by the pinned one;
+2. the operation is the streaming one **always** — a buffered answer is folded from the same event
+   stream the streaming path reads, so one route serves both client shapes;
+3. a `passthrough` route is **refused at publication** — forwarding the caller's bytes to a fixed
+   target would answer a different model and operation than the ones the caller named. The refusal is
+   a route fact (`routes[].mode`), so the previous generation keeps serving.
 
 **The request record names the exchange, never its contents.** An AI route adds
 `llm.protocol`/`llm.provider` (publication facts) and, once the body was decoded,

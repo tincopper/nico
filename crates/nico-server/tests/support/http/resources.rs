@@ -244,6 +244,32 @@ impl Resources {
         self
     }
 
+    /// Adds a provider of an explicit adapter kind, with a logical → physical model map.
+    ///
+    /// The scenarios above hard-code the OpenAI kind because that is the adapter they exercise; a
+    /// scenario for another dialect names it here, and the publication resolves the kind against the
+    /// registry exactly as it would from a written document.
+    pub(crate) fn provider_of_kind(
+        mut self,
+        name: &str,
+        kind: &'static str,
+        base_url: &str,
+        credential_ref: &str,
+        model_map: &[(&str, &str)],
+    ) -> Self {
+        self.providers.push(ProviderEntry {
+            name: name.to_owned(),
+            kind,
+            base_url: base_url.to_owned(),
+            credential_ref: credential_ref.to_owned(),
+            model_map: model_map
+                .iter()
+                .map(|(logical, physical)| ((*logical).to_owned(), (*physical).to_owned()))
+                .collect(),
+        });
+        self
+    }
+
     /// Adds an upstream reachable at `address`.
     pub(crate) fn upstream(mut self, name: &str, address: SocketAddr) -> Self {
         self.upstreams.push((name.to_owned(), address));

@@ -1,0 +1,1 @@
+{"id":"resp-1","type":"message","role":"assistant","model":"phys-model","content":[{"type":"thinking","thinking":"thinking"},{"type":"text","text":"the answer"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":11,"output_tokens":7,"cache_read_input_tokens":3}}

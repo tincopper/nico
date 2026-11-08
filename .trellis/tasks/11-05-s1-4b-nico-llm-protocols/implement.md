@@ -158,14 +158,24 @@
 
 ## 9. 矩阵、端到端与 spec 收口
 
-- [ ] `tests/matrix.rs` → `tests/matrix/{main,rows,fixtures,support}.rs`（一个 target，沿用 `tests/exchange/main.rs` 的组织）：16 行矩阵 + 每行期望能力集合；passthrough 4 行（3 可发布、1 发布期拒绝且原因正确）。
-- [ ] `tests/fixtures/matrix/`：一份 canonical 对话 + 每个协议各一份 wire 文档；`fixtures.rs` 用 `support.rs` 的语义相等助手断言 decode/encode/adapter 双向相等（`extensions` 不参与比较）。
-- [ ] `nico-server/tests/llm_anthropic.rs`：Anthropic 客户端 → OpenAI 上游的端到端（含错误包络与流式）。
-- [ ] `nico-server/tests/llm_gemini.rs`：OpenAI 客户端 → Gemini 上游（上游 path 钉住模型 + `alt=sse`、缓冲答复从 SSE 折叠、模型不匹配 403、passthrough 发布失败保 LKG）。
-- [ ] `tests/structure.rs`：`wire` 纳入扫描；`PROVIDER_KIND`/`PROTOCOL` 常量拼写由测试锁定（日志字段是契约）。
-- [ ] spec：`directory-structure.md`（模块树 + `wire/`）、`logging-guidelines.md`（四个 kind 拼写 + `llm.version`）、`error-handling.md`（三张包络/状态表 + 422 字段拒绝）、`pingora-guidelines.md`（模型在 path 的三条约束）。
-- [ ] `config/resources.yaml`：注释里给出四个 protocol、四个 kind、`max_output_tokens` 的语义与 passthrough 的限制（不放需要凭证的活动路由）。
-- [ ] **检查点 I（收尾门）**：五条基线 + `cargo check --no-default-features --workspace` + `cargo tree -p nico-http --prefix none | grep nico-llm` 无输出 + 全树文件 ≤500 行（含新测试文件）。
+- [x] `tests/matrix.rs` → `tests/matrix/{main,rows,fixtures,support}.rs`（一个 target，沿用 `tests/exchange/main.rs` 的组织）：16 行矩阵 + 每行期望能力集合；passthrough 4 行（3 可发布、1 发布期拒绝且原因正确）。
+- [x] `tests/fixtures/matrix/`：一份 canonical 对话 + 每个协议各一份 wire 文档；`fixtures.rs` 用 `support.rs` 的语义相等助手断言 decode/encode/adapter 双向相等（`extensions` 不参与比较）。
+- [x] `nico-server/tests/llm_anthropic.rs`：Anthropic 客户端 → OpenAI 上游的端到端（含错误包络与流式）。
+- [x] `nico-server/tests/llm_gemini.rs`：OpenAI 客户端 → Gemini 上游（上游 path 钉住模型 + `alt=sse`、缓冲答复从 SSE 折叠、模型不匹配 403、passthrough 发布失败保 LKG）。
+- [x] `tests/structure.rs`：`wire` 纳入扫描；`PROVIDER_KIND`/`PROTOCOL` 常量拼写由测试锁定（日志字段是契约）。
+- [x] spec：`directory-structure.md`（模块树 + `wire/`）、`logging-guidelines.md`（四个 kind 拼写 + `llm.version`）、`error-handling.md`（三张包络/状态表 + 422 字段拒绝）、`pingora-guidelines.md`（模型在 path 的三条约束）。
+- [x] `config/resources.yaml`：注释里给出四个 protocol、四个 kind、`max_output_tokens` 的语义与 passthrough 的限制（不放需要凭证的活动路由）。
+- [x] **检查点 I（收尾门）**：五条基线 + `cargo check --no-default-features --workspace` + `cargo tree -p nico-http --prefix none | grep nico-llm` 无输出 + 全树文件 ≤500 行（含新测试文件）。
+
+  **落地记录（第 9 步）**
+  - **矩阵**：`tests/matrix/{main,rows,fixtures,support}.rs`（170/128/243/267）。`rows.rs` 是显式 16 行表（4 codec × 4 adapter），每行携带设计 §6 的期望能力交集（`ALL`/`NO_REASONING`/`NO_FORMAT`/`NO_REASONING_NO_FORMAT` 四个 const 组合）+ 4 个原生对（`publishable: false` 标注 gemini 行）；`main.rs` 断言每行两侧都在注册表、能配对成 `Exchange`、`capabilities()` 逐位相等，且表长恰为 16（新半边不加行即失败）；passthrough 测试断言 3 行可发布（`PassthroughRoute` 的 protocol 是路线的）而 gemini 行拒绝原因为 `ProviderError::InvalidEndpoint → EndpointError::RouteFact { field: "routes[].mode" }`——是路由事实，不是 endpoint 解析失败。
+  - **fixtures**：`tests/fixtures/matrix/` 16 份文档——每方言 4 份（客户端请求、客户端答复、provider 请求、provider 答复；gemini 的 provider 答复是 `.sse` 文本），全部是 `support.rs` 里同一份 canonical 请求（system、文本+内联图、assistant 文本、tool call+result、tools/tool_choice/max_tokens）与同一份 canonical 答复（text+reasoning、Stop、usage 11/7/3）的翻译。`support.rs` 的语义相等助手逐字段比较请求（model/stream/sampling/tool_choice/tools/conversation 逐 item）与答复（id/model/choices/usage），**`extensions` 不参与比较**；`fixtures.rs` 四个方向各断言一次（codec decode、codec encode、adapter encode、adapter decode），比较是解析后的 JSON 对 JSON。reasoning 不带 signature 是刻意决定：四家 provider 对 signature 的承载不一致（OpenAI 没有字段、Gemini fold 丢弃），带 signature 会让同一份答复无法在 16 行上成立。`#[ignore]` 的 dump 测试按需重印全部文档——fixture 是期望，不是代码上次的输出。
+  - **结构**：`tests/structure.rs` 增加 registry 拼写锁定（四个 `PROTOCOL`、四个 `PROVIDER_KIND` 逐一对字面量，且四个方言对 `NATIVE_PROTOCOL == PROTOCOL`——passthrough 合法性依赖它）；`wire` 扫描第 2 步已在。
+  - **端到端**：`nico-server/tests/llm_anthropic.rs`（Anthropic 客户端 → OpenAI 上游：完整答复、SSE 流（`message_start`→`message_stop`）、429 走 Anthropic 包络、`llm.protocol=anthropic.messages` 记录、`x-api-key` 不travel）；`nico-server/tests/llm_gemini.rs`（OpenAI 客户端 → Gemini 上游：请求行 `POST /v1beta/models/{physical}:streamGenerateContent?alt=sse`、`x-goog-api-key`、body 无 model 成员、缓冲答复从两帧 SSE 折叠、流式逐 chunk、模型不匹配 403 且上游零 body 字节、429 走 OpenAI 包络、`mode: passthrough` 的第二份文档发布被拒后旧代继续 200 并仍按 convert 翻译）。`support/http/resources.rs` 增加 `provider_of_kind`（现有 builder 硬编码 openai kind）。
+  - **顺带修的真缝隙**：anthropic e2e 抓到转换路由只剥调用方的 `authorization`，`x-api-key`/`x-goog-api-key` 会原样到上游——调用方凭证描述的是调用方↔网关关系，转换请求把这段关系换成了路由自己的，所以三种拼写在 `nico-http` 的 `apply_upstream_request` 里一并剥除（`nico-http` 的 hook 测试与两条 e2e 各有断言）。
+  - **spec**：`directory-structure.md` 的 nico-llm 模块树重写为当前形状（`wire/`、`protocol/openai_error`、三家新方言目录、`provider/base_url`、`fold`）并补两条 e2e；`logging-guidelines.md` 的 `llm.protocol`/`llm.provider` 行给全四种拼写并写明「第二个 OpenAI 方言是第二个 kind」、`llm.version` 列出本 build 的两个修订值；`error-handling.md` 增「四客户端错误包络」闭表（类别 → 各协议 type/token）并在 422 字段拒绝的例子里补齐四家方言；`pingora-guidelines.md` 的凭证规则改为三种拼写，并新增「模型在 path ⇒ 发布期钉住 + 恒流式 + passthrough 拒绝」三条约束。
+  - **config**：`config/resources.yaml` 注释给出四个 kind、四个 protocol、passthrough 的 gemini 限制与 model_map 常量要求；不放需要凭证的活动路由。
+  - 门（真实输出）：`cargo test --workspace --all-features --locked` **1626 passed / 55 suites**；`cargo +nightly fmt --all -- --check` 通过；`cargo clippy --workspace --all-targets --all-features --locked -D warnings` 无 issue；`RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps` 通过；`cargo check --no-default-features --workspace` 通过；`cargo tree -p nico-http --prefix none | grep nico-llm` 无输出；全树无文件 >500 行。
 
 ## 复审重点（每一步之后）
 

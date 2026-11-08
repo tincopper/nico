@@ -1,0 +1,1 @@
+{"id":"resp-1","object":"chat.completion","created":0,"model":"phys-model","choices":[{"index":0,"message":{"role":"assistant","content":"the answer","reasoning_content":"thinking"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18,"prompt_tokens_details":{"cached_tokens":3}}}

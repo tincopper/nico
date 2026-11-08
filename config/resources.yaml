@@ -19,6 +19,12 @@ request:
 # LLM providers. Credentials are referenced, never written here: `env:VAR` or `file:/path`.
 # The reference below is `env:OPENAI_API_KEY`, so a local run needs that variable set; a document
 # whose credential cannot be read is refused as a whole (see CONTRIBUTING.md).
+#
+# `kind` names one adapter — one wire document shape — and the publication resolves it against the
+# registry. Four kinds are served: `openai` (Chat Completions), `openai_responses` (the same vendor's
+# Responses dialect; one dialect is one kind, so `native_protocol` stays a single value), `anthropic`
+# (Messages) and `gemini` (`generateContent`). An unknown kind is refused when the document is
+# compiled, never skipped.
 providers:
   - name: openai-primary
     kind: openai
@@ -123,10 +129,23 @@ routes:
     upstream: api-backend
     plugins: [public-jwt, api-quota]
   # A provider route converts between the client protocol and the provider's: `protocol` names the
-  # client protocol and is required here, because it is what selects the codec. `mode: convert` (the
-  # default) decodes the caller's body and re-encodes it; `mode: passthrough` forwards the bytes
-  # unchanged and is only meaningful when both sides speak the same protocol. Both fields, and the
-  # response bound below, are refused on an upstream route: an upstream has no exchange to convert.
+  # client protocol and is required here, because it is what selects the codec. Four are served:
+  # `openai.chat`, `openai.responses`, `anthropic.messages` and `gemini.generate_content` — the same
+  # values the `llm.protocol` log field carries, and the ones a caller's request must speak.
+  # `mode: convert` (the default) decodes the caller's body and re-encodes it; `mode: passthrough`
+  # forwards the bytes unchanged and is only meaningful when both sides speak the same protocol. Both
+  # fields, and the response bound below, are refused on an upstream route: an upstream has no
+  # exchange to convert.
+  #
+  # Passthrough has one hard limit: the `gemini.generate_content` ↔ `gemini` pair is refused at
+  # publication, because that dialect carries the model and the operation in the request target — a
+  # fixed target would forward the caller's bytes to whichever model and operation the route pinned.
+  # Publication refuses the document as a whole (a route fact, not a parse failure) and the previous
+  # generation keeps serving.
+  #
+  # The Gemini dialect also pins its model into the path: its provider's `model_map` must resolve to
+  # one physical model, and a request that resolves to another name is answered `403`
+  # `model_not_allowed`. Two aliases for one model are fine; two models are not.
   - id: llm-chat
     path_prefix: /v1/chat/
     provider: openai-primary

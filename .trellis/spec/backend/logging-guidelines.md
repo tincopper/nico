@@ -78,8 +78,8 @@ Rules:
 | `http.method` | string | Request method |
 | `http.status` | u16 | Status written to the caller; `499` for a cancelled request nobody answered, `0` when nothing was written |
 | `body_bytes` | u64 | Request body bytes actually metered through the proxy |
-| `llm.protocol` | string | Client protocol an AI route serves, e.g. `openai.chat`; absent on every other route |
-| `llm.provider` | string | Provider kind an AI route speaks to, e.g. `openai`; absent on every other route |
+| `llm.protocol` | string | Client protocol an AI route serves: `openai.chat`, `openai.responses`, `anthropic.messages` or `gemini.generate_content`; absent on every other route |
+| `llm.provider` | string | Provider kind an AI route speaks to: `openai`, `openai_responses`, `anthropic` or `gemini`; absent on every other route |
 | `llm.model` | string | `logical -> physical` as the front-end reported it; absent until the client body was decoded |
 | `llm.stream` | bool | Whether the client asked for an event stream; present exactly when `llm.model` is |
 | `llm.mode` | string | `convert` or `passthrough`, as the route itself reports it |
@@ -96,7 +96,12 @@ them from the request context, never from a vendor:
 
 - `llm.protocol` and `llm.provider` are **publication facts**: the codec and adapter the plan paired
   for the route. They exist for every request of the route, including one refused before its body was
-  read.
+  read. Their spellings are the registry keys — four client protocols (`openai.chat`,
+  `openai.responses`, `anthropic.messages`, `gemini.generate_content`) and four provider kinds
+  (`openai`, `openai_responses`, `anthropic`, `gemini`) — and `nico-llm`'s structure test pins both
+  sets, because a log field a dashboard filters on is a contract, not an implementation detail. The
+  second OpenAI dialect is a second *kind* (`openai_responses`), so `llm.provider` names one wire
+  document shape per value.
 - `llm.model` and `llm.stream` are **facts of the decoded body**: the model pair
   (`logical -> physical`) and whether the caller asked for a stream. `llm.model` is written with `?`
   (Debug), not `%`: its logical half is the caller's string, and Debug escapes a control character
@@ -113,7 +118,9 @@ them from the request context, never from a vendor:
 - Assembly adds one `info!` line per registered codec and per registered adapter: the registry key,
   `llm.capabilities`, and `llm.version` when that side answers with one. It is the only place an
   operator can read what this build serves before a request runs, and the revision is a field and never
-  a placeholder — a protocol with no versioned spelling reports none.
+  a placeholder — a protocol with no versioned spelling reports none. The revisions this build can
+  report are `2023-06-01` (both Anthropic sides) and `v1beta` (both Gemini sides); both OpenAI
+  dialects have no versioned spelling and leave the field out.
 - Publication adds one `info!` line per AI route: `route_id`, `llm.protocol`, `llm.provider`,
   `llm.mode` and `llm.model_map` (whether the route renames models, never the map's contents). It is
   a lifecycle event, not a per-request one, and it is emitted **after** the snapshot store: a line

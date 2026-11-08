@@ -1,0 +1,1 @@
+{"responseId":"resp-1","modelVersion":"phys-model","candidates":[{"content":{"role":"model","parts":[{"text":"thinking","thought":true},{"text":"the answer"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":7,"cachedContentTokenCount":3}}

@@ -355,7 +355,9 @@ counts the data plane keeps:
   would tell the caller to fix a document with nothing wrong in it. The entry is protocol-neutral —
   it names a capability, not a wire field — so every codec renders it without translating.
 - **A known wire field outside the capability axes is the same refusal.** `CodecError::UnsupportedField`
-  names the field (`n`, `audio`, `logprobs`, `tools[].function.strict`) and maps to the same
+  names the field (`n`, `audio`, `logprobs`, `tools[].function.strict` in the OpenAI Chat wire;
+  `previous_response_id`, `store` in Responses; `thinking`, `top_k` in Messages; `topK`,
+  `thinkingConfig`, `safetySettings` in `generateContent`) and maps to the same
   `unsupported_capability` / `422`: the document is valid, and the canonical model cannot carry what
   it asks for. Inventing a capability per such field would create an axis the request path can never
   compute, so the refusal names the field instead of pretending it is a capability. An *unknown*
@@ -419,6 +421,22 @@ A credential failure is the route's configuration problem, not the caller's, so 
 missing model is the caller's request and keeps `404`; a rate limit keeps `429` so the caller's own
 retry policy still works. A failure frame inside an established stream is `upstream_error` / `502`
 and **not** retryable: a byte already reached the caller, and a second attempt would be a second answer.
+
+### The four client error envelopes
+
+A converted route's refusal body is the client protocol's own envelope, built from the canonical
+error's category alone: each codec owns one closed table, and a canonical fact with no member in the
+protocol is omitted, never invented. The provider's status, body and credential have no spelling in
+any of them.
+
+| Protocol | Envelope | `Client` | `Limit` | `Upstream` / `Internal` / `Cancelled` | Stable code |
+|---|---|---|---|---|---|
+| `openai.chat`, `openai.responses` | `{"error":{"message","type","param","code"}}` | `invalid_request_error` | `rate_limit_error` | `server_error` | written into `error.code` |
+| `anthropic.messages` | `{"type":"error","error":{"type","message"}}` | `invalid_request_error` | `rate_limit_error` | `api_error` | not written: the protocol has no member for it |
+| `gemini.generate_content` | `{"error":{"code","message","status"}}` | `INVALID_ARGUMENT` | `RESOURCE_EXHAUSTED` | `UNAVAILABLE` / `INTERNAL` / `CANCELLED` | not written: the numeric `code` repeats the HTTP status |
+
+`param` is never written (the canonical error does not name a request member), and a stream that
+fails after it started writes the same envelope as one `data:` frame instead of a status line.
 
 ### What a plugin may and may not change
 
