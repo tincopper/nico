@@ -59,7 +59,13 @@ pub(in crate::proxy) fn apply_upstream_request(
             ))
         })?;
     if llm.converting().is_some() {
+        // The caller's credential describes the caller–gateway relationship, and a converted request
+        // replaces that relationship with the route's own. Every client protocol this gateway serves
+        // carries it in a different spelling (`authorization`, `x-api-key`, `x-goog-api-key`), so all
+        // of them go: sending a caller's key to a peer that did not issue it is a leak, not a default.
         request.remove_header("authorization");
+        request.remove_header("x-api-key");
+        request.remove_header("x-goog-api-key");
         request.remove_header("accept-encoding");
         // A converted body is the exchange's to decode, and a content-coded one is not a body any
         // codec here reads. Refusing it names the reason instead of letting the codec report the

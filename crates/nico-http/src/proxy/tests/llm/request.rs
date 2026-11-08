@@ -80,13 +80,23 @@ fn a_converted_route_drops_the_callers_credential_even_without_one_of_its_own() 
     let snapshot = llm_snapshot();
     let ctx = llm_context(&snapshot, Arc::new(fake));
     let mut upstream = client_request();
+    // The client protocols carry their credential in one of three spellings; a converted request
+    // replaces the caller–gateway relationship, so none of them describes the gateway–provider one.
+    upstream
+        .insert_header("x-api-key", "ant-client-key")
+        .expect("the fixture header is valid");
+    upstream
+        .insert_header("x-goog-api-key", "goog-client-key")
+        .expect("the fixture header is valid");
 
     llm::apply_upstream_request(&mut upstream, &ctx).expect("the provider head is valid");
 
-    assert!(
-        upstream.headers.get("authorization").is_none(),
-        "the caller's key must not travel to a provider that did not issue it"
-    );
+    for name in ["authorization", "x-api-key", "x-goog-api-key"] {
+        assert!(
+            upstream.headers.get(name).is_none(),
+            "the caller's `{name}` must not travel to a provider that did not issue it"
+        );
+    }
 }
 
 #[test]
