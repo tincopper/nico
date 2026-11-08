@@ -95,10 +95,11 @@ pub use schema::{
 #[must_use]
 pub fn builtin_registry() -> (ProtocolRegistry, ProviderRegistry) {
     let mut protocols = ProtocolRegistry::new();
-    let codecs: [Arc<dyn ClientCodec>; 3] = [
+    let codecs: [Arc<dyn ClientCodec>; 4] = [
         Arc::new(protocol::openai_chat::OpenAiChatCodec::new()),
         Arc::new(protocol::anthropic::AnthropicMessagesCodec::new()),
         Arc::new(protocol::openai_responses::OpenAiResponsesCodec::new()),
+        Arc::new(protocol::gemini::GeminiGenerateContentCodec::new()),
     ];
     for codec in codecs {
         if let Err(error) = protocols.register(codec) {

@@ -137,13 +137,24 @@
 
 ## 8. Gemini 客户端 codec
 
-- [ ] `protocol/gemini.rs` + `gemini/{target,request,parts,response,stream,error,usage}.rs`：`PROTOCOL = "gemini.generate_content"`，`version() = "v1beta"`。
-- [ ] `target`：从 `RequestFacts::path` 解析 `…/models/{model}:{operation}` 与 `alt`；未知操作/`alt` 非 `sse` 的拒绝；流式标志来自操作名。
-- [ ] decode/encode 按 §4.4 的表；`generationConfig` 全字段；`functionCall` 缺 id 时按位置补；URL 图片、`is_error`、`candidateCount > 1`、`safetySettings`、`thinkingConfig` 的拒绝。
-- [ ] `stream_encoder`：一帧一个 `GenerateContentResponse`、工具参数累积到 `ToolCallEnd`、`finish()` 时未闭合 → `Encode`。
-- [ ] 数据面缝隙：`LlmRequest` 的 path 传 `path_and_query`（`RequestFacts::path` 的文档已承诺含 query，数据面当前只传 `uri.path()`）；`nico-http` 侧一个断言，`nico-llm` 侧不加类型。
-- [ ] 测试：`tests/gemini_client/{main,target,request,parts,response,stream,error,support}.rs`。
-- [ ] **检查点 H**：`(gemini.generate_content → gemini)` 的 convert 往返；`alt`/操作名的拒绝表；非 UTF-8 path 不会 panic。
+- [x] `protocol/gemini.rs` + `gemini/{target,request,parts,response,stream,error,usage}.rs`：`PROTOCOL = "gemini.generate_content"`，`version() = "v1beta"`。
+- [x] `target`：从 `RequestFacts::path` 解析 `…/models/{model}:{operation}` 与 `alt`；未知操作/`alt` 非 `sse` 的拒绝；流式标志来自操作名。
+- [x] decode/encode 按 §4.4 的表；`generationConfig` 全字段；`functionCall` 缺 id 时按位置补；URL 图片、`is_error`、`candidateCount > 1`、`safetySettings`、`thinkingConfig` 的拒绝。
+- [x] `stream_encoder`：一帧一个 `GenerateContentResponse`、工具参数累积到 `ToolCallEnd`、`finish()` 时未闭合 → `Encode`。
+- [x] 数据面缝隙：`LlmRequest` 的 path 传 `path_and_query`（`RequestFacts::path` 的文档已承诺含 query，数据面当前只传 `uri.path()`）；`nico-http` 侧一个断言，`nico-llm` 侧不加类型。
+- [x] 测试：`tests/gemini_client/{main,target,request,parts,response,stream,error,support}.rs`。
+- [x] **检查点 H**：`(gemini.generate_content → gemini)` 的 convert 往返；`alt`/操作名的拒绝表；非 UTF-8 path 不会 panic。
+
+  **落地记录（第 8 步）**
+  - 新增 `protocol/gemini.rs`（`GeminiGenerateContentCodec`、`PROTOCOL = "gemini.generate_content"`、`VERSION = "v1beta"`）与 `gemini/{target,request,parts,response,stream,error,usage}.rs`（192/258/408/464/160/275/75/46）；`lib.rs` 的 `builtin_registry()` 变成 4 个 codec、`tests/registry.rs` 断言 4 个协议并断言 `version()`。`CALL_ID_PREFIX` 的所有权移到 codec 模块（一个方言一条按位分配规则），provider 侧 re-export 同一常量，`provider::gemini::CALL_ID_PREFIX` 公开路径不变。
+  - **target**：`…/models/{model}:{operation}` 与 query 从 `RequestFacts::path` 解析；operation 闭表（`countTokens` 等 → 400，可打印时点名）；`alt` 缺省或 `sse`，其他 → 422；**其余 query 参数一律按名拒绝**——canonical 没有承载 target 事实的位置，而该协议在此处的真实参数是 `key` 一类凭证，放进 preserved 桶会被 provider encoder 写回上游 body；escape 不解码（`%FF%FE` 等字面名流向下游的路由模型解析去拒绝），切片只在 ASCII 标记上取，任意字节序列（`/v1β/…`、多字节前缀）有类型化结果、不 panic。
+  - **decode**：`systemInstruction` → 前导 system item（text-only，其余 422）；`contents[].role` 缺省按 user（协议自己的单轮缺省），`user`/`model` 之外 400；一轮的 text/inlineData 折叠进一条 message，`thought`(+`thoughtSignature`)/`functionCall`/`functionResponse` 各自成 item（wire 顺序 = item 顺序）；`functionCall.id` 缺失按位置补 `call_<n>`，`functionResponse` 缺 id 按同名 call 唯一匹配解析，无匹配或歧义 → 400（不猜配对）；`response` 必须是闭对象 `{"content": str}`（这正是 adapter 与 fixture 写的形状）；`fileData` → 422 `unsupported_capability(files)`；混类 part/空 part/坏 base64 → 400。`generationConfig` 全字段映射；`topK`/`thinkingConfig`/`candidateCount > 1` → 422，`candidateCount: 1` 接受（就是缺省），未知成员 → 400；`responseMimeType`：`application/json`(+schema)/`text/plain` 之外 422，schema 无 mime → 400。顶层：`safetySettings`/`cachedContent` → 422；body 里的 `model` 成员 → 400（path 已命名模型，第二个是钉住目标要防的静默切换）；`labels` 与未知字段 → extensions。
+  - **encode**：单候选且 index 0（多个/偏移 → `Encode`）；parts 顺序 thought → text → call（模型产出顺序，fold 的逆）；`FinishReason` 反向表（`ToolCalls` 与 `Stop` 同写 `STOP`——该方言在调用后报的就是 STOP；`ContentFilter` → `SAFETY`；`Error` → `OTHER`）；`usageMetadata` 四桶按报告值写；答案里的 image/file part → `Encode`（四家 provider 都不产出这样的答复，写成员是虚构行为）；扩展照写、shadowing 拒绝。
+  - **stream**：一事件一 chunk；`Start` → identity chunk（`responseId`+`modelVersion`，二次 Start → `Encode`）；文本/思考增量各自成 chunk；工具参数累积到 `ToolCallEnd` 写整 `args` 对象（不成 JSON/非对象 → `Encode`）；`Usage` 独立成帧，finish 之后仍写——该协议没有终止符帧，§7 的「最后一帧 usageMetadata」就是它；Finish 后内容忽略、二次 Finish 忽略；`finish()` 无终止符，仅未闭合 call → `Encode`（canonical 流总会闭合）。
+  - **error**：`{"error":{code,message,status}}`，`code` = HTTP 状态数值（该包络自己对这个值的承载），`status` = 类别 → `google.rpc` token 闭表（Client→`INVALID_ARGUMENT`、Limit→`RESOURCE_EXHAUSTED`、Upstream→`UNAVAILABLE`、Cancelled→`CANCELLED`、Internal→`INTERNAL`），canonical 稳定 code 无字段不写；流中失败走共用 `data:` 帧，其后沉默。
+  - **数据面缝隙**：`nico-http` 的 `request_body` 改传 `uri.path_and_query()`（非 origin-form 目标回退 `path()`），`proxy/tests/llm.rs` 加一条断言（`?alt=sse` 原样到达 front-end）；`nico-llm` 侧零类型改动。
+  - 测试：`tests/gemini_client/{main,support,target,request,parts,response,stream,error}.rs` **46 个**，含检查点 H 的 `(gemini.generate_content → gemini)` convert 往返（codec decode 后经 provider adapter encode，与原文档逐值相等）、`alt`/操作名/未知 query 的拒绝表与非 UTF-8/转义 path 不 panic。`nico-server` 的「五轴能力行数」断言 3 → 4（gemini codec 是第四个声明满五轴的侧）。
+  - 门（真实输出）：`cargo test --workspace --all-features --locked` **1618 passed / 53 suites**；`cargo +nightly fmt --all -- --check` 通过；`cargo clippy --workspace --all-targets --all-features --locked -D warnings` 无 issue；`RUSTDOCFLAGS=-D warnings cargo doc`（nico-llm 与 workspace）通过；全树无文件 >500 行。
 
 ## 9. 矩阵、端到端与 spec 收口
 

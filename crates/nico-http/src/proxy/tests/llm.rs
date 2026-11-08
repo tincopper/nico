@@ -132,6 +132,23 @@ fn the_front_end_sees_the_whole_client_request_once() {
 }
 
 #[test]
+fn the_front_end_sees_the_query_the_client_sent() {
+    let calls = Arc::new(Mutex::new(LlmCalls::default()));
+    let snapshot = llm_snapshot();
+    let mut ctx = llm_context(&snapshot, front_end(&calls));
+    let header = request("POST", "/v1beta/models/fast:streamGenerateContent?alt=sse");
+    let mut body = Some(Bytes::from_static(b"{}"));
+
+    llm::request_body(&mut ctx, &header, &mut body, true).expect("the fixture prepares");
+
+    let calls = calls.lock().expect("the fake lock is not poisoned");
+    assert_eq!(
+        calls.prepared[0].path, "/v1beta/models/fast:streamGenerateContent?alt=sse",
+        "the facts carry the target with its query, which a protocol may read a fact from"
+    );
+}
+
+#[test]
 fn the_front_end_reports_the_stream_flag_and_the_model() {
     let calls = Arc::new(Mutex::new(LlmCalls::default()));
     let mut fake = FakeLlmRoute::new(&calls);

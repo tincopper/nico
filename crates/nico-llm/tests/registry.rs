@@ -10,12 +10,15 @@ use nico_llm::{
     ClientCodec, Provider, RegistryError, builtin_registry,
     protocol::{
         anthropic::{AnthropicMessagesCodec, PROTOCOL as ANTHROPIC_MESSAGES},
+        gemini::{
+            GeminiGenerateContentCodec, PROTOCOL as GEMINI_MESSAGES, VERSION as GEMINI_VERSION,
+        },
         openai_chat::{OpenAiChatCodec, PROTOCOL},
         openai_responses::{OpenAiResponsesCodec, PROTOCOL as RESPONSES_MESSAGES},
     },
     provider::{
         anthropic::{NATIVE_PROTOCOL as ANTHROPIC_PROTOCOL, PROVIDER_KIND as ANTHROPIC_KIND},
-        gemini::{NATIVE_PROTOCOL as GEMINI_PROTOCOL, PROVIDER_KIND as GEMINI_KIND},
+        gemini::{NATIVE_PROTOCOL as GEMINI_ADAPTER_PROTOCOL, PROVIDER_KIND as GEMINI_KIND},
         openai::PROVIDER_KIND,
         openai_responses::{
             NATIVE_PROTOCOL as RESPONSES_PROTOCOL, PROVIDER_KIND as RESPONSES_KIND,
@@ -49,10 +52,19 @@ fn the_builtin_registry_answers_both_lookups_a_publication_makes() {
         None,
         "this vendor has no dated spelling for the dialect, so the log leaves the field out"
     );
+    let gemini = protocols
+        .codec(GEMINI_MESSAGES.as_str())
+        .expect("the registered Gemini codec resolves");
+    assert_eq!(gemini.protocol(), GEMINI_MESSAGES);
+    assert_eq!(
+        gemini.version(),
+        Some(GEMINI_VERSION),
+        "the assembly log reports the revision this dialect names in its path"
+    );
     assert_eq!(
         protocols.len(),
-        3,
-        "this build serves three client protocols"
+        4,
+        "this build serves four client protocols"
     );
     assert!(!protocols.is_empty());
 
@@ -86,7 +98,7 @@ fn the_builtin_registry_answers_both_lookups_a_publication_makes() {
     assert_eq!(gemini.kind(), GEMINI_KIND);
     assert_eq!(
         gemini.native_protocol(),
-        GEMINI_PROTOCOL,
+        GEMINI_ADAPTER_PROTOCOL,
         "one kind names one dialect, so the equality a passthrough route needs is still equality"
     );
     assert_eq!(providers.len(), 4, "this build serves four provider kinds");
@@ -119,6 +131,7 @@ fn a_duplicate_registration_is_refused_rather_than_overwritten() {
     let codec: Arc<dyn ClientCodec> = Arc::new(OpenAiChatCodec::new());
     let messages: Arc<dyn ClientCodec> = Arc::new(AnthropicMessagesCodec::new());
     let responses: Arc<dyn ClientCodec> = Arc::new(OpenAiResponsesCodec::new());
+    let generate_content: Arc<dyn ClientCodec> = Arc::new(GeminiGenerateContentCodec::new());
     let adapter: Arc<dyn Provider> = Arc::new(nico_llm::provider::OpenAiProvider::new());
 
     assert_eq!(
@@ -142,6 +155,12 @@ fn a_duplicate_registration_is_refused_rather_than_overwritten() {
         })
     );
     assert_eq!(
+        protocols.register(generate_content),
+        Err(RegistryError::DuplicateKind {
+            kind: GEMINI_MESSAGES.as_str().to_owned(),
+        })
+    );
+    assert_eq!(
         providers.register(adapter),
         Err(RegistryError::DuplicateKind {
             kind: PROVIDER_KIND.as_str().to_owned(),
@@ -149,7 +168,7 @@ fn a_duplicate_registration_is_refused_rather_than_overwritten() {
     );
     assert_eq!(
         protocols.len(),
-        3,
+        4,
         "the refused registration changed nothing"
     );
     assert_eq!(providers.len(), 4);

@@ -140,9 +140,9 @@ fn every_registered_side_is_reported_with_its_capabilities() {
     assert_eq!(
         text.matches("llm.capabilities=streaming,tools,images,reasoning,response_format")
             .count(),
-        3,
-        "the OpenAI codec and adapter and the Gemini adapter declare the same five axes, and \
-         `files` is the one none of them has: {text}"
+        4,
+        "the OpenAI codec and adapter, the Gemini codec and the Gemini adapter declare the same \
+         five axes, and `files` is the one none of them has: {text}"
     );
     let openai = text
         .lines()

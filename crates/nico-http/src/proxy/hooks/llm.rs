@@ -127,7 +127,13 @@ pub(in crate::proxy) fn request_body(
     let prepared = {
         let view = LlmRequest::new(
             request.method.as_str(),
-            request.uri.path(),
+            // The facts carry the target with its query: a protocol may name a request fact there
+            // (the `alt` spelling, for one), and the contract documents the path as including it.
+            // A target with no path-and-query part (an authority form) has no query to carry.
+            request
+                .uri
+                .path_and_query()
+                .map_or_else(|| request.uri.path(), |target| target.as_str()),
             utf8_headers(request),
             &whole,
         );

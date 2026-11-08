@@ -146,13 +146,11 @@ pub const VERSION: &str = "v1beta";
 /// to refusing an otherwise complete answer; see the module's known gaps.
 pub const DEFAULT_RESPONSE_ID: &str = "gemini-response";
 
-/// The prefix of the call id this adapter assigns when the answer names none.
+/// The prefix of the call id this dialect assigns when a call names none.
 ///
-/// This dialect's `functionCall.id` is optional while the canonical
-/// [`ToolCallId`](crate::schema::ToolCallId) is required. The assigned id is the prefix plus the
-/// call's position among the calls of the same answer, so it is stable for one answer and the next
-/// request writes it back.
-pub const CALL_ID_PREFIX: &str = "call_";
+/// One dialect, one spelling: the rule lives beside the client codec's protocol constants, and both
+/// sides assign under it.
+pub use crate::protocol::gemini::CALL_ID_PREFIX;
 
 /// The adapter for Gemini's `generateContent` wire format.
 ///
