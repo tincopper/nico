@@ -34,13 +34,22 @@ Per-feature matrix (features must be additive and independent):
 
 ```bash
 cargo check --workspace --no-default-features
+cargo check -p nico-server --no-default-features --features traffic
+cargo check -p nico-server --features llm
 cargo check --workspace --all-features
+cargo test -p nico-server --no-default-features --features traffic
 ```
 
-No crate declares a Cargo feature today. The optional pieces that will (`config-etcd`,
-`config-nacos`) arrive as their own crates behind their own feature, and each one adds a line to the
-matrix at that moment. A line naming a feature nothing declares is a gate nobody can run, so it is
-not written ahead of the crate that needs it.
+`nico-server` declares the first features in the workspace: `llm`, on by default, and `traffic`, which
+is additive in the Cargo sense — it removes nothing, it simply does not compile `nico-llm`, so the role
+a build serves is a property of the artifact rather than a runtime flag. The optional config centers
+(`config-etcd`, `config-nacos`) arrive as their own crates behind their own feature. A line naming a
+feature nothing declares is a gate nobody can run, so a feature adds its lines in the same change that
+declares it — and removes none while it exists.
+
+The traffic build carries the last line for a second reason: its integration tests are
+`#![cfg(not(feature = "llm"))]`, so under `--all-features` they compile to nothing and pass without
+running. A feature-gated test that no gate executes is a test nobody runs.
 
 ---
 
@@ -406,7 +415,7 @@ Glob imports (`use foo::*`) are forbidden except in `#[cfg(test)] mod tests { us
 | `todo!` / `unimplemented!` in merged code | Ships a guaranteed panic | Land the implementation, or `#[ignore = "reason"]` on the test |
 | `unreachable!` in request/config paths | Same | Return an error. Allowed **only** where a type-state invariant makes it impossible, with `#[expect(clippy::unreachable, reason = "...")]` and a comment naming the invariant |
 | `unsafe` | Not needed in this architecture | Safe abstractions; a dedicated task + `// SAFETY:` + Miri if ever required |
-| `Box<dyn std::error::Error>` in a public API | Unmatchable, loses classification | `thiserror` enum |
+| `Box<dyn std::error::Error>` in a public API | Unmatchable, loses classification | `thiserror` enum. One documented exception: a seam whose whole purpose is that the caller must **not** name the owning crate's error type (`reload::LlmCompileError`), where a sibling field carries the `ErrorCategory` and the constructor is crate-internal so no caller can manufacture one |
 | `anyhow` in a library's public signature | Same | `thiserror`; `anyhow` only in `nico-server::main` |
 | `String` as the only error variant | No structure, no source chain | Typed variant with `#[source]` |
 | Error types not `Send + Sync + 'static` | `?` across `.await` and in spawned tasks fails to compile | Derive/verify the bounds |

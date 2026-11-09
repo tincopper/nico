@@ -30,6 +30,7 @@
 //! covers the peer address ([`HttpContext::client_ip`]): it is recorded from the connection, so a
 //! policy that keys on the caller never reads a value the caller chose.
 
+mod attempt;
 mod buffer;
 mod identity;
 mod llm;
@@ -40,6 +41,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(crate) use attempt::FailureStage;
 pub use identity::Identity;
 use nico_core::{Generation, Route, RouteTarget, RuntimeSnapshot};
 use pingora::http::{Method, RequestHeader};
@@ -328,20 +330,6 @@ impl HttpContext {
     #[must_use]
     pub fn error(&self) -> Option<&HttpError> {
         self.error.as_ref()
-    }
-
-    /// Marks the request as cancelled: the client disconnected or shutdown began.
-    ///
-    /// A cancelled request produces no response. Recording it keeps the logging hook from reporting
-    /// a disconnect as a server error.
-    pub fn mark_cancelled(&mut self) {
-        self.cancelled = true;
-    }
-
-    /// Returns whether the request was cancelled.
-    #[must_use]
-    pub fn is_cancelled(&self) -> bool {
-        self.cancelled
     }
 
     /// Records the two chains this request was admitted by, and how it is framed.

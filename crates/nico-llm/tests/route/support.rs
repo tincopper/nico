@@ -15,9 +15,10 @@ use std::sync::Arc;
 
 use nico_http::llm::{ConvertingRoute, LlmRequest};
 use nico_llm::{
-    AssistantTurn, Capabilities, ChatRequest, ChatResponse, Choice, ClientCodec, ClientReply,
-    ClientStreamEncoder, CodecError, ContentPart, Credential, Exchange, FinishReason, ModelId,
-    Provider, ProviderError, ProviderRoute, ProviderStream, ResponseFacts, ResponseId, StreamEvent,
+    AssistantTurn, AttemptChain, BreakerParams, Capabilities, ChainMember, ChatRequest,
+    ChatResponse, Choice, ClientCodec, ClientReply, ClientStreamEncoder, CodecError, ContentPart,
+    Credential, Exchange, FinishReason, ModelId, Provider, ProviderError, ProviderRoute,
+    ProviderStream, ResponseFacts, ResponseId, StreamEvent, TargetIdentity,
     protocol::openai_chat::{OpenAiChatCodec, PROTOCOL},
     provider::openai::{OpenAiProvider, PROVIDER_KIND},
     route::{ConvertRoute, PassthroughRoute},
@@ -81,9 +82,37 @@ pub(crate) fn exchange_with(
     )
 }
 
+/// Wraps one exchange into the single-target attempt chain a route without fallback publishes.
+///
+/// The identity is a fixture's: a named primary at the test base URL with the built-in breaker
+/// defaults, equal for every test because no test reads it — the chain's construction, not its
+/// state, is what these front-end tests exercise.
+pub(crate) fn chain_of(exchange: Arc<Exchange>) -> Arc<AttemptChain> {
+    let identity = TargetIdentity::new(
+        "openai-primary",
+        BASE_URL,
+        PROVIDER_KIND,
+        BreakerParams::new(5, 30_000),
+    );
+    Arc::new(
+        AttemptChain::try_new(vec![ChainMember::new(exchange, identity)])
+            .expect("one member is a chain"),
+    )
+}
+
+/// The breaker state one fixture route's walk consults.
+///
+/// A fresh table per fixture: no test reads another's target history.
+pub(crate) fn breakers() -> std::sync::Arc<nico_llm::BreakerTable> {
+    std::sync::Arc::new(nico_llm::BreakerTable::new())
+}
+
 /// The converting front-end the data plane would publish for the default route.
+///
+/// Budget `1`: one attempt, the document's default, which is what a route that names no
+/// `retry_budget` gets.
 pub(crate) fn convert_route() -> ConvertRoute {
-    ConvertRoute::new(exchange())
+    ConvertRoute::new(chain_of(exchange()), breakers(), 1)
 }
 
 /// The passthrough front-end for a route in passthrough mode.

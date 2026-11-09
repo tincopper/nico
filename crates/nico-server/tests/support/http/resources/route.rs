@@ -27,6 +27,10 @@ pub(crate) struct Route {
     /// The provider-route mode; `None` leaves the document's `convert` default.
     pub(super) mode: Option<String>,
     pub(super) plugins: Vec<String>,
+    /// Attempts the route may absorb from one target; `None` leaves the document default of `1`.
+    pub(super) retry_budget: Option<u8>,
+    /// The fallback chain; `None` leaves no chain. A scenario writes names the document declares.
+    pub(super) fallback: Option<Vec<String>>,
 }
 
 impl Route {
@@ -43,6 +47,8 @@ impl Route {
             protocol: None,
             mode: None,
             plugins: Vec::new(),
+            retry_budget: None,
+            fallback: None,
         }
     }
 
@@ -59,6 +65,8 @@ impl Route {
             protocol: Some("openai.chat".to_owned()),
             mode: None,
             plugins: Vec::new(),
+            retry_budget: None,
+            fallback: None,
         }
     }
 
@@ -101,6 +109,18 @@ impl Route {
     /// Names the plugins the route runs, in the order the document lists them.
     pub(crate) fn plugins(mut self, names: &[&str]) -> Self {
         self.plugins = names.iter().map(|name| (*name).to_owned()).collect();
+        self
+    }
+
+    /// Sets the route's retry budget: total attempts one target may absorb, including the first.
+    pub(crate) fn retry_budget(mut self, retry_budget: u8) -> Self {
+        self.retry_budget = Some(retry_budget);
+        self
+    }
+
+    /// Declares the fallback chain: provider names tried in order after the route's target fails.
+    pub(crate) fn fallback(mut self, names: &[&str]) -> Self {
+        self.fallback = Some(names.iter().map(|name| (*name).to_owned()).collect());
         self
     }
 }

@@ -48,10 +48,14 @@
 //! message this crate frames, and a second opinion about them is how a request desynchronises from its
 //! body.
 
+mod attempt;
 mod request;
 mod response;
 mod routes;
 
+pub use attempt::{
+    AttemptTarget, AttemptVerdict, LlmAttempt, REPLAY_BODY_LIMIT, retry_after_dispatch_allowed,
+};
 pub use request::{LlmPrepared, LlmRequest};
 pub use response::{LlmResponseHead, ResponseTransform};
 pub use routes::{ConvertingRoute, LlmRoute, LlmRoutes, NoLlmRoutes};

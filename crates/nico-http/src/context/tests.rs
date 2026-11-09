@@ -276,6 +276,7 @@ fn a_trace_id_is_replaced_rather_than_appended_to() {
     assert_eq!(ctx.trace_id(), "second");
 }
 
+mod attempt;
 mod client_ip {
     use std::net::IpAddr;
 

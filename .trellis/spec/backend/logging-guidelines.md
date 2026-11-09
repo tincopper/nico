@@ -87,6 +87,10 @@ Rules:
 | `llm.routes` | u64 | Provider routes the published generation covers |
 | `llm.capabilities` | string | The capability axes one side declares, comma-joined (`streaming,tools,…`), or `none` |
 | `llm.version` | string | The wire revision the side is pinned to; **absent** when the vendor has no versioned spelling |
+| `llm.target` | string | The provider name an attempt was addressed to; the same spelling as `llm.provider`, so one dashboard can filter both |
+| `llm.attempt` | u32 | 1-based number of the attempt in a route's sequence, across its targets |
+| `llm.outcome` | string | `failed` or `skipped` — what became of an attempt the request did not end on |
+| `llm.circuit` | string | `closed`, `open` or `half_open` — the phase a target's breaker moved to |
 | `error.stage` | string | Which publication stage refused a document: `document`, `plugin` or `llm` |
 
 ### LLM request fields
@@ -129,6 +133,31 @@ them from the request context, never from a vendor:
 - A publication stage that refuses a document logs once, with `error.stage` naming the stage, the
   revision, and the error's `Display`. The three stages share one line so a fourth cannot forget to
   report the revision or to mark the generation degraded.
+
+### Attempt and circuit fields
+
+A converted route that declared attempts reports them on three kinds of line, all about a target and
+neither about a prompt:
+
+- **One `warn!` per failed attempt the walk replaced**, written where the walk said "retry":
+  `llm.target` (the provider name), `llm.attempt` (the 1-based number of the attempt that failed),
+  `llm.outcome = "failed"` and `duration_ms` (the round's duration). Without it a retry that succeeds
+  leaves the first failure invisible — the client only ever sees the final answer, so this line is the
+  only record the attempt happened. The attempt that *produced* the client's answer takes no line: its outcome is
+  the request record's, and a successful first attempt stays silent, as a per-request log must.
+- **One `info!` per skipped target**, written by the round that skipped it: `llm.target` (the
+  provider name), `llm.attempt` (the 1-based number of the attempt that follows — or would have,
+  when the walk refused every target) and `llm.outcome = "skipped"`. A target whose breaker is open
+  is never contacted, so this line is the only record that the route has one — without it an
+  operator would read a silent gap in a chain.
+- **One `warn!` per breaker phase change**, written where the change happens: `llm.target` and
+  `llm.circuit` (`closed` / `open` / `half_open`). A phase change is an operator-visible fact — the
+  target changed what it will admit — and it is the signal an alert fires on.
+
+No line here carries a base URL, a header value or a credential: a target is named by its document
+name, and the identity's `Debug` (which the circuit line goes through) omits the endpoint.
+`llm.target` is the same field a request record's `llm.provider` uses, so one dashboard can filter
+both by target name.
 
 ### Event shape
 

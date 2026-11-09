@@ -73,6 +73,17 @@ pub(crate) enum Reply {
         /// Delay before each piece after the first.
         gap: Duration,
     },
+    /// Sends a chunked head, one chunk, and then closes without the terminating chunk.
+    ///
+    /// This is the "provider died mid-stream" case: the response head and a byte have reached the
+    /// caller, so the response is committed and no retry may replace it. Distinct from
+    /// [`Self::StallMidStream`], which holds the connection open.
+    StreamThenDie {
+        /// The headers to write before the framing headers.
+        headers: Vec<(String, String)>,
+        /// The body bytes written before the close.
+        first_chunk: Vec<u8>,
+    },
     /// Sends a chunked `200` head and no chunk at all, then holds the connection.
     StallAfterHead,
     /// Sends a chunked `200` head and one chunk, then holds the connection.

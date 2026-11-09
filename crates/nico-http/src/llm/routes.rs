@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use super::{LlmPrepared, LlmRequest, ResponseTransform};
+use super::{LlmAttempt, LlmPrepared, LlmRequest, ResponseTransform};
 use crate::{error::HttpError, upstream::Destination};
 
 /// The LLM front-ends one publication carries, keyed by route id.
@@ -85,9 +85,11 @@ pub trait LlmRoute: Send + Sync {
 pub trait ConvertingRoute: Send + Sync {
     /// Decodes the buffered client body and returns the bytes to send to the provider.
     ///
-    /// Called exactly once per converted request, after the client body has ended. This is where the
-    /// capability gate, the model mapping and the provider's encoder run: the returned value is what
-    /// the data plane writes, so a failure here is answered before anything reaches the provider.
+    /// The data plane reaches this through [`Self::begin`]'s walk, which decodes once and re-encodes
+    /// per target; a front-end whose walk carries more than one target must gate every capability
+    /// question against its chain's intersection, not against one member's set. This method is the
+    /// single-target form of that path, kept for the one-target route and the tests that drive the
+    /// route directly.
     ///
     /// # Errors
     /// Returns the failure that replaces the provider request. An [`HttpError::InvalidRequest`] is the
@@ -115,6 +117,17 @@ pub trait ConvertingRoute: Send + Sync {
         streaming: bool,
         max_response_bytes: u32,
     ) -> Result<Box<dyn ResponseTransform>, HttpError>;
+
+    /// Starts this request's walk over the route's targets.
+    ///
+    /// Called once, when the data plane starts serving the route. The returned value is the
+    /// per-request half of a converting route: target selection, per-target encoding and the
+    /// classification of a failed attempt. It is a separate value because the route itself is
+    /// published once and shared by every request, while the walk is that request's own.
+    ///
+    /// The walk is asked to select **before** the client's body ends, so its first answer is the
+    /// target attempt 0 is sent to. That is why the selection and the encoding are two calls.
+    fn begin(&self) -> Box<dyn LlmAttempt>;
 }
 
 /// A plan that serves no route.

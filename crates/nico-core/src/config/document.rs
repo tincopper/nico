@@ -46,7 +46,8 @@ impl Document {
     /// - [`DocumentError::WrongApiVersion`] when `apiVersion` is not [`API_VERSION`].
     /// - [`DocumentError::LimitOutOfRange`] when a limit is outside its accepted range.
     /// - [`DocumentError::DuplicateId`] when a route id, an upstream, provider or plugin name, a
-    ///   `(host, path_prefix)` match combination, or a plugin a route lists twice repeats.
+    ///   `(host, path_prefix)` match combination, a plugin a route lists twice, or a provider a
+    ///   route's fallback chain lists twice repeats.
     /// - [`DocumentError::RouteTargetMissing`] / [`DocumentError::RouteTargetAmbiguous`] when a
     ///   route does not name exactly one upstream or provider.
     /// - [`DocumentError::ReferenceUnknown`] when a route names an upstream, provider or plugin that

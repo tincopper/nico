@@ -97,7 +97,8 @@ pub enum DocumentError {
     /// A name that must be unique appears twice.
     #[error("duplicate {kind}: {id}")]
     DuplicateId {
-        /// Identifier kind: `route`, `upstream`, `provider` or `route-match`.
+        /// Identifier kind: `route`, `upstream`, `provider`, `route-match`, `route-plugin` or
+        /// `route-fallback`.
         kind: &'static str,
         /// The repeated identifier, or the colliding match combination.
         id: String,

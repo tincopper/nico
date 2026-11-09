@@ -22,6 +22,8 @@ thiserror.workspace = true
 # A duplicate registration is reported, not asserted: this crate is assembled by the process, and a
 # panic there would be worse than a kind that was registered once.
 tracing.workspace = true
+# The breaker's clock is `tokio::time::Instant` — pausable in tests, like the rate limiter's.
+tokio = { workspace = true, features = ["time"] }
 
 [lints]
 workspace = true

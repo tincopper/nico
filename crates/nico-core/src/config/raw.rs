@@ -64,6 +64,23 @@ pub(super) struct RawProvider {
     /// ceiling. A request that sets its own limit always wins.
     pub(super) max_output_tokens: Option<u32>,
     pub(super) timeout_ms: Option<u32>,
+    /// The endpoint's failure budget. Absent and partially written entries take the built-in
+    /// defaults; a `failure_threshold` of `0` is the one spelling for "never break this provider",
+    /// so the section cannot mean "absent" and mean that too.
+    pub(super) circuit_breaker: Option<RawCircuitBreaker>,
+}
+
+/// One provider's `circuit_breaker` section exactly as written.
+///
+/// Both fields are optional on purpose: an entry that only tightens one knob should not have to
+/// restate the other, and the defaults they fall back to live with the typed model, not here.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawCircuitBreaker {
+    /// Consecutive failures that open the breaker. `0` disables it for this provider.
+    pub(super) failure_threshold: Option<u32>,
+    /// How long an open breaker stays open before one probe is allowed through.
+    pub(super) cooldown_ms: Option<u32>,
 }
 
 /// One `upstreams` entry exactly as written.
@@ -102,6 +119,13 @@ pub(super) struct RawRoute {
     /// Plugin names this route runs, in document order. Absent and `[]` mean the same thing — no
     /// plugins — so a route without a policy does not have to spell the empty list out.
     pub(super) plugins: Option<Vec<String>>,
+    /// Total attempts the route may make against one provider target, including the first. Absent
+    /// means `1`: one attempt, no retry — the behavior of a route that never names the field.
+    pub(super) retry_budget: Option<u8>,
+    /// Provider names the route tries in order when its target fails, in document order. Absent and
+    /// `[]` mean the same thing — no fallback — so a single-target route does not have to spell an
+    /// empty chain out. Whether a named member can be served is the publication's decision.
+    pub(super) fallback: Option<Vec<String>>,
 }
 
 /// One `plugins` entry exactly as written.

@@ -330,6 +330,23 @@ impl Shared {
                 }
                 let _finished = wire.write(b"0\r\n\r\n").await;
             }
+            Reply::StreamThenDie {
+                headers: response_headers,
+                first_chunk,
+            } => {
+                read_request_body(&mut wire, &headers, &self).await;
+                if wire
+                    .write(&chunked_head_with(&response_headers))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                // Close without `0\r\n\r\n`: the client's stream ends mid-message, which is exactly
+                // what a provider that died after its head produces. A failed write means the
+                // gateway already went away, which is the same ending.
+                let _ = write_chunk(&mut wire, &first_chunk).await;
+            }
             Reply::Stream { events, gap } => {
                 read_request_body(&mut wire, &headers, &self).await;
                 if wire.write(&chunked_head()).await.is_err() {

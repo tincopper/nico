@@ -10,13 +10,14 @@
 use nico_core::{ErrorCategory, Scheme};
 use nico_http::llm::LlmRoutes;
 use nico_llm::{
-    CanonicalError, Capabilities, ChatRequest, ChatResponse, Endpoint, ExchangeBuildError,
-    ProtocolId, Provider, ProviderError, ProviderKind, ProviderRegistry, ProviderRoute,
-    ProviderStream, ResponseFacts, provider::OpenAiProvider,
+    BreakerTable, CanonicalError, Capabilities, ChatRequest, ChatResponse, Endpoint,
+    ExchangeBuildError, ProtocolId, Provider, ProviderError, ProviderKind, ProviderRegistry,
+    ProviderRoute, ProviderStream, ResponseFacts, provider::OpenAiProvider,
 };
 
 use super::*;
 
+mod chain;
 mod facts;
 
 #[test]
@@ -150,6 +151,7 @@ fn a_passthrough_route_is_refused_when_the_two_sides_speak_different_protocols()
         &providers,
         &PublishedChains::empty(),
         credentials.as_ref(),
+        &Arc::new(BreakerTable::new()),
     )
     .expect_err("a passthrough pair that disagrees is refused");
 
@@ -205,6 +207,7 @@ fn a_route_whose_provider_kind_has_no_adapter_is_refused() {
         &ProviderRegistry::new(),
         &PublishedChains::empty(),
         credentials.as_ref(),
+        &Arc::new(BreakerTable::new()),
     )
     .expect_err("no adapter answers this kind");
 
@@ -241,6 +244,7 @@ upstreams: []
         &providers,
         &PublishedChains::empty(),
         &EnvFileCredentials::new(),
+        &Arc::new(BreakerTable::new()),
     )
     .expect_err("an unreadable credential refuses the document");
 
@@ -291,6 +295,7 @@ routes:
         &providers,
         &PublishedChains::empty(),
         credentials.as_ref(),
+        &Arc::new(BreakerTable::new()),
     )
     .expect("both routes compile");
 

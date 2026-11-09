@@ -21,7 +21,7 @@ use super::{
     document::{API_VERSION, Document},
     error::DocumentError,
     plugin,
-    provider::Provider,
+    provider::{CircuitBreaker, DEFAULT_COOLDOWN_MS, DEFAULT_FAILURE_THRESHOLD, Provider},
     raw::RawDocument,
     reference,
     request::{DEFAULT_MAX_RESPONSE_BYTES, RequestBounds},
@@ -77,6 +77,11 @@ pub(super) fn assemble(
             model_map: raw.model_map.unwrap_or_default(),
             max_output_tokens: raw.max_output_tokens,
             timeout_ms: raw.timeout_ms,
+            // Every provider carries a breaker: an absent or partially written section takes the
+            // built-in defaults, and an explicit `failure_threshold` of `0` disables it. The default
+            // is materialized here rather than left to the consumer, so "what a provider that wrote
+            // nothing gets" has exactly one definition.
+            circuit_breaker: materialize_breaker(raw.circuit_breaker),
         })
         .collect::<Vec<_>>();
     let upstreams = raw_upstreams
@@ -120,6 +125,20 @@ fn check_count(kind: &'static str, count: usize, limit: usize) -> Result<(), Doc
         return Err(DocumentError::TooMany { kind, count, limit });
     }
     Ok(())
+}
+
+/// Turns the written `circuit_breaker` section into the parameters a provider carries, filling the
+/// fields the document left out from the built-in defaults.
+fn materialize_breaker(raw: Option<super::raw::RawCircuitBreaker>) -> CircuitBreaker {
+    match raw {
+        Some(section) => CircuitBreaker::new(
+            section
+                .failure_threshold
+                .unwrap_or(DEFAULT_FAILURE_THRESHOLD),
+            section.cooldown_ms.unwrap_or(DEFAULT_COOLDOWN_MS),
+        ),
+        None => CircuitBreaker::new(DEFAULT_FAILURE_THRESHOLD, DEFAULT_COOLDOWN_MS),
+    }
 }
 
 #[cfg(test)]

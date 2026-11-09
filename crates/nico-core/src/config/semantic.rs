@@ -22,12 +22,47 @@ use std::{
 };
 
 use super::{
-    error::DocumentError, host, plugin::PluginSpec, provider::Provider, request::RequestBounds,
-    route::Route, secret_ref::is_secret_ref, upstream::Upstream,
+    error::DocumentError,
+    host,
+    plugin::PluginSpec,
+    provider::{CircuitBreaker, Provider},
+    request::RequestBounds,
+    route::Route,
+    secret_ref::is_secret_ref,
+    upstream::Upstream,
 };
 
 /// Inclusive upper bound for a route-level or provider-level `timeout_ms`.
 const MAX_TIMEOUT_MS: u32 = 600_000;
+/// Inclusive upper bound for `routes[].retry_budget`.
+///
+/// A retry re-encodes the canonical request, so the budget bounds the memory a route holds in flight
+/// and the load one failing endpoint absorbs. Four attempts is already an aggressive posture for a
+/// call that takes seconds; a larger value is a deployment problem, not a knob.
+pub(crate) const MAX_RETRY_BUDGET: u8 = 4;
+/// Inclusive upper bound for the members of `routes[].fallback`.
+///
+/// A chain is a declared compatibility statement, not a failover list: three alternatives after the
+/// route's own target is already more endpoints than one request should be allowed to try, and every
+/// member is a credential the gateway materializes and a place its prompt may be sent.
+pub const MAX_FALLBACK_MEMBERS: usize = 3;
+/// The most attempts one route can declare, which is what the data plane's loop fuse must cover.
+///
+/// Derived rather than written down: a budget retries the same target, and a chain adds a target per
+/// member, so the longest sequence a document can express is exactly the product below. The data
+/// plane reads this constant as `ServerConf::max_retries`, which makes the framework's counter and the
+/// document model one fact instead of two numbers that must be kept in agreement.
+pub const MAX_ATTEMPTS_PER_ROUTE: usize = MAX_RETRY_BUDGET as usize * (1 + MAX_FALLBACK_MEMBERS);
+/// Inclusive upper bound for `providers[].circuit_breaker.failure_threshold`.
+///
+/// The threshold counts consecutive failures, so a document writing a larger one has not configured
+/// a breaker but expressed a number; `0` stays legal and means the breaker is disabled.
+const MAX_FAILURE_THRESHOLD: u32 = 1000;
+/// Inclusive upper bound for `providers[].circuit_breaker.cooldown_ms`.
+///
+/// The same ceiling a timeout uses: a cooldown past ten minutes is a maintenance window, which an
+/// operator expresses by disabling the breaker, not by waiting an hour between probes.
+const MAX_COOLDOWN_MS: u32 = 600_000;
 /// Upper bound for a route id, an upstream name or a provider name.
 const MAX_NAME_BYTES: usize = 63;
 /// Upper bound for `routes[].path_prefix`.
@@ -54,8 +89,9 @@ const REJECTION_STATUS: std::ops::RangeInclusive<u16> = 400..=499;
 /// - [`DocumentError::InvalidField`] for a malformed name, host, path prefix, base URL, credential
 ///   reference, upstream host or port, protocol id or model map entry.
 /// - [`DocumentError::LimitOutOfRange`] for a timeout outside `1..=600_000`, an output ceiling of
-///   zero, a route body bound above `request.max_body_bytes`, or a route response bound above
-///   `request.max_response_bytes`.
+///   zero, a route body bound above `request.max_body_bytes`, a route response bound above
+///   `request.max_response_bytes`, a retry budget outside `1..=4`, a breaker threshold above its
+///   ceiling, or a breaker cooldown outside `1..=600_000`.
 /// - [`DocumentError::DuplicateId`] when two routes share the same `(host, path_prefix)` pair.
 pub(super) fn validate(
     routes: &[Route],
@@ -106,7 +142,30 @@ fn validate_provider(provider: &Provider) -> Result<(), DocumentError> {
             value: 0,
         });
     }
+    validate_circuit_breaker(provider.circuit_breaker())?;
     validate_model_map(provider.model_map())?;
+    Ok(())
+}
+
+/// Checks one provider's circuit-breaker parameters.
+///
+/// `failure_threshold` of `0` is legal and means the breaker is disabled — it is the one spelling for
+/// "never stop calling this endpoint", which is why the range starts there and not at one.
+fn validate_circuit_breaker(breaker: &CircuitBreaker) -> Result<(), DocumentError> {
+    let threshold = breaker.failure_threshold();
+    if threshold > MAX_FAILURE_THRESHOLD {
+        return Err(DocumentError::LimitOutOfRange {
+            field: "providers[].circuit_breaker.failure_threshold",
+            value: u64::from(threshold),
+        });
+    }
+    let cooldown = breaker.cooldown_ms();
+    if !(1..=MAX_COOLDOWN_MS).contains(&cooldown) {
+        return Err(DocumentError::LimitOutOfRange {
+            field: "providers[].circuit_breaker.cooldown_ms",
+            value: u64::from(cooldown),
+        });
+    }
     Ok(())
 }
 
@@ -175,6 +234,8 @@ fn validate_routes(routes: &[Route], request: RequestBounds) -> Result<(), Docum
         if let Some(max_response_bytes) = route.max_response_bytes() {
             validate_response_bound(request, max_response_bytes)?;
         }
+        validate_retry_budget(route.retry_budget())?;
+        validate_fallback_chain(route)?;
 
         // The key is the router's own comparison, canonicalised: `host_key` and `hosts_match` are one
         // rule, so a document cannot list `API.example` and `api.example` as two routes while the
@@ -288,6 +349,37 @@ fn validate_response_bound(
         return Err(DocumentError::LimitOutOfRange {
             field: "routes[].max_response_bytes",
             value: u64::from(max_response_bytes),
+        });
+    }
+    Ok(())
+}
+
+/// Checks a route's retry budget.
+///
+/// A budget of `0` would mean "no attempts at all", which no route can serve, so the range starts at
+/// the default `1`. The upper bound is the document model's, not a request-time decision: each retry
+/// holds another encoded body in flight, so the ceiling is a memory posture.
+fn validate_retry_budget(retry_budget: u8) -> Result<(), DocumentError> {
+    if !(1..=MAX_RETRY_BUDGET).contains(&retry_budget) {
+        return Err(DocumentError::LimitOutOfRange {
+            field: "routes[].retry_budget",
+            value: u64::from(retry_budget),
+        });
+    }
+    Ok(())
+}
+
+/// Checks a route's fallback chain length.
+///
+/// The bound is the document model's because it is a memory and blast-radius posture: every member is
+/// another target one request may reach, with its own credential and its own copy of the encoded body
+/// in flight. It is also the second factor of [`MAX_ATTEMPTS_PER_ROUTE`], so a document cannot express
+/// a sequence the data plane's attempt loop is not sized for.
+fn validate_fallback_chain(route: &Route) -> Result<(), DocumentError> {
+    if route.fallback().len() > MAX_FALLBACK_MEMBERS {
+        return Err(DocumentError::LimitOutOfRange {
+            field: "routes[].fallback",
+            value: route.fallback().len() as u64,
         });
     }
     Ok(())

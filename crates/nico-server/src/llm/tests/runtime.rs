@@ -1,8 +1,9 @@
 //! The runtime a process compiles with: the registries it was built from, and what its `Debug` says.
 //!
-//! The two constructors are the assembly seam. `builtin` is what a process gets (and the only path
-//! that reads a real `file:` credential end to end), `with_parts` is what a test or a future assembly
-//! gets. Neither is allowed to be a second compiler: both reach the same `LlmPlan::compile`.
+//! The constructors are the assembly seam. `builtin` is what a process gets (and the only path that
+//! reads a real `file:` credential end to end); `with_parts` is what a test or a future assembly gets;
+//! `with_shared` is what ties a runtime to breaker state another generation already populated. None is
+//! allowed to be a second compiler: all reach the same `LlmPlan::compile`.
 
 use std::{
     io,
@@ -242,5 +243,89 @@ fn a_side_that_pins_a_revision_reports_it() {
     assert!(
         text.contains("llm.version=2026-01-01"),
         "a side that pins a revision reports it, got: {text}"
+    );
+}
+
+/// The fixture provider with an explicit breaker, so a test names the identity's parameters itself.
+fn provider_with_breaker(threshold: u32) -> String {
+    format!(
+        "\
+providers:
+  - name: primary
+    kind: openai
+    base_url: http://127.0.0.1:8080
+    credential_ref: env:PRIMARY_KEY
+    circuit_breaker:
+      failure_threshold: {threshold}
+      cooldown_ms: 30000
+"
+    )
+}
+
+/// A document with the fixture provider retuned to `threshold`, and the converting fixture route.
+fn document_with_breaker(threshold: u32) -> Document {
+    document(&format!(
+        "{}plugins: []\nupstreams: []\n{CONVERT}",
+        provider_with_breaker(threshold)
+    ))
+}
+
+#[test]
+fn a_generation_inherits_the_history_of_the_targets_it_kept_and_drops_the_rest() {
+    use nico_llm::{
+        Admission, AttemptOutcome, BreakerParams, BreakerPhase, ProviderKind, TargetIdentity,
+    };
+    use tokio::time::Instant;
+
+    let (protocols, providers) = registries();
+    let shared = Arc::new(SharedServices::new());
+    let runtime = LlmRuntime::with_shared(
+        protocols,
+        providers,
+        MapCredentials::new(&[("env:PRIMARY_KEY", "sk-primary")]),
+        Arc::clone(&shared),
+    );
+    // The identity the first generation compiles for `primary`: the document's parameters are part of
+    // it, which is why the fixture writes them instead of taking the defaults.
+    let identity = TargetIdentity::new(
+        "primary",
+        "http://127.0.0.1:8080",
+        ProviderKind::new("openai"),
+        BreakerParams::new(1, 30_000),
+    );
+    let now = Instant::now();
+
+    runtime
+        .compile(&document_with_breaker(1), &PublishedChains::empty())
+        .expect("the first generation compiles");
+    shared
+        .breakers()
+        .record(&identity, AttemptOutcome::Failure, None, now);
+    assert_eq!(
+        shared.breakers().admit(&identity, now),
+        Admission::Skip(BreakerPhase::Open),
+        "one failure with a threshold of one opens the target"
+    );
+
+    // The same document republished: the target's identity is unchanged, so its history survives the
+    // generation, which is the whole point of holding the table outside the plan.
+    runtime
+        .compile(&document_with_breaker(1), &PublishedChains::empty())
+        .expect("the republished generation compiles");
+    assert_eq!(
+        shared.breakers().admit(&identity, now),
+        Admission::Skip(BreakerPhase::Open),
+        "an unchanged target keeps what it learned"
+    );
+
+    // A retuned threshold is a different identity: the counts described the rules the operator has
+    // just replaced, so they are dropped rather than inherited under new rules.
+    runtime
+        .compile(&document_with_breaker(2), &PublishedChains::empty())
+        .expect("the retuned generation compiles");
+    assert_eq!(
+        shared.breakers().admit(&identity, now),
+        Admission::Admit,
+        "a retuned target starts over"
     );
 }

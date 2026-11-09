@@ -29,10 +29,23 @@
 //! a `passthrough` route whose two sides do not speak the same protocol (the client's bytes would reach
 //! a peer that parses something else). Both are refused before anything is published.
 
+//! # The role build
+//!
+//! This module is compiled only with the `llm` feature. The traffic role
+//! (`--no-default-features --features traffic`) does not compile `nico-llm` at all, so it has no
+//! registries and no codecs: the type a provider route would need does not exist there.
+//!
+//! The refusal comes from the role seam instead. `crate::reload::LlmCompiler` is the one thing the
+//! publication names — it must not name `nico-llm`, or the traffic build could not compile it — this
+//! module supplies the real compiler, and the traffic build supplies `NoLlmCompiler`, which rejects a
+//! document that declares a provider route. A rejected document keeps the last known good generation
+//! serving, which is the same answer every other publication failure gets.
+
 mod credentials;
 mod error;
 mod plan;
 mod runtime;
+mod shared;
 
 #[cfg(test)]
 mod tests;
@@ -41,3 +54,4 @@ pub use credentials::{CredentialError, CredentialResolver, EnvFileCredentials};
 pub use error::LlmBuildError;
 pub use plan::LlmPlan;
 pub use runtime::LlmRuntime;
+pub use shared::SharedServices;

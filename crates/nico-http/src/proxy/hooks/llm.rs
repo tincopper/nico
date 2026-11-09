@@ -27,7 +27,7 @@ use pingora::http::{Method, RequestHeader, ResponseHeader};
 use super::response::may_carry_body;
 use crate::{
     budget,
-    context::HttpContext,
+    context::{FailureStage, HttpContext},
     error::HttpError,
     llm::{LlmRequest, LlmResponseHead, is_content_coding, is_data_plane_owned},
 };
@@ -50,14 +50,18 @@ pub(in crate::proxy) fn apply_upstream_request(
     let Some(llm) = ctx.llm() else {
         return Ok(());
     };
-    let route = llm.route();
-    request
-        .set_raw_path(route.path().as_bytes())
-        .map_err(|error| {
-            HttpError::internal(format!(
-                "the provider path is not a request target: {error}"
-            ))
-        })?;
+    // The attempt's own facts: a fallback target has its own path and headers, and the head written
+    // for it must be that target's. The route's values are only the fallback for a passthrough route,
+    // which has no walk to ask.
+    let (path, headers) = match llm.target() {
+        Some(target) => (target.path(), target.headers()),
+        None => (llm.route().path(), llm.route().headers()),
+    };
+    request.set_raw_path(path.as_bytes()).map_err(|error| {
+        HttpError::internal(format!(
+            "the provider path is not a request target: {error}"
+        ))
+    })?;
     if llm.converting().is_some() {
         // The caller's credential describes the caller–gateway relationship, and a converted request
         // replaces that relationship with the route's own. Every client protocol this gateway serves
@@ -80,7 +84,7 @@ pub(in crate::proxy) fn apply_upstream_request(
             }
         }
     }
-    for (name, value) in route.headers() {
+    for (name, value) in headers {
         // The data plane frames the message, chooses the peer and negotiates the coding: a route
         // that names one of those headers does not get to overrule it.
         if is_data_plane_owned(name) || is_content_coding(name) {
@@ -119,6 +123,47 @@ pub(in crate::proxy) fn request_body(
         return Ok(ctx.llm().is_some());
     }
 
+    // A retry round replays Pingora's retry buffer through this hook, so the client's body is
+    // offered a second time. The walk already decoded it once, and its canonical value is what the
+    // next attempt re-encodes: accumulating the replay again would decode it twice (the design's one
+    // invariant). The bytes to send are the ones the walk encoded for this attempt — written once,
+    // here, at the round's end of stream.
+    if ctx.llm().is_some_and(|llm| llm.body_already_prepared()) {
+        if !end_of_stream {
+            // Hold the replay back: the framework skips an empty non-final chunk, so nothing reaches
+            // the provider until the whole body has been replayed and this round writes its bytes.
+            *body = Some(Bytes::new());
+            return Ok(true);
+        }
+        // A round that moved to another target has not encoded anything yet — its plan is built
+        // here, from the canonical value the first round decoded. A budget retry stayed on its
+        // member and already encoded, so its bytes are simply read back.
+        let prepared = {
+            let Some(attempt) = ctx.llm_mut().and_then(|llm| llm.attempt_mut()) else {
+                return Ok(true);
+            };
+            if attempt.body().is_none() {
+                // Re-encode for the member this round addresses. `decode` is skipped: the walk
+                // remembers the canonical value, and the invariant is one decode per request.
+                attempt.prepare(
+                    &LlmRequest::new(
+                        request.method.as_str(),
+                        request
+                            .uri
+                            .path_and_query()
+                            .map_or_else(|| request.uri.path(), |target| target.as_str()),
+                        utf8_headers(request),
+                        &[],
+                    ),
+                    tokio::time::Instant::now(),
+                )?;
+            }
+            attempt.body().map(<[u8]>::to_vec).unwrap_or_default()
+        };
+        *body = (!prepared.is_empty()).then(|| Bytes::from(prepared));
+        return Ok(true);
+    }
+
     match body.as_ref() {
         Some(chunk) => ctx.push_body(chunk),
         None if !end_of_stream => return Ok(true),
@@ -143,15 +188,18 @@ pub(in crate::proxy) fn request_body(
             utf8_headers(request),
             &whole,
         );
-        let Some(converting) = ctx.converting() else {
+        let Some(attempt) = ctx.llm_mut().and_then(|llm| llm.attempt_mut()) else {
             return Err(HttpError::internal(
                 "the request body was buffered without a converting route",
             ));
         };
-        converting.prepare(&view)?
+        attempt.prepare(&view, tokio::time::Instant::now())?
     };
     if let Some(llm) = ctx.llm_mut() {
         llm.record_prepared(&prepared);
+        // The replay of this body — if the attempt fails and another round runs — must not be
+        // accumulated again; the canonical value it produced is what the next attempt re-encodes.
+        llm.mark_body_prepared();
     }
     // An empty final body is `None`, not an empty chunk: the framework writes an empty chunk as a
     // terminator and then terminates again, which is two terminators on the wire.
@@ -175,6 +223,10 @@ pub(in crate::proxy) fn install_transform(
     if ctx.converting().is_none() {
         return Ok(());
     }
+    // The response head is where an attempt's fate is decided: a 2xx is the answer and the transform
+    // translates it; anything else is the walk's to classify, and it may answer "retry" — in which
+    // case nothing is written and the attempt loop sends the next target.
+    classify_head(ctx, response.status.as_u16())?;
     if !may_carry_body(request.method == Method::HEAD, response) {
         return Ok(());
     }
@@ -217,6 +269,105 @@ pub(in crate::proxy) fn install_transform(
         llm.install(transform);
     }
     Ok(())
+}
+
+/// Asks the walk what a response head means, and turns "retry" into the failure that ends the
+/// attempt.
+///
+/// A 2xx is recorded as the target's success and answered as-is. A non-2xx is the walk's to classify:
+/// `Answer`/`Exhausted` keep the response for the data plane to translate, while `Retry` returns the
+/// error that aborts this attempt — the loop's next round then writes the next target's head, and
+/// Pingora's own retry accounting is what drives it.
+fn classify_head(ctx: &mut HttpContext, status: u16) -> Result<(), HttpError> {
+    let now = tokio::time::Instant::now();
+    let Some(attempt) = ctx.llm_mut().and_then(|llm| llm.attempt_mut()) else {
+        return Ok(());
+    };
+    if (200..300).contains(&status) {
+        attempt.succeeded(now);
+        return Ok(());
+    }
+    match attempt.classify(status, now)? {
+        crate::llm::AttemptVerdict::Retry => {
+            // The walk holds the next attempt already. Ending this attempt here is what makes the
+            // framework take the next round: no byte reached the client, so the request is still
+            // replayable, and `error_while_proxy` decides whether the retry may proceed. The error
+            // is the walk's own signal, not a client-visible failure: `fail_to_proxy` never writes
+            // it, because the next round replaces this attempt entirely.
+            log_replaced_attempt(ctx);
+            Err(HttpError::AttemptRetry)
+        }
+        crate::llm::AttemptVerdict::Answer | crate::llm::AttemptVerdict::Exhausted => Ok(()),
+    }
+}
+
+/// Decides whether the round that just failed is replaced by another attempt.
+///
+/// The one retry decision, so that no hook can forget a fact the design requires. Two halves, in this
+/// order because the first is free and cannot move anything:
+///
+/// 1. **the data plane's facts** — the client is there, nothing was committed, and the body can be
+///    produced again for the stage the failure came from
+///    ([`HttpContext::may_replace_attempt`]);
+/// 2. **the walk's answer** — a round that produced `AttemptRetry` already moved, and any other
+///    failure is classified here, once, with the clock: the walk is what counts a failed target
+///    against its breaker, so a failure no hook recorded still reaches it. The mechanical facts come
+///    first, which is why an unreplayable body ends the request without spending an attempt it
+///    cannot use.
+///
+/// `true` means the round is replaced: its failure is cleared — a retried attempt is not the request's
+/// outcome — and the failure line is written, because the client only ever sees the final answer.
+/// `false` leaves the request able to answer with whatever failure it holds.
+pub(in crate::proxy) fn retry_admitted(
+    ctx: &mut HttpContext,
+    committed: bool,
+    stage: FailureStage,
+) -> bool {
+    if !ctx.may_replace_attempt(committed, stage) {
+        return false;
+    }
+    if !matches!(ctx.error(), Some(HttpError::AttemptRetry)) && !classify_failed(ctx) {
+        return false;
+    }
+    ctx.clear_failure();
+    log_replaced_attempt(ctx);
+    true
+}
+
+/// Asks the walk to classify one failed attempt, and reports whether another is ready.
+///
+/// Used for a failure no hook recorded: the framework's own upstream interaction. A failure the hooks
+/// did record was classified where it happened, because the classification is what decided the
+/// response.
+fn classify_failed(ctx: &mut HttpContext) -> bool {
+    let verdict = ctx
+        .llm_mut()
+        .and_then(|llm| llm.attempt_mut())
+        .map(|attempt| attempt.failed(tokio::time::Instant::now()))
+        .transpose();
+    matches!(verdict, Ok(Some(crate::llm::AttemptVerdict::Retry)))
+}
+
+/// Reports one attempt that failed, whose outcome the walk has already replaced.
+///
+/// One `warn!` per replaced attempt: without it a retry that succeeds would leave the first failure
+/// invisible, because the client only ever sees the final answer. The attempt that *produced* the
+/// client's answer takes no line — its outcome is the request record's, and a successful first
+/// attempt therefore stays silent, as a per-request log must.
+pub(in crate::proxy) fn log_replaced_attempt(ctx: &mut HttpContext) {
+    let Some(llm) = ctx.llm_mut() else {
+        return;
+    };
+    let Some(attempt) = llm.take_attempt_in_flight() else {
+        return;
+    };
+    tracing::warn!(
+        llm.target = %attempt.target,
+        llm.attempt = attempt.number,
+        llm.outcome = "failed",
+        duration_ms = u64::try_from(attempt.started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        "LLM attempt failed"
+    );
 }
 
 /// Translates one response-body task through the installed transform.

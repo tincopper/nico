@@ -144,10 +144,7 @@ impl Exchange {
         facts: &RequestFacts,
         body: &[u8],
     ) -> Result<PreparedExchange, ExchangeError> {
-        let request = self.codec.decode_request(facts, body)?;
-        request
-            .validate()
-            .map_err(|source| ExchangeError::InvalidCanonical { source })?;
+        let request = self.decode_request(facts, body)?;
         let needed = required(&request);
         if let Some(capability) = needed
             .iter()
@@ -155,6 +152,45 @@ impl Exchange {
         {
             return Err(ExchangeError::Unsupported { capability });
         }
+        self.encode_request(request)
+    }
+
+    /// Decodes the buffered client body once into the canonical request.
+    ///
+    /// This is the one decode a request gets: a retry or a fallback re-encodes the value this
+    /// returns and never touches the client's bytes again.
+    ///
+    /// # Errors
+    /// Returns [`ExchangeError::Codec`] when the client codec rejects the body and
+    /// [`ExchangeError::InvalidCanonical`] when the decoded value breaks a canonical invariant.
+    pub(crate) fn decode_request(
+        &self,
+        facts: &RequestFacts,
+        body: &[u8],
+    ) -> Result<ChatRequest, ExchangeError> {
+        let request = self.codec.decode_request(facts, body)?;
+        request
+            .validate()
+            .map_err(|source| ExchangeError::InvalidCanonical { source })?;
+        Ok(request)
+    }
+
+    /// Encodes an already decoded canonical request for this exchange's endpoint.
+    ///
+    /// The per-attempt half of [`Exchange::prepare`]: the model map, the operator's allowlist and the
+    /// endpoint's pinned model are all re-read, because a fallback target maps and allows models with
+    /// its own rules. The capability gate is deliberately absent — a sequence gates its request
+    /// against the whole chain's intersection before any target is encoded, which is stricter than
+    /// this exchange's own set.
+    ///
+    /// # Errors
+    /// Returns [`ExchangeError::ModelNotAllowed`] when the route's allowlist or its endpoint's pinned
+    /// model refuses the resolved model, and [`ExchangeError::Provider`] when the adapter cannot
+    /// encode the request.
+    pub(crate) fn encode_request(
+        &self,
+        request: ChatRequest,
+    ) -> Result<PreparedExchange, ExchangeError> {
         let model = self.route.model(request.model());
         // The operator's allowlist, checked where the other request-time policy is: after the route
         // resolved the caller's alias, and before anything is encoded, so a model this route does not
@@ -224,6 +260,20 @@ impl Exchange {
         let canonical = error.canonical();
         let body = self.codec.encode_error(&canonical)?;
         Ok(ClientReply::new(canonical.http_status(), body))
+    }
+
+    /// Renders a canonical error the exchange did not produce, in the client protocol.
+    ///
+    /// A refusal that came from breaker state has no [`ExchangeError`] behind it — no codec refused
+    /// anything — so the value the failure history recorded is the whole answer. The client codec
+    /// still owns the envelope: this crate never invents a client-visible document.
+    ///
+    /// # Errors
+    /// Returns the codec's error when it cannot build its own error envelope, which the data plane
+    /// answers with a generic failure.
+    pub fn encode_error_reply(&self, error: &CanonicalError) -> Result<ClientReply, CodecError> {
+        let body = self.codec.encode_error(error)?;
+        Ok(ClientReply::new(error.http_status(), body))
     }
 
     /// Creates the per-response stream encoder.
@@ -308,7 +358,7 @@ impl PreparedExchange {
 /// The walk is over the canonical model only, so it stays vendor-free: a request needs tools if it
 /// declares them or answers one, images or files if a part carries one, and reasoning if the
 /// conversation already holds one. Plain text is not a capability; it is what a chat protocol does.
-fn required(request: &ChatRequest) -> Capabilities {
+pub(crate) fn required(request: &ChatRequest) -> Capabilities {
     let mut needed = Capabilities::none();
     if request.stream() {
         needed = needed.with(Capability::Streaming);

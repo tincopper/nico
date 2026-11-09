@@ -7,7 +7,8 @@ use crate::{
         document::Document,
         route::RouteTarget,
         test_support::{
-            NO_ENTRIES, PLUGIN, PROVIDER, SECOND_PLUGIN, UPSTREAM, document, document_with_plugins,
+            NO_ENTRIES, PLUGIN, PROVIDER, SECOND_PLUGIN, SECOND_PROVIDER, UPSTREAM, document,
+            document_with_plugins,
         },
     },
     error::ErrorCategory,
@@ -410,3 +411,5 @@ mod plugin_references {
         assert!(document.routes()[0].plugins().is_empty());
     }
 }
+
+mod fallback;

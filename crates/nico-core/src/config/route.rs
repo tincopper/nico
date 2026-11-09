@@ -13,7 +13,10 @@
 //! the client protocol, [`Route::mode`] whether the body is converted or passed through, and
 //! [`Route::max_response_bytes`] how much of a buffered response is accepted. Those three describe a
 //! converted exchange, so they exist on a provider route alone; an upstream route forwards bytes and
-//! the document refuses them there instead of ignoring them.
+//! the document refuses them there instead of ignoring them. The same holds for the attempt fields —
+//! [`Route::retry_budget`] bounds the tries one target absorbs and [`Route::fallback`] names the
+//! providers tried after it — because both decide how a *converted* exchange may fail, which an
+//! upstream route has no way to observe.
 
 use serde::Deserialize;
 
@@ -73,6 +76,8 @@ pub struct Route {
     pub(super) mode: RouteMode,
     pub(super) max_response_bytes: Option<u32>,
     pub(super) plugins: Vec<String>,
+    pub(super) retry_budget: u8,
+    pub(super) fallback: Vec<String>,
 }
 
 impl Route {
@@ -148,5 +153,28 @@ impl Route {
     #[must_use]
     pub fn plugins(&self) -> &[String] {
         &self.plugins
+    }
+
+    /// Returns the total attempts this route may make against one provider target, including the
+    /// first.
+    ///
+    /// The document's default is `1`, which is the behavior of a route that never names the field:
+    /// one attempt, no retry. The value bounds the retries a failing target absorbs; moving to
+    /// another target is the fallback chain's decision, not this budget's.
+    #[must_use]
+    pub const fn retry_budget(&self) -> u8 {
+        self.retry_budget
+    }
+
+    /// Returns the provider names this route tries in order when its target fails, in document
+    /// order.
+    ///
+    /// The names reference [`Provider`](super::Provider) entries, resolved while the document is
+    /// validated; whether a member can actually be served is the publication's decision. An empty
+    /// list means the route has no fallback, and a `passthrough` route is refused one at
+    /// publication because it has no failure classification to retry on.
+    #[must_use]
+    pub fn fallback(&self) -> &[String] {
+        &self.fallback
     }
 }

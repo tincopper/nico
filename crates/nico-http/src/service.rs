@@ -13,6 +13,7 @@
 
 use std::{sync::Arc, time::Duration};
 
+use nico_core::MAX_ATTEMPTS_PER_ROUTE;
 use pingora::{
     apps::HttpServerOptions,
     proxy::{HttpProxy, ProxyServiceBuilder},
@@ -31,8 +32,16 @@ use crate::{proxy::HttpApp, settings::HttpSettings, state::HttpStateHandle};
 /// Pingora's own 300 s / 5 s defaults and silently ignore what the bootstrap file configured.
 ///
 /// `max_retries` is Pingora's number of *attempts*, not the number of extra tries: its proxy loop
-/// is `while retries < max_retries`, so `1` means exactly one upstream request and no retry. `0`
-/// would skip the loop entirely and answer nothing.
+/// is `while retries < max_retries`, so `N` means at most `N` upstream requests. `0` would skip the
+/// loop entirely and answer nothing.
+///
+/// The value is the **ceiling** of a route's attempt sequence, not the sequence itself: a route
+/// declares its own `retry_budget` and `fallback` chain, and the walk stops asking for another
+/// attempt as soon as those are spent. The framework's counter is the loop's fuse, and it is sized by
+/// the document model rather than guessed here: [`MAX_ATTEMPTS_PER_ROUTE`] is the product of the two
+/// bounds a document is validated against, so no legal route can outrun the fuse and no edit to one
+/// bound can leave the other behind. A route that declared nothing still makes exactly one attempt,
+/// because its walk answers "no" immediately.
 ///
 /// `threads` is never zero — [`HttpSettings`] rejects zero for the same reason Pingora would panic
 /// on it, so the value handed to Tokio's `worker_threads` is always a usable runtime size.
@@ -42,7 +51,7 @@ pub fn server_conf(settings: &HttpSettings) -> Arc<ServerConf> {
         grace_period_seconds: Some(whole_seconds(settings.grace_period())),
         graceful_shutdown_timeout_seconds: Some(whole_seconds(settings.graceful_shutdown())),
         threads: settings.threads(),
-        max_retries: 1,
+        max_retries: MAX_ATTEMPTS_PER_ROUTE,
         ..ServerConf::default()
     };
     Arc::new(conf)

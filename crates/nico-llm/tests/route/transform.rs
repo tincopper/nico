@@ -11,8 +11,8 @@ use nico_llm::{protocol::openai_chat::OpenAiChatCodec, route::ConvertRoute};
 use serde_json::Value;
 
 use crate::support::{
-    LIMIT, SuccessOnFailure, buffered, completion, convert_route, exchange_with, frame, owned,
-    provider_stream, streamed, success_document,
+    LIMIT, SuccessOnFailure, buffered, chain_of, completion, convert_route, exchange_with, frame,
+    owned, provider_stream, streamed, success_document,
 };
 
 /// The provider headers most fixture answers arrive with.
@@ -335,7 +335,7 @@ fn a_reply_that_disagrees_with_the_head_ends_the_stream() {
         Arc::new(OpenAiChatCodec::new()),
         Arc::new(SuccessOnFailure::new()),
     );
-    let route = ConvertRoute::new(exchange);
+    let route = ConvertRoute::new(chain_of(exchange), crate::support::breakers(), 1);
     let mut transform = route.transform(false, LIMIT).expect("a transform is built");
     let head = transform
         .head(429, &owned(JSON_HEADERS))

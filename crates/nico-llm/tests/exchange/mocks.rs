@@ -188,6 +188,9 @@ pub(crate) struct MockProvider {
     /// The model this provider's endpoint path names, as an adapter whose request target carries the
     /// physical model does; `None` means the model travels in the body.
     pinned_model: Option<ModelId>,
+    /// Whether failure statuses answer retryable, as a provider whose closed table calls transport
+    /// failures (408, 429, 5xx) retryable does; a test of the attempt sequence needs both postures.
+    retryable: bool,
 }
 
 impl MockProvider {
@@ -197,6 +200,19 @@ impl MockProvider {
             stream,
             trace: None,
             pinned_model: None,
+            retryable: false,
+        })
+    }
+
+    /// Builds a provider whose failure statuses answer retryable, the posture a transport-failure
+    /// table has. The exchange tests never ask it (they have no attempt sequence); the route tests do.
+    pub(crate) fn retrying(capabilities: Capabilities, stream: StreamBehaviour) -> Arc<Self> {
+        Arc::new(Self {
+            capabilities,
+            stream,
+            trace: None,
+            pinned_model: None,
+            retryable: true,
         })
     }
 
@@ -211,6 +227,7 @@ impl MockProvider {
             stream,
             trace: Some(trace),
             pinned_model: None,
+            retryable: false,
         })
     }
 
@@ -224,6 +241,7 @@ impl MockProvider {
             stream: self.stream,
             trace: self.trace.clone(),
             pinned_model: Some(model),
+            retryable: self.retryable,
         })
     }
 
@@ -338,6 +356,7 @@ impl Provider for MockProvider {
             status,
         )
         .expect("the mock status table is a constant")
+        .with_retryable(self.retryable)
     }
 }
 

@@ -1,9 +1,10 @@
 //! One converting route, as the data plane sees it.
 //!
-//! The route is a thin adapter over the published [`Exchange`]: it reports the facts the upstream
-//! head needs (destination, path, headers), decodes the buffered client body once, and builds a
-//! transform per response. It holds no per-request state itself, so one value serves every request
-//! of the route.
+//! The route is a thin adapter over the published [`AttemptChain`]: it reports the facts the
+//! upstream head needs (destination, path, headers), decodes the buffered client body once, and
+//! builds a transform per response. It holds no per-request state itself, so one value serves every
+//! request of the route. Today every answer comes from the chain's primary target — the attempt
+//! sequence across the chain's members is the data plane's, which drives it through the byte seam.
 //!
 //! # The failure a caller sees
 //!
@@ -21,61 +22,47 @@
 use std::{fmt, sync::Arc};
 
 use nico_http::{
-    Destination, LlmRejection,
+    Destination,
     error::HttpError,
     llm::{ConvertingRoute, LlmPrepared, LlmRequest, LlmRoute, ResponseTransform},
 };
 
-use super::transform::ConvertTransform;
-use crate::{Exchange, ExchangeError, protocol::RequestFacts};
+use super::{attempt_adapter::ConvertAttempt, transform::ConvertTransform};
+use crate::{AttemptChain, AttemptSequence, BreakerTable, ExchangeError, protocol::RequestFacts};
 
 /// A route that decodes the client body into the canonical request and encodes the provider's answer
 /// back.
 ///
-/// Built once per route at publication from an [`Exchange`] that already paired the codec, the
-/// adapter and the route facts. The exchange resolved the endpoint, so this front-end can answer the
-/// upstream head before the client body arrives.
+/// Built once per route at publication from an [`AttemptChain`] whose members already paired the
+/// codec, the adapters and the route facts. The chain resolved every endpoint, so this front-end can
+/// answer the upstream head before the client body arrives.
 pub struct ConvertRoute {
-    exchange: Arc<Exchange>,
+    chain: Arc<AttemptChain>,
+    breakers: Arc<BreakerTable>,
+    budget: u8,
 }
 
 impl ConvertRoute {
-    /// Wraps the exchange a publication compiled for this route.
+    /// Wraps the attempt chain a publication compiled for this route.
     ///
-    /// The exchange already rejected a passthrough route and a codec/adapter that did not match the
-    /// route, so this constructor has nothing left to check.
+    /// The chain already rejected a passthrough route and codec/adapter pairs that did not match the
+    /// route, so this constructor has nothing left to check. `breakers` is the process-wide table —
+    /// the walk reads and writes the same state every generation shares, and `budget` is the route's
+    /// own retry budget.
     #[must_use]
-    pub const fn new(exchange: Arc<Exchange>) -> Self {
-        Self { exchange }
+    pub fn new(chain: Arc<AttemptChain>, breakers: Arc<BreakerTable>, budget: u8) -> Self {
+        Self {
+            chain,
+            breakers,
+            budget,
+        }
     }
 
     /// Turns a failed exchange into the client protocol's error answer.
     ///
-    /// The status, code, category and body are the exchange's: the canonical error owns the first
-    /// three, and the client codec owns the document. Only a codec that cannot encode its own error
-    /// envelope reaches the fallback, which is the gateway's defect rather than the caller's.
+    /// The chain owns the rendering; the exchange's failures only choose what it renders.
     fn reject(&self, error: &ExchangeError) -> HttpError {
-        let canonical = error.canonical();
-        let reply = match self.exchange.error_reply(error) {
-            Ok(reply) => reply,
-            // A codec that cannot render its own failure is a defect in this crate; the error keeps
-            // the codec's diagnostic for the log and answers `500` through the data plane's envelope.
-            Err(source) => return HttpError::internal(source),
-        };
-        match LlmRejection::new(
-            reply.status(),
-            canonical.code(),
-            canonical.message(),
-            reply.into_body(),
-            canonical.category(),
-        ) {
-            Ok(rejection) => HttpError::LlmRejected {
-                rejection: Arc::new(rejection),
-            },
-            // The canonical error validated its own code, message and status before the codec could
-            // see it, so a refusal here means the mapping above produced something inconsistent.
-            Err(source) => HttpError::internal(source),
-        }
+        self.chain.reject(error.canonical(), Some(error))
     }
 }
 
@@ -89,27 +76,43 @@ impl LlmRoute for ConvertRoute {
     }
 
     fn protocol(&self) -> &str {
-        self.exchange.route().protocol().as_str()
+        self.chain.primary().exchange().route().protocol().as_str()
     }
 
     fn provider(&self) -> &str {
-        self.exchange.route().provider_kind().as_str()
+        self.chain
+            .primary()
+            .exchange()
+            .route()
+            .provider_kind()
+            .as_str()
     }
 
     fn destination(&self) -> &Destination {
-        self.exchange.endpoint().destination()
+        self.chain.primary().exchange().endpoint().destination()
     }
 
     fn path(&self) -> &str {
-        self.exchange.endpoint().path()
+        self.chain.primary().exchange().endpoint().path()
     }
 
     fn headers(&self) -> &[(String, String)] {
-        self.exchange.endpoint().headers()
+        self.chain.primary().exchange().endpoint().headers()
     }
 }
 
 impl ConvertingRoute for ConvertRoute {
+    fn begin(&self) -> Box<dyn nico_http::llm::LlmAttempt> {
+        // The walk starts undecoded and unselected: the data plane asks for a target before the
+        // client's body ends, and for the encoded body once it has.
+        let sequence = AttemptSequence::new(
+            Arc::clone(&self.chain),
+            Arc::clone(&self.breakers),
+            self.budget,
+        );
+        Box::new(ConvertAttempt::new(Arc::clone(&self.chain), sequence))
+    }
+
     fn prepare(&self, request: &LlmRequest<'_>) -> Result<LlmPrepared, HttpError> {
         // The codec reads owned facts, so the view is copied into them once per converted request.
         // Only headers whose value was UTF-8 reach this point, which is what a text protocol needs.
@@ -123,7 +126,9 @@ impl ConvertingRoute for ConvertRoute {
                 .collect(),
         );
         let prepared = self
-            .exchange
+            .chain
+            .primary()
+            .exchange()
             .prepare(&facts, request.body())
             .map_err(|error| self.reject(&error))?;
         // Read what the record needs before the wire request is taken: the label names both models,
@@ -140,7 +145,7 @@ impl ConvertingRoute for ConvertRoute {
         max_response_bytes: u32,
     ) -> Result<Box<dyn ResponseTransform>, HttpError> {
         Ok(Box::new(ConvertTransform::new(
-            Arc::clone(&self.exchange),
+            self.chain.primary().shared_exchange(),
             streaming,
             max_response_bytes,
         )))
@@ -148,12 +153,13 @@ impl ConvertingRoute for ConvertRoute {
 }
 
 impl fmt::Debug for ConvertRoute {
-    /// Prints the published route facts: the exchange's own `Debug` names headers and never prints
-    /// their values, so a credential and a prompt have no spelling here.
+    /// Prints the published route facts: the chain's own `Debug` reports the target count and the
+    /// members name headers by name and never print their values, so a credential and a prompt have
+    /// no spelling here.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ConvertRoute")
-            .field("exchange", &self.exchange)
+            .field("chain", &self.chain)
             .finish()
     }
 }

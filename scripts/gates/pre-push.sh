@@ -38,6 +38,16 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings \
 cargo test --workspace --all-features --locked \
     || fail "workspace tests"
 
+# The feature matrix. `traffic` compiles without the AI crate, and the tests that pin that role are
+# `#![cfg(not(feature = "llm"))]`: under `--all-features` they compile to nothing and pass without
+# running, so the configuration that turns the feature off is the only gate that executes them.
+cargo check --workspace --no-default-features --locked \
+    || fail "feature matrix: no-default-features"
+cargo check -p nico-server --no-default-features --features traffic --locked \
+    || fail "feature matrix: traffic role"
+cargo test -p nico-server --no-default-features --features traffic --test role_traffic --locked \
+    || fail "feature matrix: the traffic role's own tests"
+
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps \
     || fail "rustdoc (broken intra-doc links are denied)"
 

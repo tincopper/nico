@@ -44,6 +44,10 @@ pub(super) async fn request_body_filter(
     end_of_stream: bool,
     ctx: &mut HttpContext,
 ) -> pingora::Result<()> {
+    // A replay round offers the client's body again from Pingora's buffer, so the round count was
+    // restarted at its boundary (`HttpContext::begin_attempt_body`). Counting every chunk here is
+    // then what makes the total equal the bytes the client sent — once, whichever round delivered
+    // them — and a replayed prefix is charged to the round that receives it.
     if let Some(chunk) = body.as_ref() {
         ctx.count_body(chunk.len());
         if let Some(limit) = ctx.exceeded_body_limit() {

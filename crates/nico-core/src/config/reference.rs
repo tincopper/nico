@@ -17,6 +17,11 @@
 //!    same plugin twice. A route that names the same policy twice cannot be given a meaning (run it
 //!    twice? once?) that an operator could predict, so it is rejected rather than deduplicated.
 //!
+//!    The same three rules govern a route's fallback chain: every member is a declared provider, no
+//!    member appears twice, and the route's own target is not re-listed after itself — the chain is
+//!    the order the gateway tries, and trying the target it just gave up on is not a meaning an
+//!    operator could have asked for.
+//!
 //!    The same holds for `global_plugins`: it names declared plugins, never defines one, and lists
 //!    each name once. Definitions and use sites are separate on purpose — a plugin declared at the
 //!    root is a definition, and running it for every request is a decision the document has to make
@@ -48,7 +53,8 @@ use super::{
 ///
 /// # Errors
 /// - [`DocumentError::DuplicateId`] for a repeated route id, upstream name, provider name or plugin
-///   name, or for a plugin a route lists twice.
+///   name, for a plugin a route lists twice, or for a fallback member a route lists twice (including
+///   one that repeats the route's own target).
 /// - [`DocumentError::RouteTargetMissing`] when a route names no target.
 /// - [`DocumentError::RouteTargetAmbiguous`] when a route names both kinds of target.
 /// - [`DocumentError::InvalidField`] when a provider route names no `protocol`, or when either route
@@ -139,6 +145,8 @@ fn resolve(
         mode,
         max_response_bytes,
         plugins: raw_plugins,
+        retry_budget,
+        fallback: raw_fallback,
     } = raw;
 
     let target = match (upstream, provider) {
@@ -154,7 +162,14 @@ fn resolve(
         }
     };
 
-    check_target_fields(&target, protocol.as_deref(), mode, max_response_bytes)?;
+    check_target_fields(
+        &target,
+        protocol.as_deref(),
+        mode,
+        max_response_bytes,
+        retry_budget.is_some(),
+        raw_fallback.is_some(),
+    )?;
 
     let plugins = raw_plugins.unwrap_or_default();
     let mut seen = HashSet::with_capacity(plugins.len());
@@ -165,6 +180,24 @@ fn resolve(
                 kind: "route-plugin",
                 id: name.clone(),
             });
+        }
+    }
+
+    // A fallback chain is a use site, not a definition: every member is a declared provider, and the
+    // chain visits each one at most once. The route's own target is the chain's head by construction,
+    // so re-listing it would try the provider the route just gave up on. An upstream route owns no
+    // chain at all — `check_target_fields` refused a written one above, so this list is empty.
+    let fallback = raw_fallback.unwrap_or_default();
+    if let RouteTarget::Provider(primary) = &target {
+        let mut chain = HashSet::with_capacity(fallback.len());
+        for name in &fallback {
+            ensure_known(providers, "provider", name)?;
+            if *name == primary.as_str() || !chain.insert(name.as_str()) {
+                return Err(DocumentError::DuplicateId {
+                    kind: "route-fallback",
+                    id: name.clone(),
+                });
+            }
         }
     }
 
@@ -179,6 +212,8 @@ fn resolve(
         mode: mode.unwrap_or_default(),
         max_response_bytes,
         plugins,
+        retry_budget: retry_budget.unwrap_or(1),
+        fallback,
     })
 }
 
@@ -188,12 +223,16 @@ fn resolve(
 /// The check is per kind rather than per field list so the error names the field the operator wrote:
 /// an upstream route has nothing to convert, so `protocol`, `mode` and `max_response_bytes` would
 /// otherwise be read as defaults and silently dropped, and a provider route has nothing to route on
-/// without the name of the client protocol.
+/// without the name of the client protocol. The attempt fields — `retry_budget`, `fallback` — belong
+/// to the same converted exchange: they decide how a *classified* failure is retried, and an upstream
+/// route forwards bytes without ever classifying one.
 fn check_target_fields(
     target: &RouteTarget,
     protocol: Option<&str>,
     mode: Option<RouteMode>,
     max_response_bytes: Option<u32>,
+    retry_budget: bool,
+    fallback: bool,
 ) -> Result<(), DocumentError> {
     match target {
         RouteTarget::Upstream(_) => {
@@ -201,6 +240,8 @@ fn check_target_fields(
                 ("routes[].protocol", protocol.is_some()),
                 ("routes[].mode", mode.is_some()),
                 ("routes[].max_response_bytes", max_response_bytes.is_some()),
+                ("routes[].retry_budget", retry_budget),
+                ("routes[].fallback", fallback),
             ];
             for (field, present) in written {
                 if present {

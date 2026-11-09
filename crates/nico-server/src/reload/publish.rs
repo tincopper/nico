@@ -28,7 +28,7 @@ use nico_core::{
 use nico_http::PublishedChains;
 
 use super::{Reloader, pacing::unix_now};
-use crate::llm::LlmPlan;
+use crate::reload::LlmFrontEnds;
 
 /// What happened to one candidate document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,7 +91,7 @@ impl Reloader {
         };
 
         let generation = self.generation.next()?;
-        let llm_routes = llm.route_ids().count();
+        let llm_routes = llm.route_count();
         self.publish_state(
             Arc::new(RuntimeSnapshot::new(
                 generation,
@@ -143,13 +143,13 @@ impl Reloader {
         &self,
         snapshot: Arc<RuntimeSnapshot>,
         plan: PublishedChains,
-        llm: Arc<LlmPlan>,
+        llm: Arc<dyn LlmFrontEnds>,
     ) {
         self.handle.store(Arc::clone(&snapshot));
         // Keep a handle on the plan so the report can be emitted after the store, which is the only
         // point at which "published" is true.
         let report = Arc::clone(&llm);
-        self.state.publish_with_llm(snapshot, plan, llm);
+        self.state.publish_with_llm(snapshot, plan, llm.routes());
         report.log_published();
     }
 

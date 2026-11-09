@@ -18,19 +18,20 @@
 
 use std::time::Instant;
 
-use pingora::{http::RequestHeader, proxy::Session, upstreams::peer::HttpPeer};
+use pingora::{Error, http::RequestHeader, proxy::Session, upstreams::peer::HttpPeer};
+use tokio::time::Instant as TokioInstant;
 
 use super::{
     super::{
         HttpApp,
-        failure::abort,
+        failure::{abort, proxy_error},
         forward::{Framing, destination, forwarded_for, peer_ip, set_header},
     },
     llm,
 };
 use crate::{
     budget,
-    context::HttpContext,
+    context::{FailureStage, HttpContext},
     error::HttpError,
     plugin::ResponseData,
     route,
@@ -182,10 +183,91 @@ pub(super) async fn upstream_peer(
         return Err(abort(ctx, error));
     }
 
+    // A converting route selects its first target here: the selection needs only the walk and the
+    // clock, so the head this attempt writes is the target's own — a fallback's host differs from the
+    // route's primary, and only the walk knows which one this attempt reached.
+    if let Err(error) = select_attempt(ctx, TokioInstant::now()) {
+        return Err(abort(ctx, error));
+    }
+
+    // Every round resolves its own peer: a recorded destination belongs to the attempt that
+    // recorded it, and a round that moved to another target must not reuse it.
     let chosen = destination(ctx).map_err(|error| abort(ctx, error))?;
-    let peer = upstream::peer(&chosen, budget).await;
+    let peer = match upstream::peer(&chosen, budget).await {
+        Ok(peer) => peer,
+        Err(error) => return Err(failed_target(ctx, error)),
+    };
     ctx.set_destination(chosen);
-    peer.map_err(|error| abort(ctx, error))
+    Ok(peer)
+}
+
+/// Classifies a target whose address failed before a connection existed.
+///
+/// A resolution failure — and a scheme this build cannot speak — is this target's own transport
+/// failure: the walk classifies it exactly like any other, and when it holds another attempt the
+/// data plane sets the retry bit itself, because Pingora's loop takes neither `fail_to_connect` nor
+/// `error_while_proxy` for an `upstream_peer` error of its own.
+///
+/// No response can have been committed here — this hook runs before the round's head is written — and
+/// no body byte was dispatched, so the gate needs no replay buffer.
+fn failed_target(ctx: &mut HttpContext, error: HttpError) -> Box<Error> {
+    if super::llm::retry_admitted(ctx, false, FailureStage::BeforeDispatch) {
+        let mut wrapped = proxy_error(&error);
+        wrapped.set_retry(true);
+        return wrapped;
+    }
+    // The walk refused, or the route has no walk: the failure is the request's outcome.
+    abort(ctx, error)
+}
+
+/// Asks the request's walk to select its first target, and records the head facts it chose.
+///
+/// The skipped targets are logged once, here: a selection that skipped them is the only place that
+/// knows they were passed over, and the record belongs to the attempt that follows. The record is
+/// drained before the selection is judged, because a selection that refused — every target open —
+/// is exactly when the skips must still reach the log: the round that would have logged them on the
+/// way forward never runs.
+fn select_attempt(ctx: &mut HttpContext, now: TokioInstant) -> Result<(), HttpError> {
+    let Some(llm) = ctx.llm_mut() else {
+        return Ok(());
+    };
+    // The first round selects; a later round already holds the member its classification moved to.
+    // The distinction is the walk's own, and asking twice would spend a budget it already accounted
+    // for. Read before the mutable borrow below, so the two do not overlap.
+    let fresh = !llm.has_target();
+    let Some(attempt) = llm.attempt_mut() else {
+        return Ok(());
+    };
+    let selection = fresh.then(|| attempt.select(now));
+    let skipped = attempt.take_skipped();
+    let number = attempt.attempt_number();
+    if let Some(Err(error)) = selection {
+        // No attempt follows: the number is the one the refused round would have started.
+        for name in skipped {
+            tracing::info!(
+                llm.target = %name,
+                llm.attempt = number,
+                llm.outcome = "skipped",
+                "LLM attempt skipped"
+            );
+        }
+        return Err(error);
+    }
+    let target = attempt.target_view();
+    let name = target.name().to_owned();
+    llm.advance_target(target);
+    for name in skipped {
+        tracing::info!(
+            llm.target = %name,
+            llm.attempt = number,
+            llm.outcome = "skipped",
+            "LLM attempt skipped"
+        );
+    }
+    // The attempt starts here: its facts and its clock are what a failure later in the round
+    // reports.
+    llm.note_attempt_started(&name, number);
+    Ok(())
 }
 
 /// Rewrites the request headers for the upstream, and frames a buffered body as chunked.
@@ -200,6 +282,13 @@ pub(super) async fn upstream_request_filter(
     request: &mut RequestHeader,
     ctx: &mut HttpContext,
 ) -> pingora::Result<()> {
+    // This hook is a round's boundary: it runs once per attempt, before that round's head is written
+    // and before any of its body tasks. A retry round receives the client's bytes again from the
+    // framework's replay buffer, so the converting route's accumulation and its count restart here —
+    // the only place that can make each client byte count exactly once.
+    if ctx.converting().is_some() {
+        ctx.begin_attempt_body();
+    }
     // Both reads borrow the downstream session immutably; the header below is a different object, so
     // the borrows do not overlap.
     let client_host = session.req_header().headers.get("host").cloned();

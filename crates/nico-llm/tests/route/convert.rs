@@ -11,7 +11,8 @@ use nico_llm::route::ConvertRoute;
 use serde_json::Value;
 
 use crate::support::{
-    BASE_URL, FailingCodec, client_body, convert_route, exchange, exchange_with, provider, view,
+    BASE_URL, FailingCodec, chain_of, client_body, convert_route, exchange, exchange_with,
+    provider, view,
 };
 
 /// Parses a document a fixture produced.
@@ -144,7 +145,7 @@ fn a_codec_that_cannot_encode_its_error_is_a_gateway_defect() {
     // The exchange maps the refusal to a canonical 400, but the codec cannot render it. Re-encoding
     // it here as the generic envelope would report a status nobody chose; the honest answer is 500.
     let exchange = exchange_with(Arc::new(FailingCodec), Arc::new(provider()));
-    let route = ConvertRoute::new(exchange);
+    let route = ConvertRoute::new(chain_of(exchange), crate::support::breakers(), 1);
     let error = route
         .prepare(&view(&client_body(false)))
         .expect_err("the fixture codec refuses every document");
@@ -157,7 +158,8 @@ fn a_codec_that_cannot_encode_its_error_is_a_gateway_defect() {
 
 #[test]
 fn the_route_debug_names_nothing_from_the_prompt_or_the_credential() {
-    let route: ConvertRoute = ConvertRoute::new(exchange());
+    let route: ConvertRoute =
+        ConvertRoute::new(chain_of(exchange()), crate::support::breakers(), 1);
     let printed = format!("{route:?}");
 
     assert!(printed.contains("ConvertRoute"), "{printed}");

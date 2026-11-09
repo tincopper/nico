@@ -23,10 +23,11 @@ use nico_http::{
     Plugin, PluginChain, PluginEntry, PluginInfo, PluginPhases, PublishedChains, ResponseRewrites,
     RouteChains,
 };
-use nico_llm::{Credential, ProtocolRegistry, ProviderRegistry};
+use nico_llm::{BreakerTable, Credential, ProtocolRegistry, ProviderRegistry};
 
 use super::{
     CredentialError, CredentialResolver, EnvFileCredentials, LlmBuildError, LlmPlan, LlmRuntime,
+    SharedServices,
 };
 
 /// The provider section most fixtures use: one endpoint, one credential reference.
@@ -191,6 +192,7 @@ fn compile_with(document: &Document, chains: &PublishedChains) -> Result<LlmPlan
         &providers,
         chains,
         credentials.as_ref(),
+        &Arc::new(BreakerTable::new()),
     )
 }
 

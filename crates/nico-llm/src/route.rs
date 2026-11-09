@@ -8,6 +8,12 @@
 //! | [`ConvertRoute`] | `convert` | decodes the buffered body once, encodes the provider request, and builds one transform per response |
 //! | [`PassthroughRoute`] | `passthrough` | moves both bodies unchanged; the endpoint is the whole front-end |
 //!
+//! A converting route serves an **attempt chain** ([`AttemptChain`]): its primary target followed by
+//! the fallback members the document named, each compiled into a full exchange at publication. The
+//! chain is what a retry and a fallback move across, and what a target's long-lived failure state is
+//! keyed by ([`TargetIdentity`]); the data plane never sees it — the front-end still answers the
+//! byte-level seam.
+//!
 //! Both are published values: compiled while the document is compiled, shared by every request of
 //! the route, and holding no per-request state. The destination, path and headers come from the
 //! adapter's endpoint, which [`ConvertRoute::new`]'s exchange resolved at publication and
@@ -32,9 +38,14 @@
 //! document — see
 //! [`ConvertRoute`]'s `prepare`.
 
+mod attempt;
+mod attempt_adapter;
+mod chain;
 mod convert;
 mod passthrough;
 mod transform;
 
+pub use attempt::{AttemptPlan, AttemptSequence, SelectionRefused, Verdict};
+pub use chain::{AttemptChain, BreakerParams, ChainBuildError, ChainMember, TargetIdentity};
 pub use convert::ConvertRoute;
 pub use passthrough::PassthroughRoute;

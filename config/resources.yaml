@@ -42,6 +42,14 @@ providers:
     # unless the route answers for it, while a dialect that allows omission needs no value here.
     # Zero is a schema error: it is not a ceiling. Nothing in this document needs it.
     # max_output_tokens: 8192
+    # Optional failure budget. Consecutive failures that open the endpoint's breaker (default 5), and
+    # how long an open breaker waits before it admits one probe (default 30000 ms). `failure_threshold:
+    # 0` disables the breaker for this endpoint — failures are still counted and logged, but no request
+    # is ever skipped because of them. Re-tuning either value starts the breaker's state over: the
+    # parameters are part of the endpoint's identity, so a state cannot outlive the rules it ran under.
+    # circuit_breaker:
+    #   failure_threshold: 5
+    #   cooldown_ms: 30000
 
 # Plain HTTP upstreams. The scheme is `http` or `https`; the port is required.
 upstreams:
@@ -146,6 +154,20 @@ routes:
   # The Gemini dialect also pins its model into the path: its provider's `model_map` must resolve to
   # one physical model, and a request that resolves to another name is answered `403`
   # `model_not_allowed`. Two aliases for one model are fine; two models are not.
+  #
+  # A converted route may also declare how it behaves when its target fails. `retry_budget` is the
+  # total attempts one target absorbs, including the first (default 1 = no retry, ceiling 4); a
+  # retryable failure within the budget is re-encoded for the same target from the canonical request,
+  # never from the client's bytes. `fallback` names providers tried in order once the current target's
+  # budget is spent — explicit, never inferred, at most three members, and every member must be
+  # servable or the whole document is refused. Budget times targets is the whole sequence, and the
+  # data plane's attempt loop is sized by exactly those two bounds. Both fields are refused on a
+  # `passthrough` route: it has no canonical value and no failure classification, so there is nothing
+  # to retry.
+  #
+  # One hard limit comes from the data plane, not from this document: a request body above 64 KiB
+  # (Pingora's replay buffer) cannot be retried once it was dispatched, so such a failure is answered
+  # instead of retried. Connect-stage failures are not subject to it.
   - id: llm-chat
     path_prefix: /v1/chat/
     provider: openai-primary
@@ -154,6 +176,8 @@ routes:
     # A route may only tighten `request.max_response_bytes`; this route halves the 8 MiB default,
     # which is the value the memory arithmetic uses for a buffered (non-streaming) answer here.
     max_response_bytes: 4194304
+    # retry_budget: 2
+    # fallback: [openai-secondary]
   # A buffered route: `buffers_body` on any plugin in the chain puts this route, and only this route,
   # into whole-body mode. The bound stays the document's or tighter — a route can tighten a budget,
   # never widen it — so it is written here only to state the value the memory arithmetic uses.

@@ -23,7 +23,8 @@ const VENDORS: [&str; 5] = ["openai", "anthropic", "gemini", "claude", "gpt"];
 /// purpose, not a vendor switch. `protocol/` and `provider/` as directories are exempt because a file
 /// named after a vendor lives there; a shared file inside them is listed by path, the same way
 /// `provider/route.rs` and `route/` are.
-const VENDOR_FREE: [&str; 16] = [
+const VENDOR_FREE: [&str; 17] = [
+    "breaker.rs",
     "schema.rs",
     "schema",
     "protocol.rs",

@@ -10,7 +10,16 @@
     reason = "a test that cannot build its fixture has nothing useful to return"
 )]
 
+mod attempt;
+mod chain;
 mod convert;
 mod passthrough;
 mod support;
 mod transform;
+
+#[path = "../exchange/mocks.rs"]
+#[expect(
+    dead_code,
+    reason = "the mocks serve two binaries; the route tests use only the capability halves"
+)]
+mod mocks;

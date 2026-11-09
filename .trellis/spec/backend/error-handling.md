@@ -234,14 +234,50 @@ peer is not at fault.
 ### Retry and fallback legality
 
 Retry only when **all** of the following hold, and encode the check in one place:
+`HttpContext::may_replace_attempt` owns the data plane's half (facts 1 and 3), and
+`proxy::hooks::llm::retry_admitted` is the only caller that combines it with the walk's answer and the
+attempt log. Both `error_while_proxy`, `fail_to_connect` and the `upstream_peer` refusal reach the
+decision through that one function, so a new failure point cannot forget a fact.
 
-1. The request is replayable (body fully buffered or seekable, no consumed stream).
-2. The operation is idempotent or explicitly retry-safe.
-3. No response bytes were committed to the client (`HttpError::ResponseCommitted` was not reached).
-4. The retry budget for this request has not been exhausted.
+1. The request is replayable (body fully buffered or seekable, no consumed stream). For a converted
+   route this means the raw body fits Pingora's replay buffer — `nico_http::llm::REPLAY_BODY_LIMIT`,
+   64 KiB, a framework constant that cannot be configured. Above it, the next attempt would be sent
+   with no body at all, so the failure is answered instead. The fact is *stage-dependent*, which is why
+   the gate takes a `FailureStage`: a failure before the request body was dispatched (`upstream_peer`
+   refusing an address, `fail_to_connect`) never put a byte on the wire and is replayable at any size,
+   while a failure after a response head arrived may have dispatched the body and is capped. A hook
+   that picked the wrong stage would either refuse a retry it could have made or send a bodyless one.
+2. The failure is one the front-end classified as retryable. The canonical error owns that flag; a
+   401/403/404 is final and is answered without touching the budget or the chain.
+3. No response bytes were committed to the client (`session.response_written()` is `None`). A stream
+   that already began ends; it is never replaced by another target's answer.
+4. The walk has another attempt to make: the current target's `retry_budget` is not spent, or the
+   chain has a member left whose breaker admits.
 
-LLM fallback additionally requires model-capability compatibility and duplicate-billing
-awareness — see the LLM design notes. Never fall back after the first streamed byte.
+The decision itself is not the data plane's: `AttemptRetry` is the only `HttpError` that means
+"another attempt is ready", and `nico-http` never names a breaker, a fallback or a provider kind. What
+it does own is fact 1 and fact 3 — the replay cap and the committed-response gate — because both are
+properties of its own runtime, plus fact 4's precondition (`LlmAttempt::can_retry`, which is "this route
+declared attempts at all", the flag that lets an undeclared route skip the retry machinery entirely).
+
+**The client's body belongs to one round.** Pingora accumulates the raw downstream bytes it reads and
+offers them to `request_body_filter` again on every attempt, so `upstream_request_filter` — the one hook
+that runs once per round, before that round's head is written — rewinds the converted route's
+accumulation *and* its byte count (`HttpContext::begin_attempt_body`). The replay is then counted and
+accumulated by the round that receives it, so the request reports the bytes the client sent and the
+canonical is built from them once. Counting a replay a second time inflates `body_bytes` (a false `413`,
+and a later retry refused for a body that is not there) and accumulating it twice decodes a body with
+its own prefix in front of it.
+
+**A retried attempt is not the request's outcome.** `error_while_proxy` clears the attempt's failure
+when it lets the retry through; when it does not, it replaces the `AttemptRetry` signal with the last
+canonical failure the walk recorded, so `fail_to_proxy` always has a real response to write. A request
+whose every target was skipped by an open breaker answers with that recorded failure — no response
+exists to translate, so the failure history is the answer.
+
+`AttemptRetry` must never reach a client: `HttpError::respond` answers `None` for it, and the
+`fail_to_proxy` writer treats that as the cancellation path. Reaching it there means the retry gate
+let a signal through without an attempt behind it, which is a defect in the gate.
 
 ### Error categories in the kernel
 

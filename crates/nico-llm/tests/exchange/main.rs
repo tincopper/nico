@@ -10,6 +10,10 @@
     reason = "a test that cannot build its fixture has nothing useful to return"
 )]
 
+#[expect(
+    dead_code,
+    reason = "the mocks serve two binaries; the exchange tests never ask for the retrying posture"
+)]
 mod mocks;
 mod models;
 mod response;

@@ -19,10 +19,12 @@ pub mod status;
 pub mod version;
 
 pub use config::{
-    API_VERSION, BodyValue, Bound, BoundsError, DEFAULT_CONTENT_TYPE, DEFAULT_MAX_RESPONSE_BYTES,
-    Document, DocumentError, ErrorBody, ErrorResponse, HostError, MAX_HOST_BYTES, ParseLimits,
-    PluginSpec, Provider, RequestBounds, Route, RouteMode, RouteTarget, SchemaBounds, Scheme,
-    Upstream, host_key, hosts_match, is_json_content_type, is_secret_ref, validate_host,
+    API_VERSION, BodyValue, Bound, BoundsError, CircuitBreaker, DEFAULT_CONTENT_TYPE,
+    DEFAULT_COOLDOWN_MS, DEFAULT_FAILURE_THRESHOLD, DEFAULT_MAX_RESPONSE_BYTES, Document,
+    DocumentError, ErrorBody, ErrorResponse, HostError, MAX_ATTEMPTS_PER_ROUTE,
+    MAX_FALLBACK_MEMBERS, MAX_HOST_BYTES, ParseLimits, PluginSpec, Provider, RequestBounds, Route,
+    RouteMode, RouteTarget, SchemaBounds, Scheme, Upstream, host_key, hosts_match,
+    is_json_content_type, is_secret_ref, validate_host,
 };
 pub use error::ErrorCategory;
 pub use snapshot::{RuntimeSnapshot, SnapshotHandle};

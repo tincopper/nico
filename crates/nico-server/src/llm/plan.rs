@@ -42,19 +42,28 @@
 //! after the snapshot it describes is stored. Nothing else here is logged: a base URL, a header value
 //! and a credential never enter the log, and a model map's contents are the document's, not the log's.
 
-use std::{collections::BTreeMap, fmt, num::NonZeroU32, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fmt,
+    sync::Arc,
+};
 
-use nico_core::{Document, Provider, Route, RouteMode, RouteTarget};
+use nico_core::{Document, Route, RouteMode, RouteTarget};
 use nico_http::{
     PluginChain, PluginPhases, PublishedChains,
     llm::{LlmRoute, LlmRoutes},
 };
 use nico_llm::{
-    ConvertRoute, Credential, Exchange, ExchangeMode, PassthroughRoute, ProtocolId,
-    ProtocolRegistry, ProviderKind, ProviderRegistry, ProviderRoute, RouteError,
+    BreakerTable, ConvertRoute, Credential, ExchangeMode, PassthroughRoute, ProtocolRegistry,
+    ProviderRegistry, TargetIdentity,
 };
 
 use super::{CredentialResolver, LlmBuildError};
+
+mod chain;
+mod facts;
+
+pub(super) use facts::{provider_entry, route_facts};
 
 /// The stages an LLM route cannot offer a plugin, with the spelling the publication log uses.
 ///
@@ -76,7 +85,7 @@ pub struct LlmPlan {
     routes: BTreeMap<String, PlannedRoute>,
 }
 
-/// One published front-end and the one fact about it only a report needs.
+/// One published front-end and the facts about it only a report needs.
 ///
 /// The model map is the document's, and `nico-http` never learns it exists: a codec maps a model name
 /// while decoding, and whether a route does so at all is a property of the document. Keeping the flag
@@ -85,6 +94,9 @@ struct PlannedRoute {
     front_end: Arc<dyn LlmRoute>,
     /// Whether the route renames models. Never the map's contents.
     renames_models: bool,
+    /// How many targets the route serves: its primary plus its fallback members. A passthrough route
+    /// serves exactly one.
+    targets: usize,
 }
 
 impl LlmPlan {
@@ -118,6 +130,7 @@ impl LlmPlan {
         providers: &ProviderRegistry,
         chains: &PublishedChains,
         credentials: &dyn CredentialResolver,
+        breakers: &Arc<BreakerTable>,
     ) -> Result<Self, LlmBuildError> {
         let routes: Vec<&Route> = document
             .routes()
@@ -125,6 +138,10 @@ impl LlmPlan {
             .filter(|route| matches!(route.target(), RouteTarget::Provider(_)))
             .collect();
         if routes.is_empty() {
+            // No provider route is live, so no target's state is: the table is pruned to nothing for
+            // the same reason a target the document dropped is pruned below. A growing table of
+            // targets nobody serves is the leak this generation boundary exists to close.
+            breakers.retain(|_| false);
             return Ok(Self::empty());
         }
 
@@ -134,17 +151,24 @@ impl LlmPlan {
         // One materialization per provider entry: two routes of the same provider share one read, and
         // a `file:` reference is not re-opened per route.
         let mut materialized: BTreeMap<String, Credential> = BTreeMap::new();
+        let mut live: HashSet<TargetIdentity> = HashSet::new();
         for route in routes {
-            let planned = compile_route(
+            let (planned, identities) = compile_route(
                 document,
                 protocols,
                 providers,
                 credentials,
                 &mut materialized,
+                breakers,
                 route,
             )?;
             compiled.insert(route.id().to_owned(), planned);
+            live.extend(identities);
         }
+        // The generation this plan describes is the one whose targets keep their breaker history: a
+        // target the document no longer serves has no future attempts to skip, and its state would
+        // otherwise remember failures for an endpoint that no longer exists.
+        breakers.retain(|identity| live.contains(identity));
         Ok(Self { routes: compiled })
     }
 
@@ -154,6 +178,15 @@ impl LlmPlan {
     /// the ids are the document's, so nothing about a destination or a credential is reachable here.
     pub fn route_ids(&self) -> impl Iterator<Item = &str> {
         self.routes.keys().map(String::as_str)
+    }
+
+    /// Returns how many targets the named route serves: its primary plus its fallback members.
+    ///
+    /// Crate-internal: the publication's own report reads it from [`PlannedRoute`], and a test
+    /// asserts the compiled shape of a chain without opening a front-end.
+    #[cfg(test)]
+    pub(crate) fn targets(&self, route_id: &str) -> Option<usize> {
+        self.routes.get(route_id).map(|planned| planned.targets)
     }
 
     /// Emits one `info!` line per route, once the generation it belongs to is in service.
@@ -169,6 +202,7 @@ impl LlmPlan {
                 llm.provider = planned.front_end.provider(),
                 llm.mode = planned.front_end.mode_name(),
                 llm.model_map = planned.renames_models,
+                llm.targets = planned.targets,
                 "LLM route published"
             );
         }
@@ -205,8 +239,9 @@ fn compile_route(
     providers: &ProviderRegistry,
     credentials: &dyn CredentialResolver,
     materialized: &mut BTreeMap<String, Credential>,
+    breakers: &Arc<BreakerTable>,
     route: &Route,
-) -> Result<PlannedRoute, LlmBuildError> {
+) -> Result<(PlannedRoute, Vec<TargetIdentity>), LlmBuildError> {
     let route_id = route.id();
     let protocol = route
         .protocol()
@@ -244,53 +279,75 @@ fn compile_route(
     // key it would never use.
     let mode = exchange_mode(route)?;
 
-    let credential = match materialized.get(provider_name) {
-        Some(credential) => credential.clone(),
-        None => {
-            let credential = credentials
-                .resolve(entry.credential_ref())
-                .map_err(|source| LlmBuildError::Credential {
-                    route: route_id.to_owned(),
-                    provider: provider_name.to_owned(),
-                    source,
-                })?;
-            materialized.insert(provider_name.to_owned(), credential.clone());
-            credential
-        }
-    };
+    // A passthrough route has no canonical value and no failure classification, so there is nothing
+    // a retry budget could retry or a chain could fall back to: attempts are a converting route's
+    // vocabulary. The document is refused instead of the fields being ignored.
+    if mode == ExchangeMode::Passthrough && declares_attempts(route) {
+        return Err(LlmBuildError::PassthroughAttempts {
+            route: route_id.to_owned(),
+        });
+    }
 
-    // The protocol and the kind are the registries' own spellings, not the document's: the entry was
-    // only a lookup key, and the compiled facts must name what will actually run. Both are read before
-    // the values are moved into a constructor, so the publication log still names them afterwards.
-    let facts = Arc::new(route_facts(
-        route_id,
-        codec.protocol(),
-        adapter.kind(),
-        entry,
-        credential,
-        mode,
-    )?);
-
-    let front_end: Arc<dyn LlmRoute> = match mode {
+    let front_end: Arc<dyn LlmRoute>;
+    let targets;
+    let mut identities = Vec::new();
+    match mode {
         ExchangeMode::Convert => {
-            let exchange =
-                Exchange::try_new(codec, adapter, Arc::clone(&facts)).map_err(|source| {
+            let compiled =
+                chain::compile_chain(document, providers, credentials, materialized, route, codec)?;
+            front_end = Arc::new(ConvertRoute::new(
+                Arc::clone(&compiled),
+                Arc::clone(breakers),
+                route.retry_budget(),
+            ));
+            targets = compiled.members().len();
+            identities.extend(
+                compiled
+                    .members()
+                    .iter()
+                    .map(|member| member.identity().clone()),
+            );
+        }
+        ExchangeMode::Passthrough => {
+            let credential = match materialized.get(provider_name) {
+                Some(credential) => credential.clone(),
+                None => {
+                    let credential =
+                        credentials
+                            .resolve(entry.credential_ref())
+                            .map_err(|source| LlmBuildError::Credential {
+                                route: route_id.to_owned(),
+                                provider: provider_name.to_owned(),
+                                source,
+                            })?;
+                    materialized.insert(provider_name.to_owned(), credential.clone());
+                    credential
+                }
+            };
+
+            // The protocol and the kind are the registries' own spellings, not the document's: the
+            // entry was only a lookup key, and the compiled facts must name what will actually run.
+            // They are read before the values are moved into a constructor, so the publication log
+            // still names them afterwards.
+            let facts = Arc::new(route_facts(
+                route_id,
+                codec.protocol(),
+                adapter.kind(),
+                entry,
+                credential,
+                mode,
+            )?);
+            let passthrough =
+                PassthroughRoute::try_new(facts, adapter.as_ref()).map_err(|source| {
                     LlmBuildError::Exchange {
                         route: route_id.to_owned(),
                         source,
                     }
                 })?;
-            Arc::new(ConvertRoute::new(Arc::new(exchange)))
+            front_end = Arc::new(passthrough);
+            targets = 1;
         }
-        ExchangeMode::Passthrough => {
-            let passthrough = PassthroughRoute::try_new(Arc::clone(&facts), adapter.as_ref())
-                .map_err(|source| LlmBuildError::Exchange {
-                    route: route_id.to_owned(),
-                    source,
-                })?;
-            Arc::new(passthrough)
-        }
-        // `exchange_mode` refuses a mode this build does not know before the facts are built, so this
+        // `exchange_mode` refuses a mode this build does not know before any of this runs, so this
         // arm is unreachable today. It exists because the mode enums are extensible: a new mode must
         // arrive with a front-end, not with a route that silently converts.
         _ => {
@@ -299,68 +356,25 @@ fn compile_route(
                 mode: route.mode(),
             });
         }
-    };
+    }
 
-    Ok(PlannedRoute {
-        front_end,
-        renames_models: !entry.model_map().is_empty(),
-    })
+    Ok((
+        PlannedRoute {
+            front_end,
+            renames_models: !entry.model_map().is_empty(),
+            targets,
+        },
+        identities,
+    ))
 }
 
-/// Returns the document's provider entry named `name`.
-fn provider_entry<'a>(document: &'a Document, name: &str) -> Option<&'a Provider> {
-    document
-        .providers()
-        .iter()
-        .find(|provider| provider.name() == name)
-}
-
-/// Compiles one provider entry into the route facts its adapter reads.
+/// Returns whether the route declares anything the attempt machinery would act on.
 ///
-/// Every value here is read once per publication: the base URL as written, the materialized
-/// credential, the model map in both directions, and the endpoint's own output ceiling. `route_id`
-/// only names the route in a refusal, so it is not stored twice.
-///
-/// # Errors
-/// Returns [`LlmBuildError::Route`] when the entry cannot form route facts: an empty base URL, a model
-/// name that is not a name, or an output ceiling of zero.
-pub(super) fn route_facts(
-    route_id: &str,
-    protocol: ProtocolId,
-    provider_kind: ProviderKind,
-    entry: &Provider,
-    credential: Credential,
-    mode: ExchangeMode,
-) -> Result<ProviderRoute, LlmBuildError> {
-    let to_build_error = |source| LlmBuildError::Route {
-        route: route_id.to_owned(),
-        source,
-    };
-    let facts = ProviderRoute::try_new(route_id, protocol, provider_kind, entry.base_url())
-        .map_err(to_build_error)?
-        .with_mode(mode)
-        .with_credential(credential)
-        .with_model_map(entry.model_map().clone())
-        .map_err(to_build_error)?
-        .with_model_allowlist(entry.model_allowlist().to_vec())
-        .map_err(to_build_error)?;
-    // The document already refuses a ceiling of zero, so a `None` here means the entry sets none. The
-    // conversion is still spelled out rather than unwrapped: facts built from a document that skipped
-    // its own validation must refuse themselves, not panic during a publication.
-    let max_output_tokens = entry
-        .max_output_tokens()
-        .map(|value| {
-            NonZeroU32::new(value).ok_or_else(|| {
-                to_build_error(RouteError::Empty {
-                    field: "providers[].max_output_tokens",
-                })
-            })
-        })
-        .transpose()?;
-    Ok(match max_output_tokens {
-        Some(ceiling) => facts.with_max_output_tokens(ceiling),
-        None => facts,
-    })
+/// A `retry_budget` of `1` and an empty fallback chain are the materialized defaults — they mean
+/// "one attempt, no fallback", which is what a route that never names the fields gets, so neither
+/// counts as a declaration. Whether a declared attempt can be served is the chain compiler's answer.
+fn declares_attempts(route: &Route) -> bool {
+    route.retry_budget() > 1 || !route.fallback().is_empty()
 }
 
 /// Translates the document's mode into the exchange's.

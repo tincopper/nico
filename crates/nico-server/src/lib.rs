@@ -37,15 +37,21 @@ use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
 pub mod bootstrap;
+/// The AI role's compilation surface: client codecs, provider adapters and credentials.
+///
+/// Compiled only with the `llm` feature. The traffic role has no such module, and the pipeline
+/// reaches it through [`reload::LlmCompiler`] so nothing above this line names `nico-llm`.
+#[cfg(feature = "llm")]
 pub mod llm;
 pub mod reload;
 pub mod server;
 
 pub use bootstrap::{BootstrapConfig, BootstrapError};
+#[cfg(feature = "llm")]
 pub use llm::{
     CredentialError, CredentialResolver, EnvFileCredentials, LlmBuildError, LlmPlan, LlmRuntime,
 };
-pub use reload::{Publication, ReloadError, ReloadLimits, ReloadSettings, Reloader};
+pub use reload::{LlmCompiler, Publication, ReloadError, ReloadLimits, ReloadSettings, Reloader};
 
 /// Exit code used when the command line is missing or not understood.
 pub const USAGE_EXIT_CODE: u8 = 2;

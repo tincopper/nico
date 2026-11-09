@@ -15,13 +15,20 @@ use nico_core::Document;
 use nico_http::PublishedChains;
 use nico_llm::{ProtocolRegistry, ProviderRegistry};
 
-use super::{CredentialResolver, EnvFileCredentials, LlmBuildError, LlmPlan};
+use super::{CredentialResolver, EnvFileCredentials, LlmBuildError, LlmPlan, SharedServices};
 
-/// The registries and the credential resolver one process publishes LLM routes with.
+/// The registries, the credential resolver and the shared state one process publishes LLM routes
+/// with.
+///
+/// All three outlive every reload: the registries hold configuration, the resolver holds nothing at
+/// all (a key is re-read on every publication, which is the moment an operator expects a rotated one
+/// to be picked up), and the shared services hold what the request path **learned** — breaker
+/// history that survives a generation and dies with the target that left the document.
 pub struct LlmRuntime {
     protocols: ProtocolRegistry,
     providers: ProviderRegistry,
     credentials: Arc<dyn CredentialResolver>,
+    shared: Arc<SharedServices>,
 }
 
 impl LlmRuntime {
@@ -34,20 +41,47 @@ impl LlmRuntime {
         Self::with_parts(protocols, providers, Arc::new(EnvFileCredentials::new()))
     }
 
-    /// Builds a runtime from parts a caller assembled.
+    /// Builds a runtime from parts a caller assembled, with breaker state of its own.
     ///
     /// The seam a test uses to compile a document without touching the environment, and the seam a
-    /// future assembly uses to add a codec or an adapter without this module changing.
+    /// future assembly uses to add a codec or an adapter without this module changing. The shared
+    /// state is this runtime's own; a caller that must share it with another generation uses
+    /// [`LlmRuntime::with_shared`].
     #[must_use]
     pub fn with_parts(
         protocols: ProtocolRegistry,
         providers: ProviderRegistry,
         credentials: Arc<dyn CredentialResolver>,
     ) -> Self {
+        Self::with_shared(
+            protocols,
+            providers,
+            credentials,
+            Arc::new(SharedServices::new()),
+        )
+    }
+
+    /// Builds a runtime over breaker state the caller owns.
+    ///
+    /// The seam the inheritance rule needs. "An unchanged target keeps its history, a retuned one
+    /// starts over" is a statement about two compilations against **one** table, so it can only be
+    /// asserted when the table is not created inside the compile.
+    ///
+    /// A process passes the single [`SharedServices`] it assembled, which is what makes every
+    /// generation a reload publishes observe the same targets. A second table means a second set of
+    /// counts, and a breaker that halves every reload.
+    #[must_use]
+    pub fn with_shared(
+        protocols: ProtocolRegistry,
+        providers: ProviderRegistry,
+        credentials: Arc<dyn CredentialResolver>,
+        shared: Arc<SharedServices>,
+    ) -> Self {
         Self {
             protocols,
             providers,
             credentials,
+            shared,
         }
     }
 
@@ -71,6 +105,7 @@ impl LlmRuntime {
             &self.providers,
             chains,
             self.credentials.as_ref(),
+            &Arc::clone(self.shared.breakers()),
         )?;
         Ok(Arc::new(plan))
     }
@@ -136,5 +171,42 @@ pub(super) fn log_registries(protocols: &ProtocolRegistry, providers: &ProviderR
                 "LLM provider registered"
             ),
         }
+    }
+}
+
+impl crate::reload::LlmCompiler for LlmRuntime {
+    fn compile(
+        &self,
+        document: &Document,
+        chains: &PublishedChains,
+    ) -> Result<Arc<dyn crate::reload::LlmFrontEnds>, crate::reload::LlmCompileError> {
+        let plan = LlmRuntime::compile(self, document, chains).map_err(|error| {
+            crate::reload::LlmCompileError::new(error.category(), Box::new(error))
+        })?;
+        Ok(Arc::new(PublishedPlan { plan }))
+    }
+}
+
+/// One generation's compiled plan, as the pipeline publishes it.
+///
+/// The wrapper exists because the pipeline needs three things from one value — a route count, the
+/// publication log, and the routes view the data plane reads — and a `LlmPlan` is the routes view
+/// itself. Holding it behind an `Arc` here is what lets `routes()` hand the data plane the same
+/// compiled plan instead of a second copy.
+struct PublishedPlan {
+    plan: Arc<LlmPlan>,
+}
+
+impl crate::reload::LlmFrontEnds for PublishedPlan {
+    fn route_count(&self) -> usize {
+        nico_http::llm::LlmRoutes::len(&*self.plan)
+    }
+
+    fn log_published(&self) {
+        self.plan.log_published();
+    }
+
+    fn routes(&self) -> Arc<dyn nico_http::llm::LlmRoutes> {
+        Arc::clone(&self.plan) as Arc<dyn nico_http::llm::LlmRoutes>
     }
 }

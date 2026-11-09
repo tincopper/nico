@@ -17,7 +17,7 @@
 use std::time::Instant;
 
 use pingora::{
-    Error,
+    Error, ErrorSource,
     http::{Method, ResponseHeader},
     proxy::{FailToProxy, Session},
     upstreams::peer::HttpPeer,
@@ -25,11 +25,14 @@ use pingora::{
 
 use super::super::{
     HttpApp,
-    failure::{abort, classify, is_downstream_gone, write_respond},
+    failure::{abort, classify, is_downstream_gone, is_upstream_timeout, write_respond},
     hooks::llm,
     record,
 };
-use crate::{context::HttpContext, error::HttpError};
+use crate::{
+    context::{FailureStage, HttpContext},
+    error::HttpError,
+};
 
 /// Runs the response stages, in the reverse scope order, before the head is written.
 ///
@@ -133,7 +136,7 @@ pub(super) async fn response_filter(
 pub(super) fn error_while_proxy(
     _app: &HttpApp,
     _peer: &HttpPeer,
-    _session: &mut Session,
+    session: &mut Session,
     error: Box<Error>,
     ctx: &mut HttpContext,
     _client_reused: bool,
@@ -141,10 +144,65 @@ pub(super) fn error_while_proxy(
     if is_downstream_gone(&error) {
         ctx.mark_cancelled();
     }
-    // One attempt per request (`ServerConf::max_retries == 1`), so the error is not retryable: this
-    // build never retries, and Pingora would otherwise log a phantom retry.
     let mut error = error;
-    error.set_retry(false);
+    // Two kinds of round reach this hook, and `retry_admitted` decides both:
+    //
+    // - one the hooks recorded, where the recorded failure is the `AttemptRetry` signal the walk
+    //   produced when it classified a non-2xx head;
+    // - one nothing recorded, which is the framework's own upstream interaction — a reset or a broken
+    //   read while the head was still on its way. The walk classifies it exactly like a connect
+    //   failure. A timeout is excluded: it is the request's own budget, not the target's fault, and it
+    //   is answered as the deadline failure the record expects.
+    //
+    // Anything else is final: a downstream disconnect, that timeout, a refusal a plugin recorded. The
+    // response was never committed in those cases, so `fail_to_proxy` still writes the one response.
+    let replaceable = matches!(ctx.error(), Some(HttpError::AttemptRetry))
+        || (ctx.error().is_none()
+            && *error.esource() == ErrorSource::Upstream
+            && !is_upstream_timeout(&error));
+    // The body may already have been dispatched for either kind: a provider can refuse a request head
+    // before it has read the body, so both stages are `AfterDispatch` here.
+    let retry = replaceable
+        && super::llm::retry_admitted(
+            ctx,
+            session.response_written().is_some(),
+            FailureStage::AfterDispatch,
+        );
+    if retry {
+        // The walk already holds the next attempt; the loop's next round selects it through
+        // `upstream_peer` again, which re-reads the target this hook prepared.
+        error.set_retry(true);
+    } else {
+        // The attempt that failed is the request's outcome. `AttemptRetry` must not travel to
+        // `fail_to_proxy` — it has no response — so the walk's last failure replaces it here, and
+        // the one writer writes that.
+        ctx.replace_attempt_failure_with_last();
+        error.set_retry(false);
+    }
+    error
+}
+
+/// Gives a failed connection the same retry decision a failed response head gets.
+///
+/// Pingora reports a connect failure here, before any request byte was dispatched — so the body needs
+/// no replay buffer and the walk has not classified the failure yet. The default framework behaviour
+/// is "not retryable", which is why this hook must exist for a fallback to work at all.
+pub(super) fn fail_to_connect(
+    _app: &HttpApp,
+    session: &mut Session,
+    _peer: &HttpPeer,
+    mut error: Box<Error>,
+    ctx: &mut HttpContext,
+) -> Box<Error> {
+    // Asking whether a response was committed is free and is the same gate's second fact: this hook
+    // runs before the response pipeline exists, so the answer is always "no", and a future call site
+    // that reported otherwise would be refused rather than trusted.
+    let retry = super::llm::retry_admitted(
+        ctx,
+        session.response_written().is_some(),
+        FailureStage::BeforeDispatch,
+    );
+    error.set_retry(retry);
     error
 }
 

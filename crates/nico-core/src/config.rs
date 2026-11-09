@@ -37,8 +37,9 @@ pub use host::{HostError, MAX_HOST_BYTES, host_key, hosts_match, validate_host};
 pub use plugin::{
     BodyValue, DEFAULT_CONTENT_TYPE, ErrorBody, ErrorResponse, PluginSpec, is_json_content_type,
 };
-pub use provider::Provider;
+pub use provider::{CircuitBreaker, DEFAULT_COOLDOWN_MS, DEFAULT_FAILURE_THRESHOLD, Provider};
 pub use request::{DEFAULT_MAX_RESPONSE_BYTES, RequestBounds};
 pub use route::{Route, RouteMode, RouteTarget};
 pub use secret_ref::is_secret_ref;
+pub use semantic::{MAX_ATTEMPTS_PER_ROUTE, MAX_FALLBACK_MEMBERS};
 pub use upstream::{Scheme, Upstream};

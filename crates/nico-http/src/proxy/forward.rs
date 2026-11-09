@@ -126,10 +126,22 @@ pub(super) fn peer_ip(session: &Session) -> Option<IpAddr> {
 /// Returns the failure that explains why no destination exists. It is never a fallback: the request
 /// ends with the response the error maps to.
 pub(super) fn destination(ctx: &HttpContext) -> Result<Destination, HttpError> {
-    if let Some(destination) = ctx.destination() {
+    // A recorded destination is the peer this request connected to, and it belongs to the target it
+    // addressed. An LLM round that moved to another chain member must not reuse it — the head would go
+    // to the endpoint the request just failed on — so a converting route always re-resolves below and
+    // only the front-end's own target can supply the peer.
+    if let Some(destination) = ctx.destination()
+        && ctx.destination_still_describes_the_attempt()
+    {
         return Ok(destination.clone());
     }
     if let Some(llm) = ctx.llm() {
+        // The walk selected a target before this hook ran, and that target is the one the head is
+        // written to: a fallback's host differs from the route's primary, so reading the route here
+        // would send the request back to the endpoint it just failed on.
+        if let Some(target) = llm.target() {
+            return Ok(target.destination().clone());
+        }
         return Ok(llm.route().destination().clone());
     }
 

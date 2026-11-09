@@ -73,6 +73,11 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features    # includes doc tests
 cargo deny check
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+
+# The feature matrix, because `traffic` is a build that cannot serve an AI route at all
+cargo check --workspace --no-default-features
+cargo check -p nico-server --no-default-features --features traffic
+cargo test -p nico-server --no-default-features --features traffic --test role_traffic
 ```
 
 Plus the dependency-boundary and feature-matrix checks from `directory-structure.md`.

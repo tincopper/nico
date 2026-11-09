@@ -362,11 +362,16 @@ cargo tree -p nico-core --prefix none | grep -E 'pingora|nico-http|nico-llm|etcd
 cargo tree -p nico-config --prefix none | grep -E 'pingora|nico-http|nico-llm|etcd-client'
 cargo tree -p nico-http --prefix none | grep -E 'nico-llm'
 
-# Feature matrix must build (the workspace currently defines no features)
-cargo check --no-default-features
-cargo check --all-features
+# Feature matrix must build, and the role whose tests are cfg-gated must be tested
+cargo check --workspace --no-default-features
+cargo check -p nico-server --no-default-features --features traffic
+cargo check -p nico-server --features llm
+cargo check --workspace --all-features
+cargo test -p nico-server --no-default-features --features traffic
 
-# Add a feature to this matrix when one is introduced.
+# Add a feature to this matrix when one is introduced. `nico-server` declares the first ones
+# (`llm`, on by default, and `traffic`); a test file gated on the absence of a feature compiles to
+# nothing under `--all-features`, so the gate that turns the feature off is the only thing that runs it.
 
 # Duplicate / conflicting heavy deps
 cargo tree -d

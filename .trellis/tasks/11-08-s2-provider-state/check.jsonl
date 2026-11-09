@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "backend 规格索引：检查的分层入口"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "复查重试/熔断/fallback 是否遵守 canonical 错误闭表与发头即单行门"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "质量基线：五条门禁命令与测试纪律"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "复查 llm.attempt/llm.target/llm.circuit 新增日志字段是否符合规范（无 body 无凭证）"}

@@ -58,10 +58,12 @@ pub mod provider;
 pub mod route;
 pub mod schema;
 
+mod breaker;
 mod diagnostic;
 mod stream;
 mod wire;
 
+pub use breaker::{Admission, AttemptOutcome, BreakerPhase, BreakerTable};
 pub use filter::{Exchange, ExchangeBuildError, ExchangeError, PreparedExchange, StreamEncoder};
 pub use protocol::{
     Capabilities, Capability, ClientCodec, ClientReply, ClientStreamEncoder, CodecError,
@@ -71,7 +73,10 @@ pub use provider::{
     Credential, Endpoint, EndpointError, ExchangeMode, Provider, ProviderError, ProviderKind,
     ProviderRegistry, ProviderRoute, ProviderStream, RouteError, WireRequest,
 };
-pub use route::{ConvertRoute, PassthroughRoute};
+pub use route::{
+    AttemptChain, AttemptPlan, AttemptSequence, BreakerParams, ChainBuildError, ChainMember,
+    ConvertRoute, PassthroughRoute, SelectionRefused, TargetIdentity, Verdict,
+};
 pub use schema::{
     AssistantTurn, CanonicalError, ChatRequest, ChatResponse, Choice, ContentPart, Extensions,
     FinishReason, ImageSource, Item, JsonSchema, MAX_CANONICAL_CODE_BYTES,

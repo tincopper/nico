@@ -163,6 +163,9 @@ struct ProviderEntry {
     base_url: String,
     credential_ref: String,
     model_map: Vec<(String, String)>,
+    /// The endpoint's failure budget, written when a scenario tunes it; `None` leaves the document
+    /// defaults (threshold 5, cooldown 30s).
+    circuit_breaker: Option<(u32, u32)>,
 }
 
 /// A complete resources document, rendered from parts.
@@ -219,6 +222,7 @@ impl Resources {
             base_url: base_url.to_owned(),
             credential_ref: credential_ref.to_owned(),
             model_map: Vec::new(),
+            circuit_breaker: None,
         });
         self
     }
@@ -240,6 +244,7 @@ impl Resources {
                 .iter()
                 .map(|(logical, physical)| ((*logical).to_owned(), (*physical).to_owned()))
                 .collect(),
+            circuit_breaker: None,
         });
         self
     }
@@ -266,6 +271,31 @@ impl Resources {
                 .iter()
                 .map(|(logical, physical)| ((*logical).to_owned(), (*physical).to_owned()))
                 .collect(),
+            circuit_breaker: None,
+        });
+        self
+    }
+
+    /// Adds the provider with an explicit circuit-breaker threshold and cooldown, in milliseconds.
+    ///
+    /// A fallback scenario needs the threshold low so the second target is reached: the document
+    /// default of five failures would need five consecutive requests first, and a test drives one.
+    /// A `threshold` of `0` disables the breaker, which is the document's own spelling.
+    pub(crate) fn provider_with_breaker(
+        mut self,
+        name: &str,
+        base_url: &str,
+        credential_ref: &str,
+        threshold: u32,
+        cooldown_ms: u32,
+    ) -> Self {
+        self.providers.push(ProviderEntry {
+            name: name.to_owned(),
+            kind: "openai",
+            base_url: base_url.to_owned(),
+            credential_ref: credential_ref.to_owned(),
+            model_map: Vec::new(),
+            circuit_breaker: Some((threshold, cooldown_ms)),
         });
         self
     }
@@ -360,6 +390,11 @@ request:
                         yaml.push_str(&format!("      {logical}: {physical}\n"));
                     }
                 }
+                if let Some((threshold, cooldown_ms)) = provider.circuit_breaker {
+                    yaml.push_str("    circuit_breaker:\n");
+                    yaml.push_str(&format!("      failure_threshold: {threshold}\n"));
+                    yaml.push_str(&format!("      cooldown_ms: {cooldown_ms}\n"));
+                }
             }
         }
 
@@ -417,6 +452,12 @@ request:
                     for name in &route.plugins {
                         yaml.push_str(&format!("      - {name}\n"));
                     }
+                }
+                if let Some(retry_budget) = route.retry_budget {
+                    yaml.push_str(&format!("    retry_budget: {retry_budget}\n"));
+                }
+                if let Some(fallback) = &route.fallback {
+                    yaml.push_str(&format!("    fallback: [{}]\n", fallback.join(", ")));
                 }
             }
         }

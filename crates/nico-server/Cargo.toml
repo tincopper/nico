@@ -13,6 +13,22 @@ description = "nico: the binary crate that assembles bootstrap, configuration pi
 name = "nico"
 path = "src/main.rs"
 
+[features]
+# The build decides which role this binary serves. `llm` is on by default: the development form is
+# the all-in-one gateway, and a deployment that serves only traffic passes
+# `--no-default-features --features traffic`.
+#
+# The features are additive, not exclusive: `traffic` removes nothing from the code, it simply does
+# not compile `nico-llm`, so its registries are empty and a document that declares a provider route
+# is refused at publication — the last known good generation keeps serving. A role therefore cannot
+# lie about itself: it is a property of the artifact, not a field a bootstrap file could set wrong.
+default = ["llm"]
+# The AI role: client protocol codecs and provider adapters are compiled in and published per
+# generation.
+llm = ["dep:nico-llm"]
+# The traffic role: configuration, routing, plugins and the HTTP data plane, with no LLM crate at all.
+traffic = []
+
 [dependencies]
 async-trait.workspace = true
 nico-config.workspace = true
@@ -20,8 +36,9 @@ nico-core.workspace = true
 nico-http.workspace = true
 # The binary is the one crate that assembles concrete implementations, and the LLM codecs and
 # provider adapters are two of them: the process publishes one plan per generation, built from these
-# registries.
-nico-llm.workspace = true
+# registries. Optional: the traffic role compiles without it, and everything LLM-shaped is gated on
+# the feature.
+nico-llm = { workspace = true, optional = true }
 # The binary is the one crate that assembles concrete implementations, and the plugin compiler is one
 # of them: it is constructed here once per process and handed to the reload pipeline.
 nico-plugins.workspace = true

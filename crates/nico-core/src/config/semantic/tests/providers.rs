@@ -135,3 +135,87 @@ fn a_mapping_value_with_a_control_character_is_rejected() {
         "values must not contain whitespace",
     );
 }
+
+/// Appends a `circuit_breaker` section to the fixture provider.
+fn provider_with_breaker(section: &str) -> String {
+    format!(
+        "{}{}",
+        provider_entry("https://api.openai.com", "env:OPENAI_API_KEY"),
+        section
+    )
+}
+
+#[test]
+fn a_breaker_threshold_above_one_thousand_is_rejected() {
+    let providers = provider_with_breaker("    circuit_breaker:\n      failure_threshold: 1001\n");
+    let error = parse(&document(&providers, NO_ENTRIES, NO_ENTRIES))
+        .expect_err("a threshold past the bound is a number, not a configuration");
+    assert!(
+        matches!(
+            error,
+            DocumentError::LimitOutOfRange {
+                field: "providers[].circuit_breaker.failure_threshold",
+                value: 1001
+            }
+        ),
+        "expected LimitOutOfRange for failure_threshold, got {error:?}"
+    );
+    assert_eq!(error.category(), ErrorCategory::Limit);
+}
+
+#[test]
+fn a_zero_breaker_threshold_is_accepted() {
+    // Zero is the one spelling for "never stop calling this endpoint": the breaker is disabled, and
+    // refusing it would leave no way to express that.
+    let providers = provider_with_breaker("    circuit_breaker:\n      failure_threshold: 0\n");
+    parse(&document(&providers, NO_ENTRIES, NO_ENTRIES))
+        .expect("a disabled breaker is a configuration");
+}
+
+#[test]
+fn a_breaker_threshold_at_the_bound_is_accepted() {
+    let providers = provider_with_breaker("    circuit_breaker:\n      failure_threshold: 1000\n");
+    parse(&document(&providers, NO_ENTRIES, NO_ENTRIES))
+        .expect("the last accepted threshold is a configuration");
+}
+
+#[test]
+fn a_breaker_cooldown_at_the_bound_is_accepted() {
+    let providers = provider_with_breaker("    circuit_breaker:\n      cooldown_ms: 600000\n");
+    parse(&document(&providers, NO_ENTRIES, NO_ENTRIES))
+        .expect("a ten-minute cooldown is a configuration");
+}
+
+#[test]
+fn a_zero_breaker_cooldown_is_rejected() {
+    let providers = provider_with_breaker("    circuit_breaker:\n      cooldown_ms: 0\n");
+    let error = parse(&document(&providers, NO_ENTRIES, NO_ENTRIES))
+        .expect_err("an open breaker must stay open long enough to be observable");
+    assert!(
+        matches!(
+            error,
+            DocumentError::LimitOutOfRange {
+                field: "providers[].circuit_breaker.cooldown_ms",
+                value: 0
+            }
+        ),
+        "expected LimitOutOfRange for cooldown_ms, got {error:?}"
+    );
+}
+
+#[test]
+fn a_breaker_cooldown_above_ten_minutes_is_rejected() {
+    let providers = provider_with_breaker("    circuit_breaker:\n      cooldown_ms: 600001\n");
+    let error = parse(&document(&providers, NO_ENTRIES, NO_ENTRIES))
+        .expect_err("a cooldown past the bound is a maintenance window");
+    assert!(
+        matches!(
+            error,
+            DocumentError::LimitOutOfRange {
+                field: "providers[].circuit_breaker.cooldown_ms",
+                value: 600_001
+            }
+        ),
+        "expected LimitOutOfRange for cooldown_ms, got {error:?}"
+    );
+}

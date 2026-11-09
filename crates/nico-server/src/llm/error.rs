@@ -154,6 +154,45 @@ pub enum LlmBuildError {
         /// The route whose body a plugin asked to buffer.
         route: String,
     },
+    /// The route is a `passthrough` route and declared `retry_budget` or `fallback`.
+    ///
+    /// A passthrough route has no canonical value and no failure classification: there is nothing a
+    /// retry could re-send and nothing that says the first attempt failed. Ignoring the fields would
+    /// publish a chain the route cannot follow, so the document is refused.
+    #[error(
+        "route `{route}` is a passthrough route and cannot declare `retry_budget` or `fallback`"
+    )]
+    PassthroughAttempts {
+        /// The route that declared attempts it cannot serve.
+        route: String,
+    },
+    /// One chain member's exchange could not be assembled.
+    ///
+    /// A member is a full exchange of its own, so every refusal a primary target can produce at
+    /// publication a fallback member can produce too; the variant names which member the route
+    /// cannot actually fall back to.
+    #[error("route `{route}` cannot publish the exchange of provider `{provider}`: {source}")]
+    MemberExchange {
+        /// The route whose chain holds the member.
+        route: String,
+        /// The member that cannot be served.
+        provider: String,
+        /// The constructor's reason, including an endpoint it could not compile. Boxed so the
+        /// error type stays at its existing size: a chain member names one more field than the
+        /// single-target variant, and the publication log reads the cause either way.
+        #[source]
+        source: Box<ExchangeBuildError>,
+    },
+    /// A route's compiled attempt chain held no members.
+    ///
+    /// The chain compiler always compiles the route's primary target first, so reaching this means
+    /// the two compilers disagreed about the same document. Refusing the publication is the only
+    /// safe answer: a route with no target would answer every request with a front-end defect.
+    #[error("route `{route}` compiled an attempt chain with no targets")]
+    EmptyChain {
+        /// The route whose chain is empty.
+        route: String,
+    },
 }
 
 impl LlmBuildError {
@@ -167,7 +206,7 @@ impl LlmBuildError {
         match self {
             Self::Credential { source, .. } => source.category(),
             // Not the document's problem: the two compilers disagreed about the same bytes.
-            Self::MissingPluginChain { .. } => ErrorCategory::Internal,
+            Self::MissingPluginChain { .. } | Self::EmptyChain { .. } => ErrorCategory::Internal,
             Self::MissingProtocol { .. }
             | Self::UnknownProtocol { .. }
             | Self::MissingProvider { .. }
@@ -175,6 +214,8 @@ impl LlmBuildError {
             | Self::UnsupportedMode { .. }
             | Self::Route { .. }
             | Self::Exchange { .. }
+            | Self::MemberExchange { .. }
+            | Self::PassthroughAttempts { .. }
             | Self::GlobalPluginPhase { .. }
             | Self::RoutePluginPhase { .. }
             | Self::BufferedRoute { .. } => ErrorCategory::Client,

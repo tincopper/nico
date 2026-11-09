@@ -8,8 +8,58 @@
 //! forwards the name the caller wrote; which name the upstream is asked for, and how large an answer
 //! it may produce when the caller names no limit, is a property of the endpoint, so both live here
 //! rather than on the route. Two endpoints that need different parameters are two provider entries.
+//!
+//! The endpoint's failure budget is an endpoint property for the same reason: how many consecutive
+//! failures make the gateway stop calling this endpoint, and how long it waits before probing again,
+//! describe the endpoint, not any one request. Every provider carries a [`CircuitBreaker`]; the
+//! document writes one explicitly to move the knobs, and `failure_threshold: 0` is the spelling for
+//! "never stop calling this endpoint".
 
 use std::collections::BTreeMap;
+
+/// The failure count a provider's breaker tolerates when the document writes no
+/// `circuit_breaker.failure_threshold`.
+pub const DEFAULT_FAILURE_THRESHOLD: u32 = 5;
+
+/// The cooldown in milliseconds an open breaker waits before probing again, when the document
+/// writes no `circuit_breaker.cooldown_ms`.
+pub const DEFAULT_COOLDOWN_MS: u32 = 30_000;
+
+/// One provider endpoint's circuit-breaker parameters.
+///
+/// A breaker opens after `failure_threshold` consecutive failures to the endpoint and, once open,
+/// admits one probe every `cooldown_ms` to learn whether it recovered. `failure_threshold` of `0`
+/// disables the breaker for the provider: the failures are still counted and logged, but no request
+/// is ever skipped because of them. The values travel with the provider's identity when its runtime
+/// state is carried across generations, so re-tuning them starts the breaker over — an inheritance
+/// rule that keeps "what the state machine knows" equal to "what the document says".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CircuitBreaker {
+    failure_threshold: u32,
+    cooldown_ms: u32,
+}
+
+impl CircuitBreaker {
+    /// Builds breaker parameters from already validated values.
+    pub(super) const fn new(failure_threshold: u32, cooldown_ms: u32) -> Self {
+        Self {
+            failure_threshold,
+            cooldown_ms,
+        }
+    }
+
+    /// Returns the consecutive failures that open the breaker; `0` means the breaker is disabled.
+    #[must_use]
+    pub const fn failure_threshold(&self) -> u32 {
+        self.failure_threshold
+    }
+
+    /// Returns how long an open breaker stays open before it admits one probe.
+    #[must_use]
+    pub const fn cooldown_ms(&self) -> u32 {
+        self.cooldown_ms
+    }
+}
 
 /// An LLM provider endpoint referenced by a [`Route`](super::Route).
 ///
@@ -30,6 +80,7 @@ pub struct Provider {
     pub(super) model_map: BTreeMap<String, String>,
     pub(super) max_output_tokens: Option<u32>,
     pub(super) timeout_ms: Option<u32>,
+    pub(super) circuit_breaker: CircuitBreaker,
 }
 
 impl Provider {
@@ -101,5 +152,14 @@ impl Provider {
     #[must_use]
     pub const fn timeout_ms(&self) -> Option<u32> {
         self.timeout_ms
+    }
+
+    /// Returns the endpoint's circuit-breaker parameters.
+    ///
+    /// Every provider carries a value: an entry that writes no `circuit_breaker` section takes the
+    /// built-in defaults, and `failure_threshold` of `0` means the breaker is disabled for it.
+    #[must_use]
+    pub const fn circuit_breaker(&self) -> &CircuitBreaker {
+        &self.circuit_breaker
     }
 }

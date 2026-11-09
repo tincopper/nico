@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "backend 规格索引：实现前必读的分层入口"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "PRD 直接引用其 LLM fallback 节：canonical 错误闭表、retryable 语义、x-nico-error-code 契约是 classify 的既定前提"}
+{"file": ".trellis/spec/backend/pingora-guidelines.md", "reason": "第 1/5 步涉及 Pingora 会话重建与尝试循环挂点，须遵守既定 hook 契约纪律"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "新增模块须按数据边界拆分并守 300-500 行预算"}

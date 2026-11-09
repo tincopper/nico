@@ -357,7 +357,10 @@ async fn fail_to_proxy(&self, session: &mut Session, e: &Error, ctx: &mut Self::
 // Explicit drain window, explicit attempt budget, explicit h2c.
 let mut conf = ServerConf::default();
 conf.grace_period_seconds = Some(seconds(settings.grace_period()));
-conf.max_retries = 1;
+// The loop's fuse, not the sequence: a route that declared nothing makes one attempt because its
+// walk answers "no" immediately. The value is the document model's own product — the retry-budget
+// ceiling times the longest chain it validates — so the fuse and the bounds cannot drift apart.
+conf.max_retries = nico_core::MAX_ATTEMPTS_PER_ROUTE;
 let service = ProxyServiceBuilder::new(&conf, app)
     .server_options(HttpServerOptions { h2c, ..Default::default() })
     .build();
@@ -374,7 +377,12 @@ let service = ProxyServiceBuilder::new(&conf, app)
 | `ServerConf` has no `Clone`; `Server::configuration` is `pub Arc<ServerConf>` | `pingora-core/src/server/mod.rs:224` |
 | `HttpPeer::new((host, port), ..)` unwraps DNS: resolve first, then pass a `SocketAddr` | `pingora-core/src/upstreams/peer.rs:718-719` |
 | `PeerOptions` names the field `connection_timeout`, and has no whole-call timeout | `pingora-core/src/upstreams/peer.rs:502` |
-| `max_retries` counts attempts (`while retries < max_retries`) | `pingora-proxy/src/lib.rs:1280` |
+| `max_retries` counts attempts (`while retries < max_retries`), so it must be derived from the document's own bounds — a hand-picked number is either a truncated chain or a budget nobody enforced | `pingora-proxy/src/lib.rs:1280` |
+| the attempt loop re-calls `upstream_peer` and re-clones the request header every round, and re-runs `upstream_request_filter` — so a fallback's different host/port is reachable without a second session | `pingora-proxy/src/lib.rs:410,1283`; `proxy_h1.rs:48,81-122` |
+| a connect failure reaches `fail_to_connect` with `retry` **false** by default; `upstream_peer`'s own `Err` (a DNS failure) does not pass through it at all | `pingora-proxy/src/lib.rs:412,479-483`; `pingora-error/src/lib.rs:209-217` |
+| a request body is replayed on a retry **only** from the internal retry buffer, `BODY_BUF_LIMIT = 64 KiB`, not configurable; above it the buffer is truncated and a body-complete round sends no body at all (`request_body_filter` is never called again) | `pingora-core/src/protocols/http/v1/common.rs:32`; `body_buffer.rs:23-33`; `proxy_h1.rs:486`; `server.rs:1217-1265` |
+| `upstream_response_filter` runs before any downstream write, so a failure raised there still has zero client bytes — the only response-stage retry point | `pingora-proxy/src/proxy_h1.rs:397-436` |
+| the framework drops a second response head silently and does not prevent a retried round from corrupting a committed stream, so the "response already written" gate must be ours | `pingora-core/src/protocols/http/v1/server.rs:830-837` |
 | `content-length` response bodies flush only on the last byte; chunked flushes per chunk — event streams must be chunked | `pingora-core/src/protocols/http/v1/body.rs:1367,1397` |
 | `1xx` responses reach `response_filter`; guard with `status.is_informational()` before touching headers | `pingora-proxy/src/proxy_trait.rs:390` |
 | without a TLS provider, `noop_tls::connect` returns a **pass-through** stream: `tls: true` would not encrypt | `pingora-core/src/protocols/tls/noop_tls/mod.rs` |

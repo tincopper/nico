@@ -116,6 +116,14 @@ pub enum HttpError {
         #[source]
         source: Box<dyn Error + Send + Sync>,
     },
+    /// The current attempt is over and the next one is ready.
+    ///
+    /// This is the attempt loop's own signal, not a client-visible failure: the next round writes a
+    /// fresh request head, and [`fail_to_proxy`](crate::proxy) never renders this variant because a
+    /// retry replaces the attempt it came from. It exists as an error only because Pingora's hooks
+    /// abort with one.
+    #[error("the attempt failed and another is ready")]
+    AttemptRetry,
     /// A route targets a provider and no filter replaced the target with a real peer.
     ///
     /// This crate does not know provider semantics, so it refuses to guess an address.
@@ -238,6 +246,8 @@ impl HttpError {
                 "upstream_unreachable",
                 "the upstream is unavailable",
             )),
+            // Never rendered: a retry replaces the attempt before any response is written.
+            Self::AttemptRetry => None,
             Self::ProviderNotConfigured { .. } => Some(Respond::new(
                 StatusCode::BAD_GATEWAY,
                 "provider_unavailable",
@@ -279,7 +289,8 @@ impl HttpError {
             Self::NotReady
             | Self::DeadlineExceeded { .. }
             | Self::UpstreamFailed { .. }
-            | Self::ProviderNotConfigured { .. } => ErrorCategory::Upstream,
+            | Self::ProviderNotConfigured { .. }
+            | Self::AttemptRetry => ErrorCategory::Upstream,
             Self::Rejected { rejection, .. } => rejection.category(),
             Self::LlmRejected { rejection } => rejection.category(),
             Self::Internal { .. } | Self::ResponseCommitted => ErrorCategory::Internal,

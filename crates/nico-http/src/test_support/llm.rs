@@ -19,8 +19,8 @@ use crate::{
     context::HttpContext,
     error::HttpError,
     llm::{
-        ConvertingRoute, LlmPrepared, LlmRequest, LlmResponseHead, LlmRoute, LlmRoutes,
-        ResponseTransform,
+        AttemptTarget, AttemptVerdict, ConvertingRoute, LlmAttempt, LlmPrepared, LlmRequest,
+        LlmResponseHead, LlmRoute, LlmRoutes, ResponseTransform,
     },
 };
 
@@ -129,6 +129,8 @@ pub(crate) struct FakeLlmRoute {
     pub(crate) model: Option<String>,
     /// `Some(reason)` makes `prepare` answer `400`.
     pub(crate) fail_prepare: Option<&'static str>,
+    /// Whether the route declared attempts, which is the walk's answer to `can_retry`.
+    pub(crate) retries: bool,
     /// The head the transform answers with; `None` makes the transform fail on the head.
     pub(crate) head: Option<(u16, Vec<(String, String)>)>,
     pub(crate) calls: Arc<Mutex<LlmCalls>>,
@@ -149,12 +151,19 @@ impl FakeLlmRoute {
             streaming: false,
             model: Some("fast -> gpt-physical".to_owned()),
             fail_prepare: None,
+            retries: false,
             head: Some((
                 200,
                 vec![("content-type".to_owned(), "application/json".to_owned())],
             )),
             calls: Arc::clone(calls),
         }
+    }
+
+    /// Declares attempts, so the retry gate has a walk that admits another one.
+    pub(crate) fn with_retries(mut self) -> Self {
+        self.retries = true;
+        self
     }
 
     /// Returns the recorded calls.
@@ -198,6 +207,27 @@ impl LlmRoute for FakeLlmRoute {
 }
 
 impl ConvertingRoute for FakeLlmRoute {
+    fn begin(&self) -> Box<dyn LlmAttempt> {
+        // The walk answers every classification as the response the data plane should translate, and
+        // only a route built with `with_retries` reports that it declared attempts. That is what the
+        // phase-1 hook tests assert, and what a retry-gate test needs to be able to vary. It reproduces
+        // `prepare` so the hooks that go through the walk record the same calls the direct path did.
+        Box::new(FakeAttempt {
+            target: AttemptTarget::new(
+                self.destination.clone(),
+                self.path.clone(),
+                self.headers.clone(),
+                "openai",
+            ),
+            body: self.body.clone(),
+            streaming: self.streaming,
+            model: self.model.clone(),
+            fail_prepare: self.fail_prepare,
+            retries: self.retries,
+            calls: Arc::clone(&self.calls),
+        })
+    }
+
     fn prepare(&self, request: &LlmRequest<'_>) -> Result<LlmPrepared, HttpError> {
         self.calls().prepared.push(PreparedCall {
             method: request.method().to_owned(),
@@ -322,5 +352,102 @@ impl LlmRoutes for FakeLlmRoutes {
 
     fn len(&self) -> usize {
         self.routes.len()
+    }
+}
+
+/// The fixture's attempt walk: one target, one attempt, and every head translated as the answer.
+///
+/// The hook tests exercise the data plane's framing and plugin ordering, not the attempt sequence, so
+/// this walk never asks for another attempt. The sequence itself is covered in `nico-llm`. Its
+/// `prepare` mirrors the fixture route's, so a test asserting the recorded call sees the same facts
+/// whether the hook reached the front-end directly or through the walk.
+struct FakeAttempt {
+    target: AttemptTarget,
+    body: Vec<u8>,
+    streaming: bool,
+    model: Option<String>,
+    fail_prepare: Option<&'static str>,
+    retries: bool,
+    calls: Arc<Mutex<LlmCalls>>,
+}
+
+impl LlmAttempt for FakeAttempt {
+    fn select(&mut self, _now: tokio::time::Instant) -> Result<AttemptTarget, HttpError> {
+        Ok(self.target.clone())
+    }
+
+    fn prepare(
+        &mut self,
+        request: &LlmRequest<'_>,
+        _now: tokio::time::Instant,
+    ) -> Result<LlmPrepared, HttpError> {
+        self.calls
+            .lock()
+            .expect("the fake lock is not poisoned")
+            .prepared
+            .push(PreparedCall {
+                method: request.method().to_owned(),
+                path: request.path().to_owned(),
+                headers: request
+                    .headers()
+                    .iter()
+                    .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                    .collect(),
+                body: request.body().to_vec(),
+            });
+        if let Some(reason) = self.fail_prepare {
+            return Err(HttpError::InvalidRequest {
+                reason: reason.into(),
+            });
+        }
+        let prepared = LlmPrepared::new(self.body.clone(), self.streaming);
+        Ok(match &self.model {
+            Some(model) => prepared.with_model(model.clone()),
+            None => prepared,
+        })
+    }
+
+    fn classify(
+        &mut self,
+        _status: u16,
+        _now: tokio::time::Instant,
+    ) -> Result<AttemptVerdict, HttpError> {
+        Ok(AttemptVerdict::Answer)
+    }
+
+    fn failed(&mut self, _now: tokio::time::Instant) -> Result<AttemptVerdict, HttpError> {
+        Ok(AttemptVerdict::Answer)
+    }
+
+    fn succeeded(&mut self, _now: tokio::time::Instant) {}
+
+    fn can_retry(&self) -> bool {
+        self.retries
+    }
+
+    fn current_target(&self) -> &str {
+        self.target.name()
+    }
+
+    fn attempt_number(&self) -> u32 {
+        1
+    }
+
+    fn target_view(&self) -> AttemptTarget {
+        self.target.clone()
+    }
+
+    fn body(&self) -> Option<&[u8]> {
+        // The fixture's walk never retries, so no replay round ever asks it for a body.
+        None
+    }
+
+    fn last_refusal(&self) -> Option<HttpError> {
+        // The fixture's walk never retries, so it never produces the signal this answers.
+        None
+    }
+
+    fn take_skipped(&mut self) -> Vec<String> {
+        Vec::new()
     }
 }

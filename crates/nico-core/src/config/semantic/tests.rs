@@ -69,6 +69,8 @@ fn provider_route(id: &str, path_prefix: &str) -> String {
     )
 }
 
+mod attempts;
+mod chain;
 mod hosts;
 mod matches;
 mod names;

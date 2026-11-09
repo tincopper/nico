@@ -47,7 +47,11 @@ pub(super) mod llm;
 mod request;
 mod response;
 
-use pingora::proxy::ProxyHttp;
+use pingora::{
+    Error,
+    proxy::{ProxyHttp, Session},
+    upstreams::peer::HttpPeer,
+};
 
 use super::HttpApp;
 use crate::context::HttpContext;
@@ -121,6 +125,16 @@ impl ProxyHttp for HttpApp {
         ctx: &mut Self::CTX,
     ) -> pingora::Result<()> {
         response::response_filter(self, session, upstream_response, ctx).await
+    }
+
+    fn fail_to_connect(
+        &self,
+        session: &mut Session,
+        peer: &HttpPeer,
+        ctx: &mut Self::CTX,
+        error: Box<Error>,
+    ) -> Box<Error> {
+        response::fail_to_connect(self, session, peer, error, ctx)
     }
 
     fn error_while_proxy(

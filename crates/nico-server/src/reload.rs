@@ -34,6 +34,10 @@
 use std::{sync::Arc, time::Duration};
 
 pub use error::ReloadError;
+#[cfg(not(feature = "llm"))]
+pub use llm::NoLlmCompiler;
+use llm::builtin_llm;
+pub use llm::{LlmCompileError, LlmCompiler, LlmFrontEnds};
 use nico_config::{CacheStore, ConfigSource, ConfigSourceError, ConfigVersion, ConfigWatch};
 use nico_core::{ConfigDigest, ErrorCategory, Generation, ParseLimits, Revision, SnapshotHandle};
 use nico_http::HttpStateHandle;
@@ -41,9 +45,8 @@ use nico_plugins::PluginRuntime;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::llm::LlmRuntime;
-
 mod error;
+mod llm;
 mod pacing;
 mod publish;
 mod startup;
@@ -151,9 +154,10 @@ pub struct Reloader {
     /// The plugin compiler, which also keeps the state that outlives a publication — a rate limiter's
     /// buckets. It is created by the process assembly, so every generation of one process shares it.
     runtime: Arc<PluginRuntime>,
-    /// The LLM registries and the credential resolver, shared by every generation for the same reason:
-    /// a codec and an adapter hold configuration, and a key is re-read on each publication.
-    llm: Arc<LlmRuntime>,
+    /// The AI role's compiler, shared by every generation for the same reason: a codec and an adapter
+    /// hold configuration, and a key is re-read on each publication. The traffic role supplies the
+    /// no-op implementation, which refuses every provider route.
+    llm: Arc<dyn LlmCompiler>,
     cache: Option<CacheStore>,
     limits: ReloadLimits,
     parse_limits: ParseLimits,
@@ -175,9 +179,10 @@ impl Reloader {
     /// `runtime` is shared with the process rather than created here, because the bucket tables inside
     /// it must survive every reload this reloader performs and nothing else in the process knows them.
     ///
-    /// The LLM runtime is the built-in one ([`LlmRuntime::builtin`]): the codecs, adapters and
-    /// credential resolver this build serves, created here so a pipeline that does not care can be
-    /// built without naming them. [`Reloader::with_llm`] is the seam that injects another one.
+    /// The compiler is the build's own: the `llm` feature supplies the real registries and credential
+    /// resolver, and a traffic-only build supplies the refusal. It is created here so a pipeline that
+    /// does not care can be built without naming them; [`Reloader::with_llm`] is the seam that
+    /// injects another one.
     #[must_use]
     pub fn new(
         source: Arc<dyn ConfigSource>,
@@ -185,13 +190,7 @@ impl Reloader {
         runtime: Arc<PluginRuntime>,
         settings: ReloadSettings,
     ) -> Self {
-        Self::with_llm(
-            source,
-            publication,
-            runtime,
-            Arc::new(LlmRuntime::builtin()),
-            settings,
-        )
+        Self::with_llm(source, publication, runtime, builtin_llm(), settings)
     }
 
     /// Creates a reloader that compiles LLM routes with `llm`.
@@ -204,7 +203,7 @@ impl Reloader {
         source: Arc<dyn ConfigSource>,
         Publication { status, requests }: Publication,
         runtime: Arc<PluginRuntime>,
-        llm: Arc<LlmRuntime>,
+        llm: Arc<dyn LlmCompiler>,
         ReloadSettings {
             cache,
             limits,
