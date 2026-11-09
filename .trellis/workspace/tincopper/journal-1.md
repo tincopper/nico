@@ -378,3 +378,47 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 ### Status
 
 [OK] **Completed**
+
+
+## Session 10: 阶段 2：可靠性核心落地与收口
+<!-- trellis-session: v=2 fp=6cad93c050499903 -->
+
+**Date**: 2026-11-09
+**Task**: 阶段 2：可靠性核心落地与收口
+**Branch**: `main`
+
+### Summary
+
+阶段 2 里程碑交付并收口：路由在响应未提交时可安全重试（canonical 重编码）、provider 级熔断（半开探测 + 跨 generation 继承）、显式 fallback 链（发布期编译、能力交集）、SharedServices 最小形态，以及 traffic/llm 两种 role 构建。实现落在 c43195b；本次收口补上验收清单缺的证据——同目标两次重试的上游请求体逐字节相同，勾销 PRD 验收项与 implement.md 检查点，写入各步落地记录并归档任务。
+
+### Main Changes
+
+- 重试：retry_budget（默认 1、上限 4）内先重试同一目标；canonical 只解码一次、逐目标重新编码；401 等非 retryable 立即应答
+- 熔断：目标身份（provider + base_url + kind + 参数）级状态机，连续失败达阈值打开、冷却后单探测；跨 generation 只继承配置未变的目标
+- fallback：routes[].fallback（上限 3）在发布期逐成员物化 endpoint/model_map/凭证、能力取交集；任一成员不可服务则整条路由拒绝发布并保 LKG
+- SharedServices：进程级 breaker 表，Arc 进发布链路与快照；明确不是通用 Lifecycle Manager
+- role：nico-server 的 llm/traffic feature；traffic 构建不编入 nico-llm，provider 路由发布失败而不是静默跳过
+- 数据面：retry_admitted 单门 + FailureStage，64 KiB 重放边界与「发头即单行门」各只有一处判定；日志 llm.target/llm.attempt/llm.outcome/llm.circuit
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c43195b` | feat(llm): retry, circuit breaking, explicit fallback and the two role builds |
+
+### Testing
+
+- [OK] cargo test --workspace --all-features --locked：1699 passed / 57 suites（1 ignored）
+- [OK] cargo +nightly fmt --all -- --check；clippy --workspace --all-targets --all-features -D warnings 无 issue；RUSTDOCFLAGS=-D warnings cargo doc；cargo deny check 四项全 ok
+- [OK] feature 矩阵：--no-default-features、traffic、llm、--all-features 四种 cargo check 通过；role_traffic 3 passed
+- [OK] llm_fallback e2e 七个场景：502→fallback（缓冲/流式）、熔断后连接数为 0、401 不 fallback、发头后不换源、>64 KiB 不重试、解析失败被走过；同目标两次重试的上游请求体逐字节相同
+- [OK] cargo tree 深度 1 无越界项；全树 ≤500 行（最大 500）
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 阶段 3：按真实需求扩展（新协议独立 crate/binary；第二个真实消费者出现后再下沉公共 trait）
+- 阶段 2 留待后续里程碑：usage 归一化/计费、LLM token 限额、异构 Provider（语义待澄清）
