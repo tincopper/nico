@@ -65,16 +65,16 @@
 
 ## Acceptance Criteria
 
-- [ ] 重试：mock 上游第一次 502、第二次 200 → 客户端收到 200 答复，上游恰两次请求，body 逐字节相同
+- [x] 重试：mock 上游第一次 502、第二次 200 → 客户端收到 200 答复，上游恰两次请求，body 逐字节相同
       （canonical 重编码）；非 retryable 失败（401）不重试；发头后失败不重试；预算耗尽按 canonical 错误应答。
-- [ ] 熔断：连续失败达阈值后该目标被跳过（上游连接数为 0），半开探测成功后恢复；配置未变的 reload 继承状态，
+- [x] 熔断：连续失败达阈值后该目标被跳过（上游连接数为 0），半开探测成功后恢复；配置未变的 reload 继承状态，
       改了配置的目标重置。
-- [ ] fallback：声明 A→B 链的路由，A 持续 5xx 时请求由 B 服务且答复 200；链能力交集生效（B 缺的能力
+- [x] fallback：声明 A→B 链的路由，A 持续 5xx 时请求由 B 服务且答复 200；链能力交集生效（B 缺的能力
       在编译期就让请求 422）；流式答复发头后 A 死亡 → 流终止，不换 B。
-- [ ] 重试/fallback 期间客户端 status/body 只反映最终结果；日志记录每次尝试的目标与结果（无 body、无凭证）。
-- [ ] role：`llm` 角色进程服务 AI 路由；`traffic` 角色进程遇到 provider 路由发布失败且旧 generation 保活；
+- [x] 重试/fallback 期间客户端 status/body 只反映最终结果；日志记录每次尝试的目标与结果（无 body、无凭证）。
+- [x] role：`llm` 角色进程服务 AI 路由；`traffic` 角色进程遇到 provider 路由发布失败且旧 generation 保活；
       三种 feature 组合 `cargo check` 通过。
-- [ ] 五条基线全绿；文件预算 ≤500 行；`nico-core`/`nico-config` 依赖树无越界项。
+- [x] 五条基线全绿；文件预算 ≤500 行；`nico-core`/`nico-config` 依赖树无越界项。
 
 ## Open Questions（阻塞规划）
 
