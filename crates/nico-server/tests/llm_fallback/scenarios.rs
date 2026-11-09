@@ -167,15 +167,26 @@ pub(super) async fn a_retryable_failure_on_the_primary_is_answered_by_the_fallba
         "the answer came from the fallback origin: {}",
         response.text()
     );
-    assert_eq!(
-        primary.observation().connections,
-        2,
-        "a budget of two is two attempts"
-    );
+    let attempted = primary.observation();
+    assert_eq!(attempted.connections, 2, "a budget of two is two attempts");
     assert_eq!(
         secondary.observation().connections,
         1,
         "the fallback was asked once"
+    );
+    // Both attempts carry the same bytes: the retry re-encodes the canonical request for the same
+    // target, so the only body the provider ever sees is the gateway's, never a replay of the
+    // caller's. A retry that re-sent the client's stream would show up here as a byte difference.
+    let bodies: Vec<Vec<u8>> = attempted.requests.iter().map(|r| r.body()).collect();
+    assert_eq!(
+        bodies.len(),
+        2,
+        "two attempts, two observed bodies: {:?}",
+        attempted.summary()
+    );
+    assert_eq!(
+        bodies[0], bodies[1],
+        "the retry re-encodes the same canonical request for the same target"
     );
     let observed = secondary.observation();
     let last = observed.last().expect("the fallback observed a request");
