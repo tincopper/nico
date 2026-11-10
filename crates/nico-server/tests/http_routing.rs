@@ -51,7 +51,9 @@ async fn routing_ranks_host_before_prefix_and_answers_404_and_503() {
     let provider_key = token::secret_file(directory.path(), "provider.key", "sk-fixture");
 
     let source = TestSource::holding();
-    let server = RunningServer::start(directory.path(), source.clone()).await;
+    // Before the first publish on purpose: this scenario asserts the `503 not_ready` window, which
+    // only exists while the source holds its answer.
+    let server = RunningServer::start_before_first_publish(directory.path(), source.clone()).await;
     let address = server.address();
 
     // A gateway that has not published a snapshot cannot route: it answers 503, not 404 and not a

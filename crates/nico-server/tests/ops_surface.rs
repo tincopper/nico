@@ -66,6 +66,10 @@ async fn the_surface_reports_health_and_metrics_and_the_data_plane_cannot_shadow
     })
     .await;
     let source = TestSource::with_document(&document(upstream.address()));
+    // Kept so the last scenario can publish a document the pipeline refuses: the surface's job is
+    // to report a degraded process as still servable, and that needs a refusal to observe. The
+    // concrete handle stays by, because `publish` is the fixture's own method, not the source trait.
+    let publisher = std::sync::Arc::clone(&source);
     let server = RunningServer::start(directory.path(), source).await;
 
     // The surface has its own address, read back from the parsed bootstrap rather than assumed.
@@ -180,6 +184,33 @@ async fn the_surface_reports_health_and_metrics_and_the_data_plane_cannot_shadow
     assert!(
         second_age > first_age,
         "the snapshot age must advance between scrapes ({first_age} then {second_age})"
+    );
+
+    // 9. A refused publication is reported, and it does not make the process unservable. This is the
+    //    scenario the whole surface exists for: the source is broken, the last-known-good generation
+    //    keeps answering, and an operator reads both facts from here.
+    publisher.publish("routes: this is not a resources document\n");
+    let (_, refused) =
+        wait_for_scrape(metrics_address, "config_reload_total{result=\"error\"}").await;
+    assert!(
+        gauge_value(&refused, "config_degraded").is_some_and(|value| value == 1.0),
+        "a refused document must raise the degraded gauge, got:\n{refused}"
+    );
+
+    // Readiness still answers 200: pulling every replica out because the source is broken would turn
+    // a partial failure into a total one, and the data plane is still serving the previous document.
+    let (status, body) = fetch(metrics_address, "/health/ready").await;
+    assert_eq!(
+        status, 200,
+        "a degraded process serving a last-known-good generation is still ready, got {body}"
+    );
+    assert!(
+        body.contains("\"degraded\":true"),
+        "the readiness body must report the degradation, got {body}"
+    );
+    assert!(
+        body.contains("\"stale\":false"),
+        "a last-known-good generation that was published in this process is not stale, got {body}"
     );
 
     let exit_code = server.cancel_and_join().await;

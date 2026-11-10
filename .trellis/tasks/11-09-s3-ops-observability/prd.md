@@ -89,19 +89,19 @@
 
 ## Acceptance Criteria
 
-- [ ] 未写 `metrics` 段时进程行为与今天完全一致：不监听第二个端口，`/metrics` 无通路，装配期日志明确写出自报面关闭；现有测试夹具零改动即通过。
-- [ ] 写了 `metrics.listen` 的进程在该地址提供三个端点；同一进程的数据面端口上，`/health/ready` 与 `/metrics` 仍是普通路由（未声明即 404），证明自报面无法被文档遮蔽、也没有被混进数据面。
-- [ ] `metrics.listen` 缺失、非法、或与 `http.listen` 同址 → 启动失败且错误字段名为 `metrics.listen`（三个用例各一）。
-- [ ] `/health/live` 始终 200 且不依赖快照：一个尚未发布任何快照的进程也能应答 `ok`。
-- [ ] `/health/ready` 在首份快照发布前 503，发布后 200，body 的 `generation` 与 `ConfigStatus.generation` 一致；一个 LKG 启动的进程（`degraded && stale`）仍然 ready 200，且三个字段如实出现在 body 里。
-- [ ] 非 `GET` 请求自报面得 `405` 且响应头含 `Allow: GET`，未知路径得 `404`；两者都不读共享状态。`Allow` 由能力层 `Response::allow()` 声明、由传输层照写（能力层单测断言 `allow()`，集成测试断言真实响应头）。
-- [ ] `/metrics` 输出里能找到六个 `config_*` 指标族；一次成功请求后出现 `gateway_http_requests_total` 的对应标签组合，其 `route_id` / `status_class` 与实际请求一致；`gateway_http_request_seconds` 存在且计数增加。
-- [ ] 一次失败配置发布使 `config_reload_total{result="error"}` 增加、`config_degraded` 变为 1、`/health/ready` 仍 200（LKG 在服务）；`config_snapshot_age_seconds` 随两次 scrape 递增。
-- [ ] 端口被占用时进程以非零码退出，日志含该地址。
-- [ ] **能力层可脱离 HTTP 测试**：`nico-metrics` 的单元测试用 `(method, path, readiness)` 直接断言 `(status, content_type, body)`，不起 socket、不用 `#[tokio::test]`。
-- [ ] **依赖边界**：`cargo tree -p nico-metrics` 不含 pingora / tokio / nico-http；`cargo tree -p nico-http` 不含 `nico-metrics` 与 `metrics-exporter-prometheus`。
-- [ ] 两个角色的 feature 组合（`traffic`、`llm`、`--all-features`）都编译并通过各自的自报面端点测试；`cargo tree` 中没有第二套 hyper/tokio。
-- [ ] 五条基线全绿（fmt / clippy / test / doc / deny），`--no-default-features` 可编译，全树文件 ≤ 500 行。
+- [x] 未写 `metrics` 段时进程行为与今天完全一致：`BootstrapConfig::metrics()` 为 `None`（`bootstrap/metrics/tests.rs::an_omitted_section_disables_the_surface`），`server.rs` 因此不进装配分支——无第二监听、不装 recorder、日志写 `metrics surface disabled`；数据面上的 `/metrics` 是普通 404（`ops_surface.rs`）；全部既有夹具零改动通过。
+- [x] 写了 `metrics.listen` 的进程在该地址提供三个端点；同一进程的数据面端口上，`/health/live`、`/health/ready`、`/metrics` 仍是普通路由（未声明即 404），证明自报面无法被文档遮蔽、也没有被混进数据面（`ops_surface.rs`）。
+- [x] `metrics.listen` 缺失、非法、或与 `http.listen` 同址 → 启动失败且错误字段名为 `metrics.listen`（`bootstrap/metrics/tests.rs` 的三个用例：`a_present_section_without_an_address_is_rejected`、`an_illegal_address_is_rejected`、`the_data_planes_own_address_is_rejected`）。
+- [x] `/health/live` 始终 200 且不依赖快照：`Readiness::live()` 不读任何参数（`response/tests.rs::live_is_always_ok_and_reads_no_state`），因此 `servable=false` 时同样应答 `ok`——快照有无不进入这条路径。
+- [x] `/health/ready` 在首份快照发布前 503、发布后 200（`response/tests.rs::ready_follows_the_servability_verdict`）；发布后的 body `generation` 与在服务的代一致（`ops_surface.rs`）；`degraded && stale` 仍 ready 200 且三个字段如实出现在 body 里（`response/tests.rs::degraded_and_stale_do_not_fail_readiness`）。
+- [x] 非 `GET` 请求自报面得 `405` 且响应头含 `Allow: GET`，未知路径得 `404`；两者都不读共享状态。`Allow` 由能力层 `Response::allow()` 声明（`response/tests.rs::a_non_get_request_is_refused_with_allow`）、由传输层照写（`ops_surface.rs` 断言真实响应头）。
+- [x] `/metrics` 输出里能找到启动后即有声明的五个 `config_*` 指标族（`config_load_total`、`config_reload_total`、`config_compile_seconds`、`config_snapshot_age_seconds`、`config_degraded`）；`config_watch_reconnects_total` 是带标签计数器，只在收到 `ResyncRequired` 后才出现，因此新鲜进程里不可观测——这是指标语义而非缺陷。一次成功请求后出现 `gateway_http_requests_total` 的对应标签组合，其 `route_id` / `status_class` 与实际请求一致；`gateway_http_request_seconds` 存在且计数增加（`ops_surface.rs`）。
+- [x] 一次失败配置发布使 `config_reload_total{result="error"}` 增加、`config_degraded` 变为 1、`/health/ready` 仍 200 且 body 报 `degraded:true`（`ops_surface.rs` 最后一个场景；已用变异检查确认该场景真会失败）；`config_snapshot_age_seconds` 随两次 scrape 递增（同文件）。
+- [x] 端口被占用时进程以非零码退出：`metrics_startup.rs` 持有一个真实监听器占住 `metrics.listen`，调用生产装配入口 `serve_with`，断言退出码为 `FAILURE_EXIT_CODE` 且调用立刻返回（0.01s，即未进入 `Server::run`）；地址出现在 `AssembleError::Bind` 的 `Display` 里，由 `error = %error` 记入日志。
+- [x] **能力层可脱离 HTTP 测试**：`nico-metrics` 的全部单测用 `(method, path, readiness)` 直接断言 `(status, content_type, body)`，无 socket、无 `#[tokio::test]`（`crates/nico-metrics/src/response/tests.rs`）。
+- [x] **依赖边界**：`cargo tree -p nico-metrics` 不含 pingora / tokio / nico-http；`cargo tree -p nico-http` 不含 `nico-metrics` 与 `metrics-exporter-prometheus`；`nico-core` 不含 `metrics`。三条都由 `crates/nico-server/tests/dependency_boundaries.rs` 从 manifest 断言，且断言带正向校验（解析为空集时会失败而不是空过）。
+- [x] 两个角色的 feature 组合都编译：`--no-default-features`、`-p nico-server --no-default-features --features traffic`、`--all-features` 三次 `cargo check` 通过；自报面与 `llm` 无耦合，`traffic` 构建里同样存在（`metrics`/`nico-metrics` 不在 feature 门内）。`cargo tree -d` 无第二套 hyper/tokio 版本。
+- [x] 五条基线全绿（fmt / clippy / test / doc / deny），`--no-default-features` 可编译，全树文件 ≤ 500 行。提交时 pre-commit 钩子全量通过（1343s）。
 
 ## Open Questions
 

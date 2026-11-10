@@ -43,7 +43,7 @@ use std::{
     net::{SocketAddr, TcpListener},
     path::Path,
     process::ExitCode,
-    sync::Arc,
+    sync::{Arc, Mutex},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
@@ -161,6 +161,19 @@ pub(crate) mod resources;
 
 // --- running server ----------------------------------------------------------
 
+/// What [`RunningServer::start`] waits for before it returns.
+///
+/// The distinction is a property of the scenario, not a knob: a scenario that asserts on a served
+/// request needs a published generation, and a scenario that asserts the not-ready window needs the
+/// absence of one. Making it explicit keeps both readable, where a boolean argument would not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Wait {
+    /// Wait until a generation reached service.
+    Published,
+    /// Return as soon as the listener accepts a connection.
+    ListenerOnly,
+}
+
 /// One real gateway process: Pingora's server, the reload pipeline and the HTTP data plane.
 pub(crate) struct RunningServer {
     address: SocketAddr,
@@ -178,6 +191,24 @@ impl RunningServer {
         Self::start_with_registry(directory, source, nico_plugins::builtin_registry()).await
     }
 
+    /// Starts the production assembly and returns as soon as the listener accepts a connection.
+    ///
+    /// **Only** for the scenario that asserts the not-ready window itself: a source that holds its
+    /// answer publishes nothing, so waiting for a generation would never return. Every other test
+    /// wants [`Self::start`], which waits for the generation and therefore cannot race the pipeline.
+    pub(crate) async fn start_before_first_publish(
+        directory: &Path,
+        source: Arc<dyn ConfigSource>,
+    ) -> Self {
+        Self::start_inner(
+            directory,
+            source,
+            nico_plugins::builtin_registry(),
+            Wait::ListenerOnly,
+        )
+        .await
+    }
+
     /// Starts the production assembly with `plugins` as the set of kinds it can load.
     ///
     /// The scenario files that assert on the plugin driver register [`mock`](mock) here, so the
@@ -186,6 +217,16 @@ impl RunningServer {
         directory: &Path,
         source: Arc<dyn ConfigSource>,
         plugins: nico_http::PluginRegistry,
+    ) -> Self {
+        Self::start_inner(directory, source, plugins, Wait::Published).await
+    }
+
+    /// Starts the production assembly and waits for `wait`.
+    async fn start_inner(
+        directory: &Path,
+        source: Arc<dyn ConfigSource>,
+        plugins: nico_http::PluginRegistry,
+        wait: Wait,
     ) -> Self {
         let bootstrap = BootstrapConfig::load(directory.join("bootstrap.yaml"))
             .expect("the bootstrap fixture loads");
@@ -202,6 +243,10 @@ impl RunningServer {
                 .parse()
                 .expect("a metrics address is ip:port")
         });
+        // Before the thread exists: the subscriber has to be installed before the process can write
+        // its first line, or the publication this fixture waits for could be logged into nothing.
+        // `capture` is idempotent, so a scenario that already called it gets the same buffer.
+        let captured = log::capture();
         let shutdown = CancellationToken::new();
         let token = shutdown.clone();
         let thread = std::thread::Builder::new()
@@ -216,6 +261,9 @@ impl RunningServer {
             thread: Some(thread),
         };
         server.wait_until_accepting().await;
+        if wait == Wait::Published {
+            server.wait_until_published(&captured).await;
+        }
         server
     }
 
@@ -250,6 +298,26 @@ impl RunningServer {
             .await
             .expect("the join task is not cancelled")
             .expect("the server thread did not panic")
+    }
+
+    /// Waits until a generation reached service, or [`STARTUP_BUDGET`] is spent.
+    ///
+    /// Accepting a connection is not the same fact. The listener is bound before the configuration
+    /// pipeline publishes its first snapshot, and a request that arrives in that window is answered
+    /// `503 not_ready` — correct behaviour, and a scenario that asserts on its *first* request would
+    /// read it as a defect. Waiting on the socket alone left that window open, and it widened under
+    /// the parallel load of a full test run.
+    ///
+    /// The signal is the pipeline's own publication line, which is the fact "a generation reached
+    /// service". The caller installs the capturing subscriber *before* starting the server thread and
+    /// hands the buffer in, so a line written the instant the pipeline boots is not missed.
+    async fn wait_until_published(&self, captured: &Arc<Mutex<Vec<u8>>>) {
+        // The helper panics with the captured log when the budget is spent, which is the diagnosis
+        // a scenario that never published needs.
+        log::wait_for_line_matching(captured, STARTUP_BUDGET, |line| {
+            line.contains("runtime snapshot published")
+        })
+        .await;
     }
 
     /// Polls the listen socket until a connection is accepted or [`STARTUP_BUDGET`] is spent.
