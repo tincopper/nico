@@ -31,6 +31,9 @@ traffic = []
 
 [dependencies]
 async-trait.workspace = true
+# The metrics listener's `ServeHttp` implementation returns `http::Response<Vec<u8>>`, and Pingora
+# does not re-export the `http` crate. This is the one adapter that names the type.
+http.workspace = true
 nico-config.workspace = true
 nico-core.workspace = true
 nico-http.workspace = true
@@ -39,6 +42,12 @@ nico-http.workspace = true
 # registries. Optional: the traffic role compiles without it, and everything LLM-shaped is gated on
 # the feature.
 nico-llm = { workspace = true, optional = true }
+# The self-reporting capability layer: the recorder, the render and the readiness projection. The
+# binary owns the transport (port preflight, Pingora service, assembly); this crate owns none of it.
+nico-metrics.workspace = true
+# The binary emits the configuration lifecycle metrics through the facade. The recorder itself is
+# installed by `nico-metrics`, which is the only crate that names the exporter.
+metrics.workspace = true
 # The binary is the one crate that assembles concrete implementations, and the plugin compiler is one
 # of them: it is constructed here once per process and handed to the reload pipeline.
 nico-plugins.workspace = true

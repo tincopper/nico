@@ -14,6 +14,10 @@ arc-swap.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 nico-core.workspace = true
+# The request path emits two metrics per request through the facade. It is deliberately the
+# facade and not the exporter: `nico-metrics` owns the recorder, and the data plane must not
+# pull the exporter (or a second network stack) into its dependency tree.
+metrics.workspace = true
 # `proxy` pulls `pingora-proxy`, whose `ProxyHttp` hooks this crate implements. No TLS backend is
 # enabled yet: TLS termination is out of scope for this milestone, and an upstream peer built here
 # is cleartext unless the document declares `https`, which needs the `tls`-terminating task.

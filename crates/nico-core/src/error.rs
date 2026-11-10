@@ -34,6 +34,27 @@ impl ErrorCategory {
     pub const fn is_client(self) -> bool {
         matches!(self, Self::Client)
     }
+
+    /// Returns the category's stable spelling, which is also its serde representation.
+    ///
+    /// One spelling, two consumers: the serde form a golden fixture records and the `error_category`
+    /// metric label a dashboard groups by are the same string, and neither may drift from the other.
+    /// The test beside this impl asserts the two agree for every variant.
+    ///
+    /// The match is exhaustive and carries **no** fallback, on purpose. `#[non_exhaustive]` protects
+    /// crates that match on this enum, not the crate that defines it: adding a variant here is a
+    /// compile error until it is given a spelling, so no "unknown category" value can ever reach a
+    /// dashboard. A wildcard would let a new variant ship as a generic label instead.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Client => "client",
+            Self::Upstream => "upstream",
+            Self::Limit => "limit",
+            Self::Internal => "internal",
+            Self::Cancelled => "cancelled",
+        }
+    }
 }
 
 // Compiled-in proof that a category can cross `.await` and `tokio::spawn` boundaries.
@@ -68,6 +89,14 @@ mod tests {
             assert_eq!(
                 parsed, category,
                 "the spelling must map back to its variant"
+            );
+            // The serde form and the label form are one contract, not two: a dashboard groups by
+            // `error_category` and a fixture records the serde string, so a drift between them would
+            // make the two disagree about what a category is called.
+            assert_eq!(
+                category.as_str(),
+                spelling,
+                "the metric label spelling of {category:?} must equal its serde spelling"
             );
         }
     }

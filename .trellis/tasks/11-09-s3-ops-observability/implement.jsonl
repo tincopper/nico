@@ -1,0 +1,8 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "backend 规格索引：实现前必读的分层入口"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "第 2/3/6 步的指标名字、标签基数预算、recorder 生命周期以该节既有契约为准；本任务同时负责把它从「预定」改写为「已实现」"}
+{"file": ".trellis/spec/backend/pingora-guidelines.md", "reason": "第 5 步的独立 service、ServeHttp 适配与 shutdown 语义必须遵守既定的装配纪律"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "第 1/2/5 步新建 nico-metrics crate 必须按「Module before crate」的判据落位，依赖方向与目录树也要同步进该 spec"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "五条门禁命令、依赖方向断言与测试纪律"}
+{"file": ".trellis/tasks/11-09-s3-ops-observability/research/ops-surface-facts.md", "reason": "14 条带 file:line 证据的设计约束：就绪谓词来源、第二监听器可行性、exporter 依赖面、指标发出缝隙、测试助手与已接近预算的文件"}
+{"file": ".trellis/tasks/11-09-s3-ops-observability/design.md", "reason": "模块落点、配置契约、八个指标族的发出点与标签取值、失败模式表"}
+{"file": ".trellis/tasks/11-09-s3-ops-observability/research/ops-surface-constraints.md", "reason": "14 条设计约束全文；其中约束 2 与 design.md §4 的 readiness 判断不同，设计里已逐条给出反对理由"}

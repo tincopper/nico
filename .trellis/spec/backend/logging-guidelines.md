@@ -236,23 +236,113 @@ async move { /* work */ }.instrument(request_span).await
 
 ## Metrics
 
-- Metrics are separate from logs: use `metrics` + an exporter configured in `nico-server`. The
-  global recorder is installed once at startup (`OnceLock`/`LazyLock`), never re-initialized on
-  reload.
-- Naming: `gateway_<subsystem>_<noun>_<unit>`; counters end in `_total`, timings in `_seconds`
-  (histogram), gauges in `_current` or descriptive (`_age_seconds`, `_open`).
+- Metrics are separate from logs: use `metrics` at the call site and one exporter, owned by
+  `nico-metrics` and installed by `nico-server`. The global recorder is installed once at startup
+  (`OnceLock`), never re-initialized on reload.
+- **Where the code lives.** `nico-metrics` is the capability layer: recorder installation, Prometheus
+  rendering, readiness projection, status line and content type. It depends on `nico-core`, `metrics`,
+  `metrics-exporter-prometheus`, `serde`, `serde_json` and `thiserror` — and on **nothing else**. No
+  pingora, no tokio, no `nico-http`: the exporter must stay out of the data plane's dependency tree,
+  and the capability layer must be testable without a socket. The listener, the `ServeHttp` adapter
+  and the port preflight live in `nico-server/src/metrics/`.
+- **Where recording happens.** Each metric name has exactly **one** emission point, in the layer that
+  owns the fact: configuration lifecycle facts in `nico-server` (`reload.rs`, `reload/publish.rs`),
+  request facts in `nico-http` (`proxy/record.rs`), and the two scrape-time gauges in `nico-metrics`.
+  Do not collect the names into a shared constant table: the table would have no second consumer and
+  would make three crates depend on a fourth for nothing. This section is the contract.
+- Naming: `gateway_<subsystem>_<noun>_<unit>` for new families; counters end in `_total`, timings in
+  `_seconds` (histogram), gauges in `_current` or descriptive (`_age_seconds`, `_open`). The two
+  families listed below are the exception and keep their existing names verbatim, because they were
+  published as the contract before the template was.
 - Label cardinality is a budget. Allowed labels: `source`, `result`, `route_id`, `provider`,
-  `status_class` (`2xx`/`4xx`/`5xx`), `error_category`. Not allowed: raw paths, full URLs,
-  per-user values.
-- Current config observability is `ConfigStatus` on the snapshot handle plus the `tracing` fields
-  `source`, `config.generation`, `config.revision`, `digest`, `size`, `error.category`. The
-  `metrics` crate and an exporter arrive with the phase-1 data plane; until then these names are the
-  contract to emit against.
-- Config subsystem baseline: `config_load_total{source,result}`, `config_reload_total{result}`,
-  `config_compile_seconds`, `config_watch_reconnects_total`, `config_snapshot_age_seconds`,
-  `config_degraded`.
+  `status_class` (`1xx`/`2xx`/`3xx`/`4xx`/`5xx`/`none`), `error_category`. Not allowed: raw paths,
+  full URLs, per-user values, model names, credentials.
+- `error_category` takes its values from `ErrorCategory::as_str()`, which is the same string as the
+  enum's serde spelling, plus `none` for a request with no error. The set is therefore `client`,
+  `upstream`, `limit`, `internal`, `cancelled`, `none`. `as_str` is exhaustive with no fallback, so a
+  new variant is a compile error until it is given a spelling and added to this list — there is no
+  catch-all value a new category could ship as.
+- **`none` is a value, not an absence.** A request with no error category and one labelled
+  `error_category=""` are different facts, and the empty string pollutes a group-by. Use the literal
+  `none`. The same applies to `route_id`: a request that matched no route is labelled `unmatched`,
+  never the empty string.
+
+### The surface
+
+A process can expose a read-only self-reporting listener on its own port. It is **off by default**:
+with no `metrics` section in the bootstrap there is no second listener and no recorder installed, so
+an unconfigured process behaves exactly as it did before the surface existed.
+
+```yaml
+metrics:                # optional; omitting the section keeps the surface off
+  listen: 127.0.0.1:9090
+```
+
+| Endpoint | Answer |
+|---|---|
+| `GET /health/live` | `200 ok`, plain text. Reads **no** shared state: a process that can answer is alive, and a configuration failure must not turn a healthy process into a restart loop. |
+| `GET /health/ready` | `200` when `HttpStateHandle::servable()`, else `503`. Body is a JSON object carrying `ready`, `generation`, `revision`, `digest`, `stale`, `degraded`, `last_error_category`, `last_reload_unix_secs`. |
+| `GET /metrics` | Prometheus text (`text/plain; version=0.0.4`). |
+
+A non-`GET` method on a known path answers `405` with `Allow: GET`; an unknown path answers `404`.
+Neither reads shared state.
+
+**Readiness is the request path's own predicate.** It is `HttpStateHandle::servable()`, the same
+value the data plane consults before answering `503 not_ready`. It is **not** `ConfigStatus.ready`:
+that flag is `true` on a last-known-good start while `degraded` and `stale` are also true, so using it
+would report "cannot serve" for a process that is serving.
+
+**`degraded` / `stale` do not make readiness fail.** Serving a last-known-good generation is designed
+behaviour, and pulling every replica out of the endpoint list because the configuration source died
+turns a partial failure into a total one. Both flags are reported in the body and as
+`config_degraded`, which is what a deployment that wants "not fresh means no traffic" should alert on
+or route on.
+
+### The families
+
+| Family | Type | Labels | Emission point |
+|---|---|---|---|
+| `config_load_total` | counter | `source`, `result` | one source read (`reload.rs`) |
+| `config_reload_total` | counter | `result` | one publication attempt (`reload/publish.rs`) |
+| `config_compile_seconds` | histogram | — | the two compile stages only: plugin compile and LLM compile, i.e. turning a parsed document into a servable plan. Parse is outside it (a document that fails to parse never compiles, and `error.stage = "document"` already reports that failure), and so is the last-known-good cache flush — that is file I/O, and folding it in would send an operator optimizing this number to the wrong place |
+| `config_watch_reconnects_total` | counter | `source` | a received `ConfigEvent::ResyncRequired` — the file source has no reconnect, and this is the same fact: watch continuity was lost and the document must be re-read whole |
+| `config_snapshot_age_seconds` | gauge | — | scrape time; **skipped** when no successful publish has been recorded, because a missing value is honest and a zero-second age would claim a publish that never happened |
+| `config_degraded` | gauge | — | scrape time |
+| `gateway_http_requests_total` | counter | `route_id`, `status_class`, `error_category` | `record::emit`, once per request |
+| `gateway_http_request_seconds` | histogram | `route_id` | the same point |
+
+`status_class` maps the log-only `499` (a cancelled request nobody answered) to `4xx`, and the
+nothing-written `0` to `none`.
+
+### Recorder upkeep is a scrape-time obligation
+
+`metrics-exporter-prometheus`'s `install_recorder()` starts **no** background task, and a histogram's
+samples reach the renderer only through `run_upkeep()`. Without it a histogram renders empty, so
+`Metrics::render` runs `run_upkeep()` immediately before `render()`. Do not spawn a task for this and
+do not add a runtime to `nico-metrics`: the data upkeep maintains is only read at scrape time, so
+nobody scraping means nothing to maintain.
+
+`idle_timeout` stays at its default (`None`), so a series is never pruned. That is acceptable because
+the cardinality is bounded by the route names the operator has written into documents, not by request
+volume — but it does mean a series lives for the process lifetime.
+
+### Failure modes
+
+- A `metrics.listen` that cannot be bound, or a recorder that cannot be installed, is a **startup
+  failure** (non-zero exit with the address or the reason). A surface that exists but renders nothing
+  is the worst answer an operator can be given.
+- A `metrics` section without `listen`, an unparseable address, or one equal to `http.listen` is a
+  startup failure naming `metrics.listen`.
+- The assembly logs one line either way — the address when enabled, `metrics surface disabled` when
+  not — so nobody has to guess why a scrape fails.
+- Per-request access logging is deliberately absent: a probe every few seconds would be a self-
+  inflicted flood. Only a failure is logged.
+
 - LLM usage metrics must distinguish gateway-measured values from provider-reported token usage —
   never present an estimate as a bill.
+- Circuit-breaker and rate-limit-table metrics are **not** part of this surface yet: exposing them
+  needs `SharedServices` lifted to the assembly point and a read-only enumeration on `BreakerTable`,
+  which is its own increment.
 
 ---
 

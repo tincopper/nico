@@ -66,6 +66,8 @@ pub(super) async fn request_filter(
     // header the caller controls.
     let client_ip = peer_ip(session);
 
+    // `HttpStateHandle::servable` is the named form of this check; this branch takes the snapshot
+    // itself, so it reads `current()` once rather than asking the predicate and reading again.
     let Some(state) = app.state.current() else {
         return app.reject(session, ctx, HttpError::NotReady).await;
     };

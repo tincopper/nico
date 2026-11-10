@@ -12,6 +12,8 @@
 //! - [`serve`] — wires one source to one publication handle and runs the pipeline until shutdown.
 //! - [`server`] — assembles the process: Pingora's server, the pipeline on its runtime, and the
 //!   HTTP data plane that reads the published snapshots.
+//! - `metrics` — the self-reporting transport: a separate Pingora listener that delegates every
+//!   request to `nico-metrics` and writes back its response.
 //! - [`run`] — the command line: parse arguments, build the local source, map problems to exit
 //!   codes.
 //!
@@ -43,6 +45,7 @@ pub mod bootstrap;
 /// reaches it through [`reload::LlmCompiler`] so nothing above this line names `nico-llm`.
 #[cfg(feature = "llm")]
 pub mod llm;
+mod metrics;
 pub mod reload;
 pub mod server;
 

@@ -210,10 +210,18 @@ fn window(field: &'static str, value: u64) -> Result<Duration, HttpSettingsError
 
 /// Checks that `listen` names a bindable address with a non-zero port.
 ///
+/// This is the single definition of "what counts as a legal address" for a listener: the data
+/// plane's own `http.listen` and the metrics listener's `metrics.listen` are both checked here, so
+/// the two surfaces cannot accept different shapes.
+///
 /// An IP literal is parsed for real; a name is only checked for shape, because resolving it here
 /// would make startup depend on DNS for an address the operator already knows is local. A bind
 /// failure then surfaces when the listener is opened, which is where Pingora reports it.
-fn validate_listen(listen: &str) -> Result<(), HttpSettingsError> {
+///
+/// # Errors
+/// Returns an [`HttpSettingsError`] whose field is `listen` when the value is not an `ip:port` or
+/// `host:port` address, or when the port is zero.
+pub fn validate_listen(listen: &str) -> Result<(), HttpSettingsError> {
     let port = match listen.parse::<SocketAddr>() {
         Ok(address) => address.port(),
         Err(_error) => match listen.rsplit_once(':') {

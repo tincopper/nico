@@ -82,8 +82,11 @@ pub fn serve_with(
 ) -> ExitCode {
     let settings = bootstrap.http();
     // The request path reads `state` and nothing else: the pipeline publishes a snapshot and the plan
-    // compiled from it there, together. `SnapshotHandle` stays the configuration-state fact source.
+    // compiled from it there, together. `SnapshotHandle` stays the configuration-state fact source,
+    // and the self-reporting surface reads the same handle, so it cannot observe a state the
+    // pipeline has not published.
     let state = HttpStateHandle::new();
+    let snapshot = SnapshotHandle::new();
     // One plugin runtime for the process: the bucket tables inside it are runtime state, so a reload
     // that republishes the same quota must keep them rather than hand every caller a fresh one.
     let runtime = Arc::new(PluginRuntime::with_registry(plugins));
@@ -101,6 +104,32 @@ pub fn serve_with(
     // neither. Every field a running server reads comes from this replacement.
     server.configuration = server_conf(settings);
 
+    if let Some(metrics_settings) = bootstrap.metrics() {
+        let registry = match crate::metrics::assemble(metrics_settings) {
+            Ok(registry) => registry,
+            Err(error) => {
+                tracing::error!(
+                    error = %error,
+                    "the self-reporting surface could not be assembled; the process cannot expose \
+                     its own state"
+                );
+                return ExitCode::from(FAILURE_EXIT_CODE);
+            }
+        };
+        server.add_service(crate::metrics::service(
+            metrics_settings,
+            registry,
+            Arc::clone(&snapshot),
+            Arc::clone(&state),
+        ));
+        tracing::info!(
+            metrics.listen = metrics_settings.listen(),
+            "metrics surface enabled"
+        );
+    } else {
+        tracing::info!("metrics surface disabled");
+    }
+
     let reload_settings = ReloadSettings::new(
         Some(CacheStore::new(bootstrap.cache_dir().to_path_buf())),
         ReloadLimits::new(bootstrap.debounce(), bootstrap.max_wait()),
@@ -110,10 +139,7 @@ pub fn serve_with(
     );
     let reloader = Reloader::new(
         source,
-        // The status handle stays inside the pipeline here: this process has no readiness endpoint
-        // yet, so nothing else reads it, but it is created through the same publication constructor
-        // production and the tests use.
-        Publication::new(SnapshotHandle::new(), Arc::clone(&state)),
+        Publication::new(Arc::clone(&snapshot), Arc::clone(&state)),
         runtime,
         reload_settings,
     );

@@ -16,8 +16,8 @@ The backend is **one Cargo Workspace** at the repository root. The layout follow
 3. **One binary target** — `nico` (built by the `nico-server` crate). Deployment roles (traffic / LLM) are selected by Cargo
    features plus runtime config, not by adding more binaries.
 
-> **Status**: `nico-core`, `nico-config`, `nico-http`, `nico-plugins`, `nico-llm` and `nico-server`
-> exist as built. The remaining crates below are the binding target structure. Architecture rationale
+> **Status**: `nico-core`, `nico-config`, `nico-http`, `nico-plugins`, `nico-llm`, `nico-metrics` and
+> `nico-server` exist as built. The remaining crates below are the binding target structure. Architecture rationale
 > lives in `.trellis/tasks/11-03-unified-gateway-analysis/design.md` — do not re-derive it from this
 > file.
 
@@ -44,6 +44,8 @@ nico/
     │   │   ├── bootstrap.rs
     │   │   ├── reload.rs       # watch loop, debounce, single flight, one publication
     │   │   ├── reload/         # error.rs, pacing.rs, publish.rs, startup.rs (one concern each)
+    │   │   ├── metrics.rs      # transport: port preflight, recorder install, the assembly step
+    │   │   ├── metrics/        # app.rs (ServeHttp adapter), listener.rs (one Pingora service)
     │   │   ├── llm.rs          # the LLM plan one document compiles into
     │   │   └── llm/            # credentials.rs (a `credential_ref` read once per publication), error.rs (LlmBuildError), plan.rs (per-route front-ends, the phase/mode checks), runtime.rs (registries + resolver, created once per process)
     │   └── tests/              # integration tests reach the wiring through lib.rs
@@ -126,6 +128,12 @@ nico/
     │       ├── filter/          # error.rs (failure vocabulary), stream.rs (one client encoder + one provider decoder per response)
     │       ├── route.rs         # the published front-ends as `nico_http::llm::LlmRoute`: ConvertRoute and PassthroughRoute
     │       └── route/           # convert.rs, passthrough.rs, transform.rs (one response's translation)
+    ├── nico-metrics/        # self-reporting capability layer: no socket, no framework
+    │   └── src/
+    │       ├── lib.rs          # //! + the crate's four invariants (one recorder, caller's predicate, scrape-time upkeep, read-only)
+    │       ├── recorder.rs     # install() (OnceLock) + render(): two scrape-time gauges, then upkeep, then render
+    │       ├── health.rs       # Readiness: the live/ready projection and the JSON body
+    │       └── response.rs     # Response + the request-line routing + the three path constants
     ├── nico-config/         # ConfigSource trait, local source, LKG cache, fakes
     │   └── src/
     │       ├── lib.rs
@@ -197,6 +205,7 @@ submodules. Name modules after the capability (`debounce`, `publish`, `cache`), 
 | Config source protocol (etcd/Nacos clients) | `nico-config-*` (own crate, own feature) |
 | Built-in HTTP policy (auth, rate limit) | `nico-plugins` |
 | Wiring, feature selection, reload pipeline, shutdown | `nico-server` |
+| Metric rendering, recorder installation, readiness projection (no socket, no framework) | `nico-metrics` |
 | Anything two data planes genuinely share (trace id, deadline, config generation, error category) | `nico-core` |
 
 If you cannot name the second real consumer of an abstraction, it does **not** belong in
@@ -216,8 +225,13 @@ nico-server
    ├──> nico-config ────────> nico-core
    ├──> nico-config-etcd ───> nico-config     (feature: config-etcd)
    ├──> nico-config-nacos ──> nico-config     (feature: config-nacos)
-   └──> nico-plugins ───────> nico-http + nico-core
+   ├──> nico-plugins ───────> nico-http + nico-core
+   └──> nico-metrics ───────> nico-core + metrics + metrics-exporter-prometheus
 ```
+
+`nico-http` records through the `metrics` facade but never names `nico-metrics`: the exporter stays
+out of the data plane's tree, which is the reason `nico-metrics` is a crate rather than a module.
+`crates/nico-server/tests/dependency_boundaries.rs` asserts all three edges from the manifests.
 
 Hard rules:
 
@@ -358,9 +372,10 @@ route that will use it cannot serve anything and must not be able to fail an unr
 
 ```bash
 # Dependency boundary checks (must produce no output)
-cargo tree -p nico-core --prefix none | grep -E 'pingora|nico-http|nico-llm|etcd-client|nacos'
+cargo tree -p nico-core --prefix none | grep -E 'pingora|nico-http|nico-llm|etcd-client|nacos|metrics'
 cargo tree -p nico-config --prefix none | grep -E 'pingora|nico-http|nico-llm|etcd-client'
-cargo tree -p nico-http --prefix none | grep -E 'nico-llm'
+cargo tree -p nico-http --prefix none | grep -E 'nico-llm|nico-metrics|metrics-exporter-prometheus'
+cargo tree -p nico-metrics --prefix none | grep -E 'pingora|tokio|nico-http'
 
 # Feature matrix must build, and the role whose tests are cfg-gated must be tested
 cargo check --workspace --no-default-features

@@ -16,6 +16,10 @@ async-trait = "=0.1.92"
 # JWT segments are base64url without padding (RFC 7515), and the API-key filter decodes nothing else.
 base64 = "=0.22.1"
 bytes = "=1.12.1"
+# The `ServeHttp` contract Pingora's `HttpServer::new_app` accepts returns `http::Response<Vec<u8>>`,
+# and Pingora does not re-export the `http` crate. The metrics listener's adapter is the one place
+# that names the type, so the crate is a direct dependency of `nico-server` only.
+http = "=1.5.0"
 futures-core = "=0.3.31"
 # HS256 is HMAC-SHA256; `hmac` is the MAC construction and `sha2` the hash it is built on (already a
 # dependency of nico-core's digest work). Both are needed only by `nico-plugins`.
@@ -23,6 +27,13 @@ hmac = "=0.12.1"
 # The token-bucket table is bounded by `max_keys` and evicts least-recently-used buckets; an
 # unbounded map would let a caller grow the table one key per request.
 lru = "=0.18.5"
+# The metrics facade: a recording call is one atomic read when no recorder is installed, which is
+# why the request path and the config pipeline emit through it unconditionally.
+metrics = "=0.24.6"
+# The Prometheus recorder, used only by `nico-metrics`. `default-features = false` is mandatory:
+# the default features pull in hyper/tokio/rustls and would create a second network stack beside
+# Pingora's. `install_recorder()` starts no task, so upkeep runs at scrape time.
+metrics-exporter-prometheus = { version = "=0.18.3", default-features = false }
 notify = "=8.2.1"
 # The HTTP data plane's runtime. Pinned exactly: nico-http's hook contract is derived from
 # 0.9.1 source (see .trellis/tasks/11-04-s1-2-http-data-plane/design.md); re-verify on upgrade.
@@ -47,6 +58,10 @@ nico-core = { version = "0.0.0", path = "crates/nico-core" }
 nico-config = { version = "0.0.0", path = "crates/nico-config" }
 nico-http = { version = "0.0.0", path = "crates/nico-http" }
 nico-llm = { version = "0.0.0", path = "crates/nico-llm" }
+# The self-reporting capability layer: recorder installation, Prometheus rendering and the
+# readiness projection. It deliberately depends on neither Pingora nor `nico-http`, so the
+# exporter never enters the data plane's dependency tree.
+nico-metrics = { version = "0.0.0", path = "crates/nico-metrics" }
 nico-plugins = { version = "0.0.0", path = "crates/nico-plugins" }
 
 [workspace.lints.rust]

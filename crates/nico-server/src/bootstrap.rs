@@ -29,6 +29,9 @@ use nico_http::HttpSettings;
 use serde::Deserialize;
 
 mod http;
+mod metrics;
+
+pub use metrics::MetricsSettings;
 
 /// The only accepted `config_source.type`.
 const SUPPORTED_SOURCE: &str = "local";
@@ -63,6 +66,7 @@ pub struct BootstrapConfig {
     allow_bootstrap_cache: bool,
     schema_bounds: SchemaBounds,
     http: HttpSettings,
+    metrics: Option<MetricsSettings>,
 }
 
 impl BootstrapConfig {
@@ -131,6 +135,15 @@ impl BootstrapConfig {
     #[must_use]
     pub const fn http(&self) -> &HttpSettings {
         &self.http
+    }
+
+    /// Returns the settings of the self-reporting listener, or `None` when the surface is off.
+    ///
+    /// The section is optional, and an omitted section is the default: no second listener, no
+    /// recorder, and no behaviour change. A present section is validated here and nowhere else.
+    #[must_use]
+    pub const fn metrics(&self) -> Option<&MetricsSettings> {
+        self.metrics.as_ref()
     }
 
     /// Builds the parse limits the pipeline applies to every document.
@@ -220,6 +233,7 @@ struct RawBootstrap {
     config_source: RawSource,
     schema_bounds: Option<RawSchemaBounds>,
     http: Option<http::RawHttp>,
+    metrics: Option<metrics::RawMetrics>,
     debounce_ms: u64,
     max_wait_ms: u64,
     cache_dir: PathBuf,
@@ -356,6 +370,13 @@ impl RawBootstrap {
             None => http::RawHttp::default().resolve()?,
         };
 
+        // The metrics section is resolved against the data plane's own address, so it can only
+        // collide when both are written; an omitted section stays `None`.
+        let metrics = match &self.metrics {
+            Some(raw) => Some(raw.resolve(http.listen())?),
+            None => None,
+        };
+
         Ok(BootstrapConfig {
             source_path: self.config_source.path,
             source_max_bytes: self.config_source.max_bytes,
@@ -366,6 +387,7 @@ impl RawBootstrap {
             allow_bootstrap_cache: self.allow_bootstrap_cache,
             schema_bounds,
             http,
+            metrics,
         })
     }
 }

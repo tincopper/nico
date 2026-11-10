@@ -118,6 +118,45 @@ http:
     BootstrapConfig::load(&path).expect("the bootstrap fixture is valid")
 }
 
+/// Writes the same bootstrap as [`write_bootstrap`] **plus** a `metrics` section on `metrics_port`.
+///
+/// A separate function rather than an extra parameter: the two-argument form is called from every
+/// HTTP scenario file, and the self-reporting surface is a property only the ops scenarios need. A
+/// missing `metrics` section is what makes the surface default-off, so the absence has its own
+/// helper ([`write_bootstrap`]) and stays the common case.
+pub(crate) fn write_bootstrap_with_metrics(
+    directory: &Path,
+    port: u16,
+    metrics_port: u16,
+) -> BootstrapConfig {
+    let path = directory.join("bootstrap.yaml");
+    let text = format!(
+        "\
+config_source:
+  type: local
+  path: {document}
+  max_bytes: 1048576
+  watch: notify
+debounce_ms: 0
+max_wait_ms: 0
+cache_dir: {cache}
+allow_bootstrap_cache: false
+http:
+  listen: 127.0.0.1:{port}
+  h2c: false
+  grace_period_ms: 5000
+  graceful_shutdown_ms: 30000
+  threads: 1
+metrics:
+  listen: 127.0.0.1:{metrics_port}
+",
+        document = directory.join("resources.yaml").display(),
+        cache = directory.join("cache").display(),
+    );
+    std::fs::write(&path, text).expect("the bootstrap fixture is written");
+    BootstrapConfig::load(&path).expect("the bootstrap fixture is valid")
+}
+
 pub(crate) mod resources;
 
 // --- running server ----------------------------------------------------------
@@ -125,6 +164,8 @@ pub(crate) mod resources;
 /// One real gateway process: Pingora's server, the reload pipeline and the HTTP data plane.
 pub(crate) struct RunningServer {
     address: SocketAddr,
+    /// Where the self-reporting surface listens, when the bootstrap enabled it.
+    metrics_address: Option<SocketAddr>,
     shutdown: CancellationToken,
     thread: Option<JoinHandle<ExitCode>>,
 }
@@ -153,6 +194,14 @@ impl RunningServer {
             .listen()
             .parse()
             .expect("the fixture listens on an ip:port address");
+        // Read from the parsed bootstrap rather than from the caller, so a scenario cannot believe a
+        // surface is enabled that the file did not actually ask for.
+        let metrics_address: Option<SocketAddr> = bootstrap.metrics().map(|settings| {
+            settings
+                .listen()
+                .parse()
+                .expect("a metrics address is ip:port")
+        });
         let shutdown = CancellationToken::new();
         let token = shutdown.clone();
         let thread = std::thread::Builder::new()
@@ -162,6 +211,7 @@ impl RunningServer {
 
         let server = Self {
             address,
+            metrics_address,
             shutdown,
             thread: Some(thread),
         };
@@ -172,6 +222,14 @@ impl RunningServer {
     /// Returns the address the server listens on.
     pub(crate) fn address(&self) -> SocketAddr {
         self.address
+    }
+
+    /// Returns the self-reporting address, or `None` when the bootstrap declared no `metrics` section.
+    ///
+    /// A test that asserts the surface is default-off asserts `None` here, and the data plane's own
+    /// 404 on `/metrics` is the second half of the same claim.
+    pub(crate) fn metrics_address(&self) -> Option<SocketAddr> {
+        self.metrics_address
     }
 
     /// Starts a graceful shutdown without waiting for it, for tests that observe the drain.

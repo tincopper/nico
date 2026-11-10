@@ -1,0 +1,29 @@
+[package]
+name = "nico-metrics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Self-reporting capability layer: recorder installation, Prometheus rendering and readiness projection"
+
+[dependencies]
+# `ConfigStatus` is the operator-visible configuration state this crate projects into a readiness
+# body and two scrape-time gauges. The crate depends on the kernel and nothing else in the
+# workspace: it must not name Pingora or `nico-http`, or the exporter would enter the data plane's
+# dependency tree.
+nico-core.workspace = true
+# The metrics facade. Recording is unconditional at every call site; with no recorder installed it
+# is one atomic read, which is what makes a disabled metrics surface free on the request path.
+metrics.workspace = true
+# The Prometheus recorder and text renderer. `default-features = false` keeps hyper/tokio/rustls
+# out, so this crate owns no network stack and spawns no task.
+metrics-exporter-prometheus.workspace = true
+# The readiness body is a fixed-shape JSON object; the field order is part of the contract tests
+# assert on, which a struct's declaration order guarantees.
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

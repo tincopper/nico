@@ -1,0 +1,8 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "backend 规格索引：检查的分层入口"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "复查指标名字/标签是否严格落在允许集内（含 status_class 取值集与 config_watch_reconnects_total 的 source 标签两处扩宽），自报面是否避免了逐请求访问日志，spec 是否已从'预定'改为'已实现'"}
+{"file": ".trellis/spec/backend/pingora-guidelines.md", "reason": "复查 metrics service（自报面）的生命周期、shutdown 与失败路径是否符合 Pingora 使用纪律"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "复查健康端点的 503 语义、配置校验失败的 BootstrapError 形态与启动退出码是否沿用既有错误契约"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "五条门禁、文件预算（≤500 行）与依赖方向断言"}
+{"file": ".trellis/tasks/11-09-s3-ops-observability/prd.md", "reason": "逐条核对验收清单：默认关闭无损、三端点语义、六个 config_* 指标族、能力层可脱离 HTTP 测试、三条依赖边界、两角色构建"}
+{"file": ".trellis/tasks/11-09-s3-ops-observability/research/ops-surface-facts.md", "reason": "复查实现是否真的读了 HttpStateHandle 而不是 ConfigStatus.ready，以及是否在没有第二套 hyper 栈的前提下合入依赖"}
+{"file": ".trellis/tasks/11-09-s3-ops-observability/research/ops-surface-constraints.md", "reason": "14 条设计约束全文；其中约束 2 与 design.md §4 的 readiness 判断不同，设计里已逐条给出反对理由"}

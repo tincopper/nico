@@ -57,7 +57,7 @@ use crate::{budget, error::HttpError, plugin::PluginChain, upstream::Destination
 #[derive(Debug, Default)]
 pub struct HttpContext {
     snapshot: Option<Arc<RuntimeSnapshot>>,
-    route_id: Option<String>,
+    route_id: Option<Arc<str>>,
     target: Option<RouteTarget>,
     method: Option<Method>,
     path: Option<String>,
@@ -113,7 +113,7 @@ impl HttpContext {
     /// Called once, after routing, by whichever hook matched the route. A rejected request may never
     /// reach it and keeps the document budget.
     pub fn bind_route(&mut self, route: &Route) {
-        self.route_id = Some(route.id().to_owned());
+        self.route_id = Some(Arc::from(route.id()));
         self.target = Some(route.target().clone());
         let Some(request) = self
             .snapshot
@@ -147,6 +147,15 @@ impl HttpContext {
     #[must_use]
     pub fn route_id(&self) -> Option<&str> {
         self.route_id.as_deref()
+    }
+
+    /// Returns the matched route id as a handle, for a metric label that must not re-allocate it.
+    ///
+    /// The id is shared with the request context, so a caller that needs it as a `SharedString`
+    /// clones one `Arc` instead of copying the bytes.
+    #[must_use]
+    pub(crate) fn route_id_handle(&self) -> Option<&Arc<str>> {
+        self.route_id.as_ref()
     }
 
     /// Returns the route's target, which names either an upstream or a provider.

@@ -19,7 +19,7 @@
 //! route cannot be served is a document this process must not publish, because the alternative is a
 //! request path that answers `502` for every request of a route the operator believes is live.
 
-use std::{fmt, sync::Arc};
+use std::{fmt, sync::Arc, time::Instant};
 
 use nico_config::{CacheMeta, ConfigVersion};
 use nico_core::{
@@ -29,6 +29,21 @@ use nico_http::PublishedChains;
 
 use super::{Reloader, pacing::unix_now};
 use crate::reload::LlmFrontEnds;
+
+/// The three values one compiled document produces, which a publication stores together.
+///
+/// A struct rather than a tuple because the three are named facts at the call site. It is not an
+/// enum with a "refused" variant: the caller's `Result<CompiledDocument, PublishOutcome>` already
+/// says "compiled, or refused", and a refusal is an outcome rather than an error — the `Err` arm
+/// reads as one because the alternative is a second type spelling the same two cases.
+struct CompiledDocument {
+    /// The parsed document, stored in the snapshot unchanged.
+    document: nico_core::Document,
+    /// The chains compiled from that document.
+    plan: PublishedChains,
+    /// The provider front-ends compiled from that document and that plan.
+    llm: Arc<dyn LlmFrontEnds>,
+}
 
 /// What happened to one candidate document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,11 +57,83 @@ pub(super) enum PublishOutcome {
 }
 
 impl Reloader {
+    /// Validates one candidate document and publishes it as a new generation, recording the two
+    /// publication metrics once per attempt.
+    ///
+    /// This is the one place every outcome of an attempt is known — published, skipped as a
+    /// duplicate or regression, or refused — so `config_reload_total` counts each attempt exactly
+    /// once here, and `config_compile_seconds` measures the compile phase rather than a stage that
+    /// a later refactor could move.
+    ///
+    /// The two measure different things on purpose. `config_compile_seconds` is CPU work — parse,
+    /// plugin compile, LLM compile — and is what an operator optimizes when reloads are slow. The
+    /// last-known-good cache flush is file I/O and is deliberately **outside** it: folding a slow
+    /// disk into a metric named `compile` would send that operator to the wrong place. The attempt
+    /// counter is recorded after everything, because an attempt is one unit of work.
+    pub(super) async fn publish(
+        &mut self,
+        version: ConfigVersion,
+    ) -> Result<PublishOutcome, super::ReloadError> {
+        let outcome = self.publish_candidate(version).await;
+        let result = match outcome {
+            Ok(PublishOutcome::Rejected(_)) => "error",
+            _ => "ok",
+        };
+        metrics::counter!("config_reload_total", "result" => result).increment(1);
+        outcome
+    }
+
+    /// Compiles one parsed document into the three values a publication stores.
+    ///
+    /// One function because the three are one decision: a generation whose routes are current but
+    /// whose plugin plan or LLM front-ends are not would serve a document it cannot describe.
+    ///
+    /// The return type is `Result<CompiledDocument, PublishOutcome>` and the `Err` arm carries the
+    /// refusal **outcome**, not an error. A refused document is a normal result: the previous
+    /// generation keeps serving and the next source event retries, which is exactly
+    /// [`PublishOutcome::Rejected`]. Every stage refuses the same way, so collapsing them into one
+    /// outcome here keeps the caller to a single `match` instead of three error types it would only
+    /// turn back into that same outcome.
+    ///
+    /// The caller times this call: the plugin and LLM compilations are the CPU work
+    /// `config_compile_seconds` measures, and keeping the timer at the call site is what keeps that
+    /// metric's name honest — the cache flush that follows is I/O, not compile.
+    fn compile_document(
+        &self,
+        document: nico_core::Document,
+        version: &ConfigVersion,
+    ) -> Result<CompiledDocument, PublishOutcome> {
+        // Compiling the policies is part of validating the document, not a separate step after it: a
+        // published generation must be one whose plugins can actually run, or "published" would mean
+        // "the routes are current and the credentials are not".
+        let plan = match self.runtime.compile(&document) {
+            Ok(plan) => plan,
+            Err(error) => {
+                return Err(self.refuse(&error, error.category(), "plugin", version));
+            }
+        };
+
+        // The LLM plan is compiled from the same document and the same plugin plan: a provider route's
+        // body ownership is one decision, so the two cannot be built from different generations.
+        let llm = match self.llm.compile(&document, &plan) {
+            Ok(llm) => llm,
+            Err(error) => {
+                return Err(self.refuse(&error, error.category(), "llm", version));
+            }
+        };
+
+        Ok(CompiledDocument {
+            document,
+            plan,
+            llm,
+        })
+    }
+
     /// Validates one candidate document and publishes it as a new generation.
     ///
     /// De-duplication and ordering run before validation: a document that is already in service is
     /// not compiled twice, and a revision the source proves is older is not compiled at all.
-    pub(super) async fn publish(
+    async fn publish_candidate(
         &mut self,
         version: ConfigVersion,
     ) -> Result<PublishOutcome, super::ReloadError> {
@@ -69,25 +156,27 @@ impl Reloader {
 
         let document = match nico_core::Document::parse(version.bytes(), self.parse_limits) {
             Ok(document) => document,
-            Err(error) => return self.refuse(&error, error.category(), "document", &version),
+            Err(error) => return Ok(self.refuse(&error, error.category(), "document", &version)),
         };
 
-        // Compiling the policies is part of validating the document, not a separate step after it: a
-        // published generation must be one whose plugins can actually run, or "published" would mean
-        // "the routes are current and the credentials are not". A refusal here keeps the previous
-        // generation in service exactly like a refused document does.
-        let plan = match self.runtime.compile(&document) {
-            Ok(plan) => plan,
-            Err(error) => return self.refuse(&error, error.category(), "plugin", &version),
+        // The compile phase is timed as a phase, not as the whole attempt: this is the CPU work an
+        // operator acts on when reloads are slow, and the cache flush below is I/O that belongs to
+        // a different diagnosis. Parse is deliberately outside the window — it is the document
+        // model's cost, and a document that fails to parse never reaches a compile at all — so the
+        // histogram answers "how expensive is turning a valid document into a servable plan".
+        let compiled = {
+            let started = Instant::now();
+            let compiled = self.compile_document(document, &version);
+            metrics::histogram!("config_compile_seconds").record(started.elapsed().as_secs_f64());
+            compiled
         };
-
-        // The LLM plan is compiled from the same document and the same plugin plan: a provider route's
-        // body ownership is one decision, so the two cannot be built from different generations. A
-        // refusal here is a publication failure like any other — the last-known-good generation keeps
-        // serving, and no caller meets a route this process cannot serve.
-        let llm = match self.llm.compile(&document, &plan) {
-            Ok(llm) => llm,
-            Err(error) => return self.refuse(&error, error.category(), "llm", &version),
+        let CompiledDocument {
+            document,
+            plan,
+            llm,
+        } = match compiled {
+            Ok(compiled) => compiled,
+            Err(outcome) => return Ok(outcome),
         };
 
         let generation = self.generation.next()?;
@@ -159,13 +248,18 @@ impl Reloader {
     /// which revision, keep the last known good snapshot serving — so they share one path. A fourth
     /// stage cannot forget the degradation, and `error.stage` is what tells an operator which check
     /// said no; the message is one sentence for the same reason.
+    ///
+    /// A refusal is an **outcome**, not an error: the pipeline keeps serving the previous generation
+    /// and retries on the next source event, which is exactly [`PublishOutcome::Rejected`]. Returning
+    /// the outcome rather than a `Result` is what lets the compile stage hand it straight back
+    /// instead of wrapping it in a `Result` it would never populate with `Err`.
     fn refuse(
         &self,
         error: &dyn fmt::Display,
         category: ErrorCategory,
         stage: &'static str,
         version: &ConfigVersion,
-    ) -> Result<PublishOutcome, super::ReloadError> {
+    ) -> PublishOutcome {
         self.handle.mark_degraded(category);
         tracing::warn!(
             source = self.source.name(),
@@ -176,7 +270,7 @@ impl Reloader {
             size = version.bytes().len(),
             "configuration refused; serving the last-known-good snapshot"
         );
-        Ok(PublishOutcome::Rejected(category))
+        PublishOutcome::Rejected(category)
     }
 
     /// Handles the case where the document in service is exactly the document just received.

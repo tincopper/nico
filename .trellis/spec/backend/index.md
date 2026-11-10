@@ -15,8 +15,10 @@ These specs encode **Rust best practices** applied to that architecture: ownersh
 typed errors over `anyhow`, explicit bounds and deadlines, snapshots over locks, and a toolchain
 that enforces what review would otherwise have to.
 
-> **Status**: `nico-core`, `nico-config`, `nico-http`, `nico-plugins` and `nico-server` exist with a
-> green baseline. `nico-llm` is built up to its canonical model, the two contracts, the exchange, the
+> **Status**: `nico-core`, `nico-config`, `nico-http`, `nico-plugins`, `nico-metrics` and
+> `nico-server` exist with a green baseline. `nico-metrics` is the self-reporting capability layer:
+> recorder installation, Prometheus rendering and readiness projection, with no socket and no
+> framework in its dependency tree. `nico-llm` is built up to its canonical model, the two contracts, the exchange, the
 > OpenAI Chat Completions client codec and the OpenAI provider adapter, registered in
 > `builtin_registry()` and published as a plan per generation (`nico-server::llm`). `nico-http`
 > carries the byte-level seam a front-end implements (`llm.rs`: destination, prepared body,

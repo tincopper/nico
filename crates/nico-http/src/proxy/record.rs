@@ -19,6 +19,8 @@ use tracing::Level;
 use super::failure::is_downstream_gone;
 use crate::context::HttpContext;
 
+mod metrics;
+
 /// The log-only status for a request that was cancelled before anything was written.
 ///
 /// `499` is nginx's convention and the value the backend error spec assigns to `Cancelled`; it is
@@ -175,6 +177,10 @@ pub(super) fn emit(session: &Session, error: Option<&Error>, ctx: &HttpContext) 
     let trace_id = ctx.trace_id();
     let method = ctx.method().map_or("", Method::as_str);
     let body_bytes = ctx.body_bytes();
+
+    // The metrics are recorded once, here, from the same facts the log record below uses. The
+    // call is unconditional: with no recorder installed the facade is a no-op.
+    metrics::record_request(status, ctx, elapsed_ms);
 
     // A cancellation is checked first: a request whose client left, or whose deadline expired after
     // the status line was already sent, has a recorded cause but no response to report, so it

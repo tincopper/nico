@@ -118,7 +118,7 @@ pub use plugin::{
 pub use proxy::HttpApp;
 pub use route::match_route;
 pub use service::{server_conf, service};
-pub use settings::{HttpSettings, HttpSettingsError};
+pub use settings::{HttpSettings, HttpSettingsError, validate_listen};
 pub use state::{
     BufferedRoutes, HttpState, HttpStateHandle, PublishedChains, ResponseRewrites, RouteChains,
 };

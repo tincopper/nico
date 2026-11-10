@@ -335,6 +335,15 @@ impl Reloader {
                             }
                         }
                         WatchStep::Resync => {
+                            // The watch's continuity is lost, so the only recovery is a full re-read.
+                            // This counter increments once per `ResyncRequired` event, attributed to
+                            // the source that lost it; a file source has no \"reconnect\", but the
+                            // event is the same fact.
+                            metrics::counter!(
+                                "config_watch_reconnects_total",
+                                "source" => self.source.name(),
+                            )
+                            .increment(1);
                             pending = None;
                             quiet_until = None;
                             max_wait_until = None;
@@ -431,7 +440,18 @@ impl Reloader {
         tokio::select! {
             biased;
             () = self.shutdown.cancelled() => None,
-            result = self.source.load() => Some(result),
+            result = self.source.load() => {
+                // This counter increments once per source read, whatever its outcome: startup,
+                // a resync and a retry all read through here.
+                let outcome = if result.is_ok() { "ok" } else { "error" };
+                metrics::counter!(
+                    "config_load_total",
+                    "source" => self.source.name(),
+                    "result" => outcome,
+                )
+                .increment(1);
+                Some(result)
+            }
         }
     }
 }

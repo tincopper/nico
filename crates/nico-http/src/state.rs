@@ -144,6 +144,18 @@ impl HttpStateHandle {
         self.current.load_full()
     }
 
+    /// Returns whether this process can currently serve a request.
+    ///
+    /// This is the named form of the `503 not_ready` check in the request hook: that branch takes
+    /// the snapshot itself with `let Some(state) = self.current() else`, which is this predicate
+    /// plus the value it needs, so it reads the slot once instead of asking here and reading again.
+    /// The self-reporting surface asks the same question, which is why "can this process serve"
+    /// has exactly one definition.
+    #[must_use]
+    pub fn servable(&self) -> bool {
+        self.current.load_full().is_some()
+    }
+
     /// Publishes one generation: the snapshot, the policies derived from it and its LLM front-ends.
     ///
     /// All three are one store, so a request cannot route with this generation and translate with the
