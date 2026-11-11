@@ -3,7 +3,8 @@
 //! The subject of those tests is the wire, so nothing here wraps an HTTP library. A test gets:
 //!
 //! - [`write_bootstrap`] and [`free_port`], because the bootstrap file rejects port zero and Pingora
-//!   never reports the port it actually bound;
+//!   never reports the port it actually bound; every bootstrap it writes names [`fixture_ca`] as its
+//!   trust root, so no scenario depends on the host's certificate store;
 //! - [`resources::Resources`], a builder for a complete resources document (the schema rejects a
 //!   missing `providers`, `upstreams`, `routes` or `plugins` section, so every fixture must spell them
 //!   out), plus the [`resources::Route`] and [`resources::Plugin`] entries a scenario varies;
@@ -41,7 +42,7 @@ pub(crate) mod upstream;
 
 use std::{
     net::{SocketAddr, TcpListener},
-    path::Path,
+    path::{Path, PathBuf},
     process::ExitCode,
     sync::{Arc, Mutex},
     thread::JoinHandle,
@@ -81,10 +82,23 @@ pub(crate) fn free_port() -> u16 {
         .port()
 }
 
+/// Returns the trust root every fixture process is configured with.
+///
+/// A test process must not depend on the host's certificate store. Pingora reads it while building
+/// its connector, the assembly refuses to start when it cannot be read, and a sandboxed or headless
+/// runner is often exactly such a host. Naming a bundle makes the root set a fact of the fixture
+/// instead — and it is the same root the TLS scenarios sign their listeners' certificates with.
+///
+/// See `tests/fixtures/tls/README.md` for what the files are and how they were produced.
+pub(crate) fn fixture_ca() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tls/test-root.pem")
+}
+
 /// Writes a bootstrap file that listens on `port` and returns the parsed configuration.
 ///
 /// The debounce windows are zero: a test publishes a document and then waits for it to be in
-/// service, and a debounce would only add a second way for that wait to be slow.
+/// service, and a debounce would only add a second way for that wait to be slow. The trust root is
+/// [`fixture_ca`], which is what every scenario but the untrusted-chain one configures.
 pub(crate) fn write_bootstrap(
     directory: &Path,
     port: u16,
@@ -92,30 +106,24 @@ pub(crate) fn write_bootstrap(
     grace_period_ms: u64,
     graceful_shutdown_ms: u64,
 ) -> BootstrapConfig {
-    let path = directory.join("bootstrap.yaml");
-    let text = format!(
-        "\
-config_source:
-  type: local
-  path: {document}
-  max_bytes: 1048576
-  watch: notify
-debounce_ms: 0
-max_wait_ms: 0
-cache_dir: {cache}
-allow_bootstrap_cache: false
-http:
-  listen: 127.0.0.1:{port}
-  h2c: {h2c}
-  grace_period_ms: {grace_period_ms}
-  graceful_shutdown_ms: {graceful_shutdown_ms}
-  threads: 1
-",
-        document = directory.join("resources.yaml").display(),
-        cache = directory.join("cache").display(),
-    );
-    std::fs::write(&path, text).expect("the bootstrap fixture is written");
-    BootstrapConfig::load(&path).expect("the bootstrap fixture is valid")
+    write(
+        directory,
+        port,
+        h2c,
+        grace_period_ms,
+        graceful_shutdown_ms,
+        Some(&fixture_ca()),
+        None,
+    )
+}
+
+/// Writes a bootstrap that trusts `ca` instead of [`fixture_ca`].
+///
+/// Only the untrusted-chain scenario needs this: it asserts what a process does when the peer's
+/// chain leads to a root set this process was **not** given, which is a fact about the configured
+/// `tls.ca_file` and not about the peer. Every other scenario uses the common fixture.
+pub(crate) fn write_bootstrap_trusting(directory: &Path, port: u16, ca: &Path) -> BootstrapConfig {
+    write(directory, port, false, 1, 1000, Some(ca), None)
 }
 
 /// Writes the same bootstrap as [`write_bootstrap`] **plus** a `metrics` section on `metrics_port`.
@@ -129,6 +137,46 @@ pub(crate) fn write_bootstrap_with_metrics(
     port: u16,
     metrics_port: u16,
 ) -> BootstrapConfig {
+    write(
+        directory,
+        port,
+        false,
+        5000,
+        30000,
+        Some(&fixture_ca()),
+        Some(metrics_port),
+    )
+}
+
+/// Writes a bootstrap with **no** `tls` section, so the process uses the platform trust store.
+///
+/// Only the public-network smoke test wants this: every other scenario names a bundle, because a
+/// test runner's platform store is not a fact the suite may depend on.
+pub(crate) fn write_bootstrap_on_platform_roots(directory: &Path, port: u16) -> BootstrapConfig {
+    write(directory, port, false, 1, 1000, None, None)
+}
+
+/// Renders the bootstrap file every helper above shares, and returns it parsed.
+///
+/// One renderer for the three shapes: the fields a scenario varies are arguments, and the rest — a
+/// zero debounce, one worker thread, a local source — is stated here once. A fixture that the
+/// bootstrap schema rejects fails while the test is being written, not while it runs.
+fn write(
+    directory: &Path,
+    port: u16,
+    h2c: bool,
+    grace_period_ms: u64,
+    graceful_shutdown_ms: u64,
+    ca: Option<&Path>,
+    metrics_port: Option<u16>,
+) -> BootstrapConfig {
+    let metrics = metrics_port.map_or_else(String::new, |port| {
+        format!("metrics:\n  listen: 127.0.0.1:{port}\n")
+    });
+    // An absent section is the platform store; a present one is a bundle that replaces it.
+    let tls = ca.map_or_else(String::new, |ca| {
+        format!("tls:\n  ca_file: \"{}\"\n", ca.display())
+    });
     let path = directory.join("bootstrap.yaml");
     let text = format!(
         "\
@@ -141,15 +189,13 @@ debounce_ms: 0
 max_wait_ms: 0
 cache_dir: {cache}
 allow_bootstrap_cache: false
-http:
+{tls}http:
   listen: 127.0.0.1:{port}
-  h2c: false
-  grace_period_ms: 5000
-  graceful_shutdown_ms: 30000
+  h2c: {h2c}
+  grace_period_ms: {grace_period_ms}
+  graceful_shutdown_ms: {graceful_shutdown_ms}
   threads: 1
-metrics:
-  listen: 127.0.0.1:{metrics_port}
-",
+{metrics}",
         document = directory.join("resources.yaml").display(),
         cache = directory.join("cache").display(),
     );

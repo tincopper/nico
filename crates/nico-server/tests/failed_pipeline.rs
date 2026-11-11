@@ -35,6 +35,15 @@ fn free_port() -> u16 {
         .port()
 }
 
+/// Returns the trust root this fixture process is configured with.
+///
+/// Every bootstrap in this suite names one: the assembly refuses to start when the upstream trust
+/// roots cannot be read, and a test runner is often a host whose platform store cannot be. The files
+/// and their provenance are described in `tests/fixtures/tls/README.md`.
+fn fixture_ca() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tls/test-root.pem")
+}
+
 /// Returns a bootstrap file that listens on `port` and drains as fast as the settings allow.
 fn bootstrap_file(directory: &Path, port: u16) -> BootstrapConfig {
     let path = directory.join("bootstrap.yaml");
@@ -50,12 +59,15 @@ debounce_ms: 100
 max_wait_ms: 500
 cache_dir: {}
 allow_bootstrap_cache: false
+tls:
+  ca_file: \"{}\"
 http:
   listen: 127.0.0.1:{port}
   grace_period_ms: 1
   graceful_shutdown_ms: 1000
 ",
-        cache_dir.display()
+        cache_dir.display(),
+        fixture_ca().display(),
     );
     std::fs::write(&path, document).expect("the bootstrap fixture is written");
     BootstrapConfig::load(&path).expect("the bootstrap fixture is valid")

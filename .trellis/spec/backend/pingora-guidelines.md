@@ -154,6 +154,24 @@ not part of the request path.
 | `http.threads` | worker threads per service | `1..=256`, default 1 — `ServerConf::threads` feeds Tokio's `worker_threads`, which panics on `0` |
 | `ServerConf::max_retries` | **attempts**, not retries (`while retries < max_retries`) | `1` = exactly one attempt, no retry. `0` sends no request at all |
 
+### Upstream TLS
+
+The **rustls backend is compiled in**: `nico-http` enables `pingora/rustls`, and cargo features are
+additive across the graph, so an `https` destination is a real handshake from every crate that links
+the data plane. Certificate and hostname verification are always on, SNI is the destination host, and
+`PeerOptions.alpn` stays `H1` (an HTTP/2 upstream needs a new decision, not a flag).
+
+| Fact | Consequence |
+|---|---|
+| trust roots are **process-level**: `tls.ca_file` → `ServerConf.ca_file`, otherwise the platform store | a document cannot choose roots. `ca_file` **replaces** the platform store — it does not append, so an operator who needs both concatenates them into one file |
+| Pingora builds its client connector **once**, when the service is built (`ProxyServiceBuilder::build` → `ConnectorOptions::from_server_conf`) | there is no CA hot reload: changing it is a restart, and a reload only swaps the document snapshot |
+| `tls::Connector::new` is `build_connector(...).unwrap()` | an unreadable or unparseable `ca_file` would abort inside `HttpProxy::new`. `nico_http::ensure_usable` re-reads the same source at assembly time (the platform store through Pingora's own `load_native_certs`, with every entry `add`ed to a root store exactly as the connector does, or the bundle again) and turns that into a startup refusal with `FAILURE_EXIT_CODE`, before any service exists |
+| rustls must see exactly **one** crypto provider | `rustls` is declared with `default-features = false, features = ["ring", …]`. Its defaults enable `aws-lc-rs`, which would compile a second provider and make `CryptoProvider::from_crate_features` ambiguous — every `ClientConfig::builder` before Pingora's own install then panics |
+
+Three files, three jobs: `upstream/tls/policy.rs` (root source and bundle validation, no Pingora
+type, no I/O), `upstream/tls/adapter.rs` (the only writer of Pingora's TLS configuration), and
+`upstream/tls/mod.rs`'s `ensure_usable` (the one place that reads a source at startup).
+
 ### Attribution
 
 The data plane owns the wire decisions a plugin cannot make. `HttpUpstreamRequestPolicy` strips
@@ -252,11 +270,12 @@ streaming response's declared length either.
 | a non-streaming answer declares a `content-length` over `max_response_bytes` | `502 upstream_response_too_large`, before the head is written |
 | a chunked answer crosses `max_response_bytes` while it arrives | no second status: the head is committed, the stream ends and the request is logged as cancelled |
 | upstream host does not resolve | `502 upstream_unreachable` |
-| `scheme: https` while no TLS provider is compiled | `502 upstream_unreachable` (refused, never plaintext) |
+| `scheme: https` and the handshake fails (certificate not trusted, hostname mismatch, protocol error) | `502 upstream_unreachable` — refused, never a plaintext downgrade; the typed cause stays in the request record |
+| a TLS handshake that spends the connect deadline (`TLSHandshakeTimedout`, or `ConnectTimedout` raised on the handshake) | `504 upstream_timeout`, the same path as every other timeout |
 | `Content-Length` or metered chunked body over the limit | `413 body_too_large` |
 | an over-limit body in buffered mode | `413 body_too_large` |
 | request body still arriving when the budget expires (caller is slow) | `408 request_timeout` |
-| `ReadTimedout` / `WriteTimedout` / `ConnectTimedout` from Pingora | `504 upstream_timeout` |
+| `ReadTimedout` / `WriteTimedout` / `ConnectTimedout` / `TLSHandshakeTimedout` from Pingora | `504 upstream_timeout` |
 | other upstream-sourced Pingora error | `502 upstream_unreachable` |
 | downstream read/write failure, or shutdown mid-request | no response; log-only `http.status=499`, `error.category=Cancelled` |
 | a failure after the response was committed | no second response; the stream is cut and logged as cancelled |
@@ -385,7 +404,10 @@ let service = ProxyServiceBuilder::new(&conf, app)
 | the framework drops a second response head silently and does not prevent a retried round from corrupting a committed stream, so the "response already written" gate must be ours | `pingora-core/src/protocols/http/v1/server.rs:830-837` |
 | `content-length` response bodies flush only on the last byte; chunked flushes per chunk — event streams must be chunked | `pingora-core/src/protocols/http/v1/body.rs:1367,1397` |
 | `1xx` responses reach `response_filter`; guard with `status.is_informational()` before touching headers | `pingora-proxy/src/proxy_trait.rs:390` |
-| without a TLS provider, `noop_tls::connect` returns a **pass-through** stream: `tls: true` would not encrypt | `pingora-core/src/protocols/tls/noop_tls/mod.rs` |
+| the rustls backend is **compiled in**, so `https` completes a real handshake; the client connector is built **once**, from `ServerConf.ca_file`, so a CA change is a restart and a reload never rebuilds it | `pingora-proxy/src/lib.rs:222`; `pingora-core/src/connectors/mod.rs:188-212` |
+| `tls::Connector::new` unwraps its own build, so an unreadable or unparseable `ca_file` aborts inside `HttpProxy::new`; the assembly-time `ensure_usable` probe is what closes that failure surface | `pingora-core/src/connectors/tls/rustls/mod.rs:50`; `pingora-rustls-0.9.1/src/lib.rs:107-120` |
+| rustls' default features enable `aws-lc-rs`; declaring only `ring` keeps one provider. `CryptoProvider::from_crate_features` returns `None` when the features name two providers (or none), and the `expect` in `get_default_or_install_from_crate_features` then panics | `rustls-0.23.46/src/crypto/mod.rs:243,249,265`; `pingora-rustls-0.9.1/Cargo.toml` |
+| the rustls path reports a handshake failure as `TLSHandshakeFailure` with `TLS connect() failed: …, SNI: …` as its context, which is why the record can tell a name mismatch from an untrusted chain | `pingora-core/src/protocols/tls/rustls/client.rs:31,37-38` |
 | `ServerConf` has no downstream read/idle timeout, so a stalled request body can only be bounded by our own deadline check in `request_body_filter` | `pingora-core/src/server/configuration/mod.rs` (field list) |
 | an upstream `read_timeout` is **per read**, so a peer dribbling bytes is bounded by the deadline check in `upstream_response_body_filter`, not by the timeout | `pingora-proxy/src/lib.rs` read loop |
 | `read_response_task` turns a zero-length body slice into `Some(Bytes::new())` — while a chunked body's terminating CRLF or trailers are still unread, the parser yields `BufRef::new(0, 0)` — so both body hooks can be called with an empty buffer and `end_of_stream == false`; the driver skips the stage (a plugin appending to nothing would put bytes on the wire the origin never sent) and keeps the request-side `Some(empty)`, because `None` there means end-of-body | `pingora-core/src/protocols/http/v1/body.rs:720,793`; `client.rs:498,837` |

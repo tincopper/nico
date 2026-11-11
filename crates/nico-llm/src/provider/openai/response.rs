@@ -68,13 +68,13 @@ struct ResponseWire {
 impl ResponseWire {
     /// Builds the canonical response.
     fn into_response(self) -> Result<ChatResponse, ProviderError> {
-        if let Some(object) = &self.object {
-            if object != COMPLETION_OBJECT {
-                return Err(malformed(format!(
-                    "the document is not a complete chat answer (its `object` is not \
+        if let Some(object) = &self.object
+            && object != COMPLETION_OBJECT
+        {
+            return Err(malformed(format!(
+                "the document is not a complete chat answer (its `object` is not \
                      `{COMPLETION_OBJECT}`)"
-                )));
-            }
+            )));
         }
         let id = ResponseId::try_new(self.id).map_err(schema_failure)?;
         let model = ModelId::try_new(self.model).map_err(schema_failure)?;
@@ -144,10 +144,10 @@ struct MessageWire {
 impl MessageWire {
     /// Builds the assistant turn.
     fn into_turn(self) -> Result<AssistantTurn, ProviderError> {
-        if let Some(role) = &self.role {
-            if role != "assistant" {
-                return Err(malformed("the answer's message is not an assistant turn"));
-            }
+        if let Some(role) = &self.role
+            && role != "assistant"
+        {
+            return Err(malformed("the answer's message is not an assistant turn"));
         }
         reject_extra(&self.extra, "choices[].message")?;
         for (name, present) in [
@@ -215,12 +215,12 @@ impl ToolCallWire {
             &self.function.extra,
             "choices[].message.tool_calls[].function",
         )?;
-        if let Some(kind) = &self.kind {
-            if kind != "function" {
-                return Err(malformed(
-                    "the answer carries a tool call this adapter cannot express",
-                ));
-            }
+        if let Some(kind) = &self.kind
+            && kind != "function"
+        {
+            return Err(malformed(
+                "the answer carries a tool call this adapter cannot express",
+            ));
         }
         let id = ToolCallId::try_new(self.id).map_err(schema_failure)?;
         let name = ToolName::try_new(self.function.name).map_err(schema_failure)?;

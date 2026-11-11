@@ -77,6 +77,13 @@ sha2.workspace = true
 # received JSON, and parsing it is the only way to state "the physical model reached the origin"
 # without matching on key order or whitespace.
 serde_json.workspace = true
+# The TLS scenarios need an origin whose certificate the scenario chooses, which is a real TLS
+# listener. Declared in the workspace table like every other dependency: its version must be the
+# one `pingora-rustls` resolves to, or the graph would hold two rustls.
+tokio-rustls.workspace = true
+# The origin reads its certificate and key with the same PEM reader the production startup check uses
+# for a trust bundle, so a fixture is read exactly like a deployment's file.
+rustls-pemfile.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "test-util", "time"] }
 

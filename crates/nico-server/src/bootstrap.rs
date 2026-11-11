@@ -25,11 +25,12 @@ use std::{
 
 use nico_config::{LocalConfig, WatchMode};
 use nico_core::{Bound, ParseLimits, SchemaBounds};
-use nico_http::HttpSettings;
+use nico_http::{HttpSettings, TlsPolicy};
 use serde::Deserialize;
 
 mod http;
 mod metrics;
+mod tls;
 
 pub use metrics::MetricsSettings;
 
@@ -234,6 +235,9 @@ struct RawBootstrap {
     schema_bounds: Option<RawSchemaBounds>,
     http: Option<http::RawHttp>,
     metrics: Option<metrics::RawMetrics>,
+    // Present-but-empty is a configuration error, not "no section": see `tls::section`.
+    #[serde(default, deserialize_with = "tls::section")]
+    tls: Option<tls::RawTls>,
     debounce_ms: u64,
     max_wait_ms: u64,
     cache_dir: PathBuf,
@@ -363,11 +367,20 @@ impl RawBootstrap {
             None => SchemaBounds::default(),
         };
 
+        // The trust roots are resolved first because they are an input to the settings the `http`
+        // section produces: a configured bundle is a field of `HttpSettings`, not a knob some hook
+        // reads on its own. An omitted `tls` is the platform store, exactly as before the section
+        // existed.
+        let tls = match &self.tls {
+            Some(raw) => raw.resolve()?,
+            None => TlsPolicy::from_bootstrap(None),
+        };
+
         // An omitted section and an empty section must behave identically, so both go through
         // `resolve`: the defaults are applied and validated on the same path.
         let http = match &self.http {
-            Some(raw) => raw.resolve()?,
-            None => http::RawHttp::default().resolve()?,
+            Some(raw) => raw.resolve(tls)?,
+            None => http::RawHttp::default().resolve(tls)?,
         };
 
         // The metrics section is resolved against the data plane's own address, so it can only

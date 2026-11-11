@@ -117,16 +117,15 @@ impl ResponseTransform for ConvertTransform {
             )
         };
 
-        if !streamed {
-            if let Some(declared) = declared_length(headers) {
-                if declared > u64::from(self.limit) {
-                    // The head is not written yet, so this is still answerable: the caller receives
-                    // the gateway's ceiling rather than a truncated body. A chunked answer has no
-                    // declared length and is metered in `push` instead, where the status is already
-                    // downstream.
-                    return Err(HttpError::UpstreamResponseTooLarge { limit: self.limit });
-                }
-            }
+        if !streamed
+            && let Some(declared) = declared_length(headers)
+            && declared > u64::from(self.limit)
+        {
+            // The head is not written yet, so this is still answerable: the caller receives
+            // the gateway's ceiling rather than a truncated body. A chunked answer has no
+            // declared length and is metered in `push` instead, where the status is already
+            // downstream.
+            return Err(HttpError::UpstreamResponseTooLarge { limit: self.limit });
         }
 
         self.facts = Some(facts);

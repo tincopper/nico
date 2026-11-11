@@ -26,6 +26,10 @@ const NICO_METRICS: &str = include_str!("../../nico-metrics/Cargo.toml");
 const NICO_HTTP: &str = include_str!("../../nico-http/Cargo.toml");
 const NICO_CORE: &str = include_str!("../../nico-core/Cargo.toml");
 
+/// The upstream TLS policy layer, read at compile time for the same reason: it is a file whose
+/// shape is a promise (`directory-structure.md`, "Upstream TLS: two layers inside `nico-http`").
+const TLS_POLICY: &str = include_str!("../../nico-http/src/upstream/tls/policy.rs");
+
 /// Returns the crate names a manifest's `[dependencies]` section actually declares.
 ///
 /// Only dependency **lines** are read, never the section text: the manifests document their edges in
@@ -107,5 +111,24 @@ fn the_kernel_absorbs_no_metrics_dependency() {
         &["metrics", "nico-metrics", "pingora"],
         "thiserror",
         "the kernel carries no observability exporter and no framework",
+    );
+}
+
+#[test]
+fn the_tls_policy_layer_names_no_framework() {
+    // The layer is what a future `nico-tls` crate would absorb, and its value is that it can move
+    // without the framework coming along. The check is a plain substring, which is stricter than
+    // scanning `use` lines: a doc comment that names `pingora` is already the dependency this test
+    // exists to prevent, and `adapter.rs` is the file that is allowed to have it.
+    assert!(
+        !TLS_POLICY.contains("pingora"),
+        "`upstream/tls/policy.rs` must stay framework-free; the Pingora mapping belongs in \
+         `upstream/tls/adapter.rs`"
+    );
+    // An empty search over an empty string is vacuous, so the source is proved to be the file the
+    // rule is about: a renamed or moved file would otherwise turn the assertion above green.
+    assert!(
+        TLS_POLICY.contains("fn validate_bundle") && TLS_POLICY.contains("enum RootSource"),
+        "the policy source was not read: it must define `RootSource` and `validate_bundle`"
     );
 }

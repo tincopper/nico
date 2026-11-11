@@ -1,0 +1,9 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "backend 规格索引：实现前的分层入口"}
+{"file": ".trellis/spec/backend/pingora-guidelines.md", "reason": "第 1/2 步的数据面纪律；第 6 步要改写 :255 的 https→502 表格与 :388 的 noop_tls 事实，并补\"连接器在 service 构建时定型\"这一条"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "第 4 步的握手失败/超时映射必须落在既有单一出口与 502/504 分类契约内，不新增对外 code"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "第 7 步的五条门禁、文件预算（≤500 行）、结构测试与依赖方向断言"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "第 2 步的 Module-before-crate 判据（本任务不建 crate）；:201 的归属行与 upstream/tls 两层结构要同步"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "第 4 步的 TLS 失败日志字段与 error! 语义（需要运维介入 vs 调用方可修正）"}
+{"file": ".trellis/tasks/11-11-upstream-tls/research/rustls-backend-facts.md", "reason": "8 组带 file:line 的取证：feature 默认全关、rustls+ring 形态、根集替换语义、connector 在 service 构建时定型、错误类型清单、aiway 对照"}
+{"file": ".trellis/tasks/11-11-upstream-tls/design.md", "reason": "五条不变量、policy/adapter 两层契约、bootstrap tls 段、错误映射表、备选方案取舍与 Reserved seam"}
+{"file": ".trellis/tasks/11-11-upstream-tls/prd.md", "reason": "R1–R8 与验收清单：每一步完成后逐条勾销"}

@@ -60,9 +60,10 @@ pub(super) fn proxy_error(error: &HttpError) -> Box<Error> {
 /// A peer that ran out of the request's own budget is reported as the deadline failure, not as an
 /// unreachable upstream. The two are different answers for the caller: `502` says "the peer is
 /// broken", `504` says "the peer did not answer in time", and the whole-request deadline is the
-/// budget this data plane set on the peer. Pingora reports that case as `ReadTimedout` (or a
-/// `ConnectTimedout` before the socket ever opened), so the classification cannot be left to the
-/// error source alone — an `Upstream` source is otherwise mapped to "unreachable".
+/// budget this data plane set on the peer. Pingora reports that case as `ReadTimedout` (a
+/// `ConnectTimedout` before the socket ever opened, or a TLS handshake that spent the same
+/// connect deadline), so the classification cannot be left to the error source alone — an
+/// `Upstream` source is otherwise mapped to "unreachable".
 pub(super) fn classify(ctx: &HttpContext, error: &Error) -> Option<HttpError> {
     if is_downstream_gone(error) {
         return None;
@@ -85,13 +86,23 @@ pub(super) fn classify(ctx: &HttpContext, error: &Error) -> Option<HttpError> {
 }
 
 /// Reports whether a Pingora error means the upstream ran out of the request's budget.
+///
+/// A TLS handshake is bounded by the same connect deadline as the socket it runs on, so a handshake
+/// that ran out of time is a timeout, not an unreachable peer: `504` tells the caller its request
+/// can be retried, while `502` says the peer is broken. `TLSHandshakeTimedout` is the variant a
+/// backend may raise for it; the rustls path currently reports its own handshake deadline as
+/// `ConnectTimedout`, which is covered by the same arm — both mean "we ran out of time", and
+/// neither may fall through to the unreachable mapping.
 pub(super) fn is_upstream_timeout(error: &Error) -> bool {
     if *error.esource() != ErrorSource::Upstream {
         return false;
     }
     matches!(
         error.etype(),
-        ErrorType::ReadTimedout | ErrorType::WriteTimedout | ErrorType::ConnectTimedout
+        ErrorType::ReadTimedout
+            | ErrorType::WriteTimedout
+            | ErrorType::ConnectTimedout
+            | ErrorType::TLSHandshakeTimedout
     )
 }
 

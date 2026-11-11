@@ -23,7 +23,9 @@ use std::{
 use async_trait::async_trait;
 use nico_config::{CacheStore, ConfigSource};
 use nico_core::SnapshotHandle;
-use nico_http::{HttpStateHandle, PluginRegistry, server_conf, service as http_service};
+use nico_http::{
+    HttpStateHandle, PluginRegistry, ensure_usable, server_conf, service as http_service,
+};
 use nico_plugins::{PluginRuntime, builtin_registry};
 use pingora::{
     server::{Server, ShutdownWatch},
@@ -81,6 +83,20 @@ pub fn serve_with(
     plugins: PluginRegistry,
 ) -> ExitCode {
     let settings = bootstrap.http();
+    // The trust roots are read once, by Pingora, while it builds the client connector — and its
+    // failure there is a panic inside `HttpProxy::new`. Probe the same source first, so a host
+    // without a readable trust store, or a bundle that stopped resolving, is a startup refusal with
+    // one operator-facing line instead of an abort inside the framework. This runs before anything
+    // is assembled: nothing below has a side effect worth undoing.
+    if let Err(error) = ensure_usable(settings.tls()) {
+        tracing::error!(
+            error = %error,
+            "the upstream trust roots this process would use are not usable; set `tls.ca_file` in \
+             the bootstrap file to a PEM bundle of certificate authorities, or make the platform \
+             certificate store readable"
+        );
+        return ExitCode::from(FAILURE_EXIT_CODE);
+    }
     // The request path reads `state` and nothing else: the pipeline publishes a snapshot and the plan
     // compiled from it there, together. `SnapshotHandle` stays the configuration-state fact source,
     // and the self-reporting surface reads the same handle, so it cannot observe a state the

@@ -14,9 +14,10 @@ use std::net::SocketAddr;
 // --- resources document ------------------------------------------------------
 
 mod route;
+mod upstream;
 
 pub(crate) use self::route::Route;
-use self::route::Target;
+use self::{route::Target, upstream::UpstreamEntry};
 
 /// One entry of the document's `plugins` collection, rendered from parts.
 ///
@@ -178,7 +179,7 @@ pub(crate) struct Resources {
     max_response_bytes: Option<u32>,
     timeout_ms: u32,
     providers: Vec<ProviderEntry>,
-    upstreams: Vec<(String, SocketAddr)>,
+    upstreams: Vec<UpstreamEntry>,
     routes: Vec<Route>,
     plugins: Vec<Plugin>,
     global_plugins: Vec<String>,
@@ -300,9 +301,23 @@ impl Resources {
         self
     }
 
-    /// Adds an upstream reachable at `address`.
+    /// Adds a plaintext upstream reachable at `address`.
     pub(crate) fn upstream(mut self, name: &str, address: SocketAddr) -> Self {
-        self.upstreams.push((name.to_owned(), address));
+        self.upstreams.push(UpstreamEntry::plaintext(
+            name,
+            address.ip().to_string(),
+            address.port(),
+        ));
+        self
+    }
+
+    /// Adds an `https` upstream at `host`:`port`.
+    ///
+    /// `host` is written as given, so a scenario can name the host a certificate is signed for
+    /// (`localhost`) or an address it is not (`127.0.0.1`). Resolution happens at request time,
+    /// exactly as it does for a written document.
+    pub(crate) fn tls_upstream(mut self, name: &str, host: &str, port: u16) -> Self {
+        self.upstreams.push(UpstreamEntry::tls(name, host, port));
         self
     }
 
@@ -402,12 +417,8 @@ request:
             yaml.push_str("upstreams: []\n");
         } else {
             yaml.push_str("upstreams:\n");
-            for (name, address) in &self.upstreams {
-                yaml.push_str(&format!(
-                    "  - name: {name}\n    scheme: http\n    host: {host}\n    port: {port}\n",
-                    host = address.ip(),
-                    port = address.port(),
-                ));
+            for upstream in &self.upstreams {
+                yaml.push_str(&upstream.render());
             }
         }
 

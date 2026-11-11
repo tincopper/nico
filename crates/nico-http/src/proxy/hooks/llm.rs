@@ -74,14 +74,14 @@ pub(in crate::proxy) fn apply_upstream_request(
         // A converted body is the exchange's to decode, and a content-coded one is not a body any
         // codec here reads. Refusing it names the reason instead of letting the codec report the
         // compressed bytes as malformed JSON.
-        if let Some(coding) = request.headers.get("content-encoding") {
-            if !coding.as_bytes().eq_ignore_ascii_case(b"identity") {
-                return Err(HttpError::InvalidRequest {
-                    reason:
-                        "the request body is content-encoded, which a converted route cannot decode"
-                            .into(),
-                });
-            }
+        if let Some(coding) = request.headers.get("content-encoding")
+            && !coding.as_bytes().eq_ignore_ascii_case(b"identity")
+        {
+            return Err(HttpError::InvalidRequest {
+                reason:
+                    "the request body is content-encoded, which a converted route cannot decode"
+                        .into(),
+            });
         }
     }
     for (name, value) in headers {
@@ -245,12 +245,11 @@ pub(in crate::proxy) fn install_transform(
         let streaming = llm.streaming().unwrap_or(false);
         // Only a buffered answer is bounded by this ceiling: an event stream may legitimately declare
         // its total length and is still translated chunk by chunk.
-        if !streaming {
-            if let Some(declared) = budget::declared_response_length(response) {
-                if budget::over_limit(limit, declared) {
-                    return Err(HttpError::UpstreamResponseTooLarge { limit });
-                }
-            }
+        if !streaming
+            && let Some(declared) = budget::declared_response_length(response)
+            && budget::over_limit(limit, declared)
+        {
+            return Err(HttpError::UpstreamResponseTooLarge { limit });
         }
         let Some(converting) = ctx.converting() else {
             return Ok(());

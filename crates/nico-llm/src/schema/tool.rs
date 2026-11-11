@@ -155,12 +155,12 @@ impl Tool {
                 field: "tool.parameters",
             });
         }
-        if let Some(description) = &self.description {
-            if description.trim().is_empty() {
-                return Err(SchemaError::Empty {
-                    field: "tool.description",
-                });
-            }
+        if let Some(description) = &self.description
+            && description.trim().is_empty()
+        {
+            return Err(SchemaError::Empty {
+                field: "tool.description",
+            });
         }
         Ok(())
     }

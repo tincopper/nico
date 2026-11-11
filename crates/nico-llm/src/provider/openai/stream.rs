@@ -166,10 +166,10 @@ impl Decoder {
     /// Decodes one incremental payload.
     fn delta(&mut self, wire: DeltaWire, out: &mut Vec<StreamEvent>) -> Result<(), ProviderError> {
         reject_extra(&wire.extra, "choices[].delta")?;
-        if let Some(role) = &wire.role {
-            if role != "assistant" {
-                return Err(malformed("the stream produced a non-assistant message"));
-            }
+        if let Some(role) = &wire.role
+            && role != "assistant"
+        {
+            return Err(malformed("the stream produced a non-assistant message"));
         }
         let text = wire.content.filter(|text| !text.is_empty());
         let reasoning = wire.reasoning_content.filter(|text| !text.is_empty());
@@ -201,12 +201,12 @@ impl Decoder {
         out: &mut Vec<StreamEvent>,
     ) -> Result<(), ProviderError> {
         reject_extra(&wire.extra, "choices[].delta.tool_calls[]")?;
-        if let Some(kind) = &wire.kind {
-            if kind != "function" {
-                return Err(malformed(
-                    "the stream carries a tool call this adapter cannot express",
-                ));
-            }
+        if let Some(kind) = &wire.kind
+            && kind != "function"
+        {
+            return Err(malformed(
+                "the stream carries a tool call this adapter cannot express",
+            ));
         }
         let index = wire.index;
         let known = self.calls.get(&index).cloned();
@@ -215,16 +215,16 @@ impl Decoder {
             reject_extra(&function.extra, "choices[].delta.tool_calls[].function")?;
         }
         if let Some(call) = known {
-            if let Some(id) = &wire.id {
-                if id != call.id.as_str() {
-                    return Err(malformed("a tool call fragment changed its id"));
-                }
+            if let Some(id) = &wire.id
+                && id != call.id.as_str()
+            {
+                return Err(malformed("a tool call fragment changed its id"));
             }
             if let Some(function) = function {
-                if let Some(name) = &function.name {
-                    if name != call.name.as_str() {
-                        return Err(malformed("a tool call fragment changed its name"));
-                    }
+                if let Some(name) = &function.name
+                    && name != call.name.as_str()
+                {
+                    return Err(malformed("a tool call fragment changed its name"));
                 }
                 if let Some(arguments) = function.arguments.filter(|text| !text.is_empty()) {
                     out.push(StreamEvent::ToolCallDelta {

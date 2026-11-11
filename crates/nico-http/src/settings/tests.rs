@@ -1,8 +1,15 @@
 use super::{HttpSettings, HttpSettingsError};
+use crate::TlsPolicy;
+
+/// Builds the platform trust policy: these tests describe the HTTP knobs, not what is trusted.
+fn tls() -> TlsPolicy {
+    TlsPolicy::default()
+}
 
 /// Resolves no field at all, which must produce the documented defaults.
 fn defaults() -> HttpSettings {
-    HttpSettings::resolve(None, None, None, None, None).expect("omitted fields take their defaults")
+    HttpSettings::resolve(None, None, None, None, None, tls())
+        .expect("omitted fields take their defaults")
 }
 
 #[test]
@@ -31,7 +38,8 @@ fn the_default_value_is_also_accepted_when_written_out() {
             Some(true),
             Some(5_000),
             Some(30_000),
-            Some(4)
+            Some(4),
+            tls()
         )
         .expect("written fields are accepted"),
         // Only `h2c` and `threads` differ from the defaults; the windows are equal.
@@ -51,6 +59,7 @@ fn a_written_field_overrides_its_default() {
         Some(1_000),
         Some(60_000),
         Some(8),
+        tls(),
     )
     .expect("every field is in range");
 
@@ -68,7 +77,7 @@ fn a_written_field_overrides_its_default() {
 fn h2c_defaults_to_false_and_stays_false_when_written_as_false() {
     assert!(!defaults().h2c());
     assert!(
-        !HttpSettings::resolve(None, Some(false), None, None, None)
+        !HttpSettings::resolve(None, Some(false), None, None, None, tls())
             .expect("false is in range")
             .h2c()
     );
@@ -76,7 +85,7 @@ fn h2c_defaults_to_false_and_stays_false_when_written_as_false() {
 
 #[test]
 fn an_unparsable_listen_address_is_rejected() {
-    let error = HttpSettings::resolve(Some("not-an-address"), None, None, None, None)
+    let error = HttpSettings::resolve(Some("not-an-address"), None, None, None, None, tls())
         .expect_err("a bare name is not host:port");
 
     assert_eq!(error.field(), "listen");
@@ -90,7 +99,7 @@ fn an_unparsable_listen_address_is_rejected() {
 #[test]
 fn a_listen_address_without_a_port_is_rejected() {
     assert_eq!(
-        HttpSettings::resolve(Some("0.0.0.0"), None, None, None, None)
+        HttpSettings::resolve(Some("0.0.0.0"), None, None, None, None, tls())
             .expect_err("a bare address has no port")
             .field(),
         "listen"
@@ -99,7 +108,7 @@ fn a_listen_address_without_a_port_is_rejected() {
 
 #[test]
 fn a_listen_port_of_zero_is_rejected() {
-    let error = HttpSettings::resolve(Some("0.0.0.0:0"), None, None, None, None)
+    let error = HttpSettings::resolve(Some("0.0.0.0:0"), None, None, None, None, tls())
         .expect_err("port zero asks the kernel to pick");
 
     assert_eq!(error.field(), "listen");
@@ -108,7 +117,7 @@ fn a_listen_port_of_zero_is_rejected() {
 
 #[test]
 fn a_host_name_with_a_port_is_accepted() {
-    let settings = HttpSettings::resolve(Some("localhost:8080"), None, None, None, None)
+    let settings = HttpSettings::resolve(Some("localhost:8080"), None, None, None, None, tls())
         .expect("a name is checked for shape only");
 
     assert_eq!(settings.listen(), "localhost:8080");
@@ -116,7 +125,7 @@ fn a_host_name_with_a_port_is_accepted() {
 
 #[test]
 fn an_ipv6_literal_is_accepted() {
-    let settings = HttpSettings::resolve(Some("[::1]:8080"), None, None, None, None)
+    let settings = HttpSettings::resolve(Some("[::1]:8080"), None, None, None, None, tls())
         .expect("a bracketed literal is a socket address");
 
     assert_eq!(settings.listen(), "[::1]:8080");
@@ -124,7 +133,7 @@ fn an_ipv6_literal_is_accepted() {
 
 #[test]
 fn a_grace_period_of_zero_is_rejected() {
-    let error = HttpSettings::resolve(None, None, Some(0), None, None)
+    let error = HttpSettings::resolve(None, None, Some(0), None, None, tls())
         .expect_err("a zero window would cut every request off");
 
     assert_eq!(error.field(), "grace_period_ms");
@@ -133,7 +142,7 @@ fn a_grace_period_of_zero_is_rejected() {
 
 #[test]
 fn a_grace_period_above_the_maximum_is_rejected() {
-    let error = HttpSettings::resolve(None, None, Some(301_000), None, None)
+    let error = HttpSettings::resolve(None, None, Some(301_000), None, None, tls())
         .expect_err("the window is bounded");
 
     assert_eq!(error.field(), "grace_period_ms");
@@ -146,7 +155,7 @@ fn a_grace_period_above_the_maximum_is_rejected() {
 
 #[test]
 fn a_shutdown_window_of_zero_is_rejected() {
-    let error = HttpSettings::resolve(None, None, None, Some(0), None)
+    let error = HttpSettings::resolve(None, None, None, Some(0), None, tls())
         .expect_err("a zero shutdown bound would truncate the drain");
 
     assert_eq!(error.field(), "graceful_shutdown_ms");
@@ -154,7 +163,7 @@ fn a_shutdown_window_of_zero_is_rejected() {
 
 #[test]
 fn a_shutdown_window_shorter_than_the_grace_period_is_rejected() {
-    let error = HttpSettings::resolve(None, None, Some(10_000), Some(5_000), None)
+    let error = HttpSettings::resolve(None, None, Some(10_000), Some(5_000), None, tls())
         .expect_err("draining may not be bounded tighter than the grace period");
 
     assert_eq!(error.field(), "graceful_shutdown_ms");
@@ -166,7 +175,7 @@ fn a_shutdown_window_shorter_than_the_grace_period_is_rejected() {
 
 #[test]
 fn a_raised_grace_period_needs_a_raised_shutdown_window() {
-    let error = HttpSettings::resolve(None, None, Some(60_000), None, None)
+    let error = HttpSettings::resolve(None, None, Some(60_000), None, None, tls())
         .expect_err("the default shutdown window is now too short");
 
     assert_eq!(error.field(), "graceful_shutdown_ms");
@@ -174,7 +183,7 @@ fn a_raised_grace_period_needs_a_raised_shutdown_window() {
 
 #[test]
 fn a_shutdown_window_equal_to_the_grace_period_is_accepted() {
-    let settings = HttpSettings::resolve(None, None, Some(10_000), Some(10_000), None)
+    let settings = HttpSettings::resolve(None, None, Some(10_000), Some(10_000), None, tls())
         .expect("equal windows are consistent");
 
     assert_eq!(settings.grace_period(), settings.graceful_shutdown());
@@ -182,7 +191,7 @@ fn a_shutdown_window_equal_to_the_grace_period_is_accepted() {
 
 #[test]
 fn too_many_threads_are_rejected() {
-    let error = HttpSettings::resolve(None, None, None, None, Some(257))
+    let error = HttpSettings::resolve(None, None, None, None, Some(257), tls())
         .expect_err("the thread count is bounded");
 
     assert_eq!(error.field(), "threads");
@@ -191,7 +200,7 @@ fn too_many_threads_are_rejected() {
 
 #[test]
 fn zero_threads_are_rejected_because_pingora_panics_on_them() {
-    let error = HttpSettings::resolve(None, None, None, None, Some(0))
+    let error = HttpSettings::resolve(None, None, None, None, Some(0), tls())
         .expect_err("zero is not a runtime size");
 
     assert_eq!(error.field(), "threads");
@@ -201,7 +210,7 @@ fn zero_threads_are_rejected_because_pingora_panics_on_them() {
 #[test]
 fn the_largest_accepted_thread_count_is_256() {
     assert_eq!(
-        HttpSettings::resolve(None, None, None, None, Some(256))
+        HttpSettings::resolve(None, None, None, None, Some(256), tls())
             .expect("256 is the inclusive upper bound")
             .threads(),
         256
@@ -210,11 +219,31 @@ fn the_largest_accepted_thread_count_is_256() {
 
 #[test]
 fn the_error_renders_the_field_and_the_reason() {
-    let error: HttpSettingsError = HttpSettings::resolve(Some("0.0.0.0:0"), None, None, None, None)
-        .expect_err("port zero is rejected");
+    let error: HttpSettingsError =
+        HttpSettings::resolve(Some("0.0.0.0:0"), None, None, None, None, tls())
+            .expect_err("port zero is rejected");
 
     assert_eq!(
         error.to_string(),
         "http setting `listen` is invalid: must name a port other than zero"
+    );
+}
+
+#[test]
+fn the_trust_roots_are_carried_by_the_settings() {
+    let bundle = TlsPolicy::from_bootstrap(Some(std::path::PathBuf::from("/etc/nico/roots.pem")));
+
+    let settings = HttpSettings::resolve(None, None, None, None, None, bundle.clone())
+        .expect("defaults are valid");
+
+    assert_eq!(
+        settings.tls(),
+        &bundle,
+        "a configured bundle must survive resolution unchanged: it is a startup fact, not a knob"
+    );
+    assert_eq!(
+        defaults().tls(),
+        &TlsPolicy::default(),
+        "an omitted `tls` section is the platform store"
     );
 }

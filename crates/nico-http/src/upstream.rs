@@ -1,19 +1,19 @@
 //! Where a request goes: a [`Destination`] becomes a connectable Pingora peer.
 //!
-//! The module is deliberately split into the three steps that can fail differently — refusing a
-//! scheme this build cannot speak, resolving a name, and building the peer — so each has one place
-//! of its own and the pure steps stay testable without a resolver or a socket:
+//! The module is deliberately split into the steps that can fail differently — resolving a name and
+//! building the peer — so each has one place of its own and the pure step stays testable without a
+//! resolver or a socket:
 //!
 //! - [`Destination`] is the **seam**: whoever understood a route's target (this crate for a document
 //!   `upstream`, `nico-llm` for a provider's `base_url`) hands over scheme, host and port, and the
 //!   data plane owns everything about *reaching* it — budget, TLS policy, `Host` rewriting. It is not
 //!   `nico_core::Upstream`: that type is a document entry a filter may not construct, while a
 //!   destination is a per-request decision that any target owner may produce.
-//! - [`peer`] composes [`refuse_unavailable_tls`], [`resolve`] and [`build`]. Resolution is the only
-//!   I/O step and is asynchronous on purpose: a blocking lookup on a worker thread would stall every
-//!   request sharing that runtime, and the default runtime here is one thread per service.
+//! - [`peer`] composes [`resolve`] and [`build`]. Resolution is the only I/O step and is asynchronous
+//!   on purpose: a blocking lookup on a worker thread would stall every request sharing that runtime,
+//!   and the default runtime here is one thread per service.
 //!
-//! Two facts about this layer are easy to get wrong later, so they are stated here:
+//! Three facts about this layer are easy to get wrong later, so they are stated here:
 //!
 //! - **ALPN is HTTP/1 by default.** Pingora's `PeerOptions::new()` sets `ALPN::H1`. A gRPC route
 //!   must ask for `ALPN::H2` explicitly; this milestone's schema has no gRPC target kind, so the
@@ -22,10 +22,11 @@
 //!   instance — not per worker. An HTTP/1 connection carries one request at a time, so the pool
 //!   holds roughly as many connections as there are concurrent upstream requests; that is a
 //!   capacity fact, not a per-worker tuning knob.
-//! - **No TLS provider is compiled**, so upstream TLS is refused rather than faked. Pingora's
-//!   no-provider backend is a *pass-through* stub (`protocols/tls/noop_tls`): a peer built with
-//!   `tls: true` would not encrypt anything, it would send plaintext to a port the document calls
-//!   `https`. Failing is the only honest answer until [`TLS_BACKEND_ENABLED`] flips.
+//! - **TLS is a build fact, not a per-request decision.** This crate enables pingora's `rustls`
+//!   backend, so an `https` destination is a real TLS connection; *which roots* are trusted is
+//!   [`tls`]'s business and is fixed when the service is built, never here. A peer only declares
+//!   that its target is `https` and carries the SNI host; nothing on this path can downgrade the
+//!   connection to plaintext, because the backend is compiled in.
 
 use std::{io, net::SocketAddr, time::Duration};
 
@@ -34,17 +35,7 @@ use pingora::upstreams::peer::HttpPeer;
 
 use crate::error::HttpError;
 
-/// Whether this build can actually speak TLS to an upstream.
-///
-/// `Cargo.toml` enables pingora without a TLS provider (`boringssl`, `rustls` or `openssl`), so
-/// `HttpPeer { tls: true, .. }` is not a TLS connection in this build: pingora's no-op provider
-/// returns a pass-through stream. Sending plaintext to a port the document declares `https` would
-/// be a silent downgrade, so [`peer`] refuses instead.
-///
-/// Enabling a provider is one Cargo feature plus flipping this constant — and the `https` mock
-/// upstream test in `tests/` then has to start a real TLS listener. Until that task exists, the
-/// value stays `false` so the refusal is a compile-time fact rather than a runtime surprise.
-pub(crate) const TLS_BACKEND_ENABLED: bool = false;
+pub(crate) mod tls;
 
 /// Where one request goes: a scheme, a host and a port.
 ///
@@ -111,19 +102,17 @@ impl From<&Upstream> for Destination {
 /// Callers that have no deadline left must not call this: an expired budget belongs in
 /// [`HttpError::DeadlineExceeded`].
 ///
-/// The scheme is checked **before** the lookup: an `https` upstream this build cannot speak to is
-/// refused without spending a resolver query on it.
+/// Which roots this peer's handshake is verified against is not decided here: it is a
+/// process-level fact applied to Pingora's server configuration once, when the service is built
+/// (see [`tls`]). The scheme decides only *whether* the connection is a TLS connection.
 ///
 /// # Errors
-/// Returns [`HttpError::UpstreamFailed`] when the upstream asks for TLS while
-/// [`TLS_BACKEND_ENABLED`] is `false`, and when the host does not resolve to a socket address.
-/// Both causes are kept as the error's source for logging; the caller-facing response never
-/// repeats them.
+/// Returns [`HttpError::UpstreamFailed`] when the host does not resolve to a socket address. The
+/// cause is kept as the error's source for logging; the caller-facing response never repeats it.
 pub(crate) async fn peer(
     destination: &Destination,
     budget: Duration,
 ) -> Result<Box<HttpPeer>, HttpError> {
-    refuse_unavailable_tls(destination)?;
     let address = resolve(destination).await?;
     Ok(build(destination, address, budget))
 }
@@ -137,23 +126,6 @@ pub(crate) fn host_header(destination: &Destination) -> String {
     } else {
         format!("{}:{}", destination.host(), destination.port())
     }
-}
-
-/// Refuses a destination whose scheme this build cannot honour.
-///
-/// See [`TLS_BACKEND_ENABLED`]: without a provider, `tls: true` is a pass-through stub, so
-/// connecting would send plaintext to a port the configuration calls secure.
-fn refuse_unavailable_tls(destination: &Destination) -> Result<(), HttpError> {
-    if destination.scheme() == Scheme::Https && !TLS_BACKEND_ENABLED {
-        return Err(HttpError::UpstreamFailed {
-            source: Box::new(io::Error::other(format!(
-                "upstream `{}:{}` is https but this build has no TLS provider",
-                destination.host(),
-                destination.port()
-            ))),
-        });
-    }
-    Ok(())
 }
 
 /// Resolves the destination's `host:port` to one socket address.

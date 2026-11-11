@@ -10,7 +10,7 @@
 //! and the accepted ranges belong to the data plane, which is why this module only translates the
 //! written YAML into [`RawHttp`] and delegates the rules to [`HttpSettings::resolve`].
 
-use nico_http::{HttpSettings, HttpSettingsError};
+use nico_http::{HttpSettings, HttpSettingsError, TlsPolicy};
 use serde::Deserialize;
 
 use super::BootstrapError;
@@ -29,16 +29,21 @@ pub(super) struct RawHttp {
 impl RawHttp {
     /// Resolves the section into the settings the data plane runs with.
     ///
+    /// `tls` is the trust policy the bootstrap's own `tls` section produced. It is not a field of
+    /// this section (a bundle belongs to the process, not to the listener), but it is a field of the
+    /// settings this section resolves, so it is handed over here.
+    ///
     /// # Errors
     /// Returns [`BootstrapError::InvalidField`] under the `http.` prefix, naming the field the data
     /// plane rejected and the rule it applied.
-    pub(super) fn resolve(&self) -> Result<HttpSettings, BootstrapError> {
+    pub(super) fn resolve(&self, tls: TlsPolicy) -> Result<HttpSettings, BootstrapError> {
         HttpSettings::resolve(
             self.listen.as_deref(),
             self.h2c,
             self.grace_period_ms,
             self.graceful_shutdown_ms,
             self.threads,
+            tls,
         )
         .map_err(|error: HttpSettingsError| BootstrapError::InvalidField {
             field: format!("http.{}", error.field()).into(),

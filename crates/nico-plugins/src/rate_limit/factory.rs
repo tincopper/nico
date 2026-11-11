@@ -47,10 +47,10 @@ impl RateLimitFactory {
         // Drop the records of tables no generation holds any more. Safe to run before a build: a table
         // this publication will reuse is, by definition, still held by the generation in service.
         tables.retain(|_, table| table.strong_count() > 0);
-        if let Some(existing) = tables.get(name).and_then(Weak::upgrade) {
-            if existing.parameters() == parameters {
-                return existing;
-            }
+        if let Some(existing) = tables.get(name).and_then(Weak::upgrade)
+            && existing.parameters() == parameters
+        {
+            return existing;
         }
         let limiter = Arc::new(Limiter::new(parameters));
         tables.insert(name.to_owned(), Arc::downgrade(&limiter));

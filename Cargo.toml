@@ -5,7 +5,7 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.0.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "Apache-2.0"
 publish = false
 
@@ -39,6 +39,32 @@ notify = "=8.2.1"
 # 0.9.1 source (see .trellis/tasks/11-04-s1-2-http-data-plane/design.md); re-verify on upgrade.
 pingora = "=0.9.1"
 proptest = "1"
+# The upstream TLS client this build speaks, through pingora's `rustls` backend. `pingora-rustls`
+# 0.9.1 requires `^0.23.12`, and cargo unifies the graph on one version, so the graph holds exactly
+# one rustls and one `ring`: a second version would mean two crypto stacks, two root stores and two
+# handshake error types. Pinned to the newest 0.23 patch, which is also what clears the advisories
+# the older ones carry. `nico-http` names it directly to run *pingora's own* trust-store parse at
+# startup (see `upstream/tls/policy.rs`), not to build a client of its own.
+#
+# `default-features = false` is mandatory, not tidiness: rustls' default turns on `aws-lc-rs`, which
+# would compile a *second* crypto provider beside pingora's `ring` (with its own C build) and leave
+# `CryptoProvider` ambiguous — no crate feature then names a provider, and every `ClientConfig::builder`
+# that runs before pingora's own install panics. The feature list below is exactly the set
+# `pingora-rustls` asks for, so the two consumers cannot drift.
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+# The PEM reader `pingora-rustls` uses for `ConnectorOptions::ca_file`. Depending on the same crate
+# is what makes the startup check and the handshake agree on which bytes are a certificate.
+rustls-pemfile = "=2.2.0"
+# The platform trust store, read by the very call `pingora-rustls` makes while building its client
+# connector (`load_native_certs`, honouring `SSL_CERT_FILE` / `SSL_CERT_DIR`). The startup probe in
+# `upstream/tls/mod.rs` reads it first so an unreadable store fails startup instead of a panic
+# inside `HttpProxy::new`.
+rustls-native-certs = "=0.7.3"
+# The TLS listener the integration scenarios need: they present the certificate a scenario chooses,
+# so the handshake is real rather than mocked. `default-features = false` is mandatory for the same
+# reason as `rustls` above — tokio-rustls' defaults add `aws-lc-rs`, which would put a second crypto
+# provider in the graph. Dev-only: no shipped binary links it.
+tokio-rustls = { version = "=0.26.6", default-features = false, features = ["logging", "ring", "tls12"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 # A plugin reads its configuration as JSON text (the contract's shape) while the document hands it
 # over as YAML: one serializer at publication turns one into the other, never the request path.

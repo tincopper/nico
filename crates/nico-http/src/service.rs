@@ -21,7 +21,7 @@ use pingora::{
     services::listening::Service,
 };
 
-use crate::{proxy::HttpApp, settings::HttpSettings, state::HttpStateHandle};
+use crate::{proxy::HttpApp, settings::HttpSettings, state::HttpStateHandle, upstream::tls};
 
 /// Builds the server configuration the data plane runs with.
 ///
@@ -45,15 +45,20 @@ use crate::{proxy::HttpApp, settings::HttpSettings, state::HttpStateHandle};
 ///
 /// `threads` is never zero — [`HttpSettings`] rejects zero for the same reason Pingora would panic
 /// on it, so the value handed to Tokio's `worker_threads` is always a usable runtime size.
+///
+/// The upstream trust roots are written here because this is the last moment before Pingora reads
+/// them: `ProxyServiceBuilder::build` derives its TLS connector from this value, once. That is also
+/// why changing the CA is a restart and not a reload.
 #[must_use]
 pub fn server_conf(settings: &HttpSettings) -> Arc<ServerConf> {
-    let conf = ServerConf {
+    let mut conf = ServerConf {
         grace_period_seconds: Some(whole_seconds(settings.grace_period())),
         graceful_shutdown_timeout_seconds: Some(whole_seconds(settings.graceful_shutdown())),
         threads: settings.threads(),
         max_retries: MAX_ATTEMPTS_PER_ROUTE,
         ..ServerConf::default()
     };
+    tls::apply(settings.tls(), &mut conf);
     Arc::new(conf)
 }
 

@@ -29,6 +29,7 @@
 )]
 
 pub(crate) mod http;
+pub(crate) mod tls;
 pub(crate) mod token;
 
 use std::{

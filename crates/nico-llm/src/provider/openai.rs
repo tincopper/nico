@@ -51,8 +51,9 @@
 //! The endpoint resolver turns the route's `base_url` into a destination and the chat path; the
 //! endpoint's headers are `content-type`, `accept` and, when the route presents one, `authorization`.
 //! The data plane owns `host`, `content-length`, `transfer-encoding` and every hop-by-hop header, so
-//! the adapter never sets them. An `https` base URL is a valid endpoint here even though this build
-//! cannot speak TLS: refusing it is the data plane's decision, not the adapter's.
+//! the adapter never sets them. An `https` base URL is a valid endpoint here: the adapter carries
+//! the scheme through unchanged and whether the data plane can reach it is the data plane's
+//! decision, not the adapter's.
 //!
 //! The host a base URL names is [`nico_core::validate_host`]'s rule — the same one a document's
 //! `upstreams[].host` is held to — so a destination never carries a value the data plane would write

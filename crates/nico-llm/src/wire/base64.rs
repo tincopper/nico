@@ -69,12 +69,12 @@ pub(crate) fn encode(bytes: &[u8]) -> String {
 /// `=` in the middle of the payload or more than two of them.
 pub(crate) fn decode(text: &str) -> Result<Vec<u8>, Base64Error> {
     let bytes = text.as_bytes();
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err(Base64Error::Length);
     }
     let groups = bytes.len() / 4;
     let mut decoded = Vec::with_capacity(groups * 3);
-    for (index, group) in bytes.chunks_exact(4).enumerate() {
+    for (index, group) in bytes.as_chunks::<4>().0.iter().enumerate() {
         let last = index + 1 == groups;
         let padding = group.iter().rev().take_while(|byte| **byte == b'=').count();
         if padding > 2 || (padding > 0 && !last) {

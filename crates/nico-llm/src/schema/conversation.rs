@@ -167,12 +167,12 @@ impl ContentPart {
                 data: _,
             } => {
                 validate_media_type("content_part.media_type", media_type)?;
-                if let Some(name) = name {
-                    if name.trim().is_empty() {
-                        return Err(SchemaError::Empty {
-                            field: "content_part.name",
-                        });
-                    }
+                if let Some(name) = name
+                    && name.trim().is_empty()
+                {
+                    return Err(SchemaError::Empty {
+                        field: "content_part.name",
+                    });
                 }
                 Ok(())
             }
@@ -289,12 +289,12 @@ impl Reasoning {
                 field: "reasoning.text",
             });
         }
-        if let Some(signature) = &self.signature {
-            if signature.is_empty() {
-                return Err(SchemaError::Empty {
-                    field: "reasoning.signature",
-                });
-            }
+        if let Some(signature) = &self.signature
+            && signature.is_empty()
+        {
+            return Err(SchemaError::Empty {
+                field: "reasoning.signature",
+            });
         }
         Ok(())
     }

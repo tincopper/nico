@@ -21,10 +21,12 @@
 //!
 //! Two boundaries stay inside the crate: `budget` owns the body/time budget arithmetic, and
 //! `upstream` owns "destination → connectable peer". Neither is part of the public contract: the
-//! only thing another crate needs from the second one is [`Destination`], the value a policy hands
-//! over when it understood a target this crate does not. The Pingora header types are no longer
-//! re-exported either: a plugin never sees one, so there is no reason for its crate to depend on the
-//! framework.
+//! only things another crate needs from the second one are [`Destination`], the value a policy hands
+//! over when it understood a target this crate does not, and [`TlsPolicy`] with [`validate_bundle`]
+//! and [`ensure_usable`] — the two checks a bootstrap file's trust roots go through, first while the
+//! document is parsed and then again when the process is assembled, before Pingora builds its
+//! connector from them. The Pingora header types are no longer re-exported either: a plugin never
+//! sees one, so there is no reason for its crate to depend on the framework.
 //!
 //! # Boundaries
 //!
@@ -122,4 +124,7 @@ pub use settings::{HttpSettings, HttpSettingsError, validate_listen};
 pub use state::{
     BufferedRoutes, HttpState, HttpStateHandle, PublishedChains, ResponseRewrites, RouteChains,
 };
-pub use upstream::Destination;
+pub use upstream::{
+    Destination,
+    tls::{BundleError, TlsPolicy, TrustRootsError, ensure_usable, validate_bundle},
+};

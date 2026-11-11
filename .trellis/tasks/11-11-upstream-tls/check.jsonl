@@ -1,0 +1,8 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "检查的分层入口"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "复查 TLS 握手失败/超时的对外 code 与状态码是否严格落在既有契约内，cause 是否只进日志"}
+{"file": ".trellis/spec/backend/pingora-guidelines.md", "reason": "复查 peer 构造、connector 生命周期与 shutdown 纪律；确认 :255/:388 已被改写而不是留下与新行为矛盾的旧事实"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "复查五条门禁、文件预算、拒绝新增第二套网络栈的依赖约束"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "复查 policy.rs 是否真的不含 pingora 标识符、adapter.rs 是否是唯一 TLS 类型入口，以及归属行是否同步"}
+{"file": ".trellis/tasks/11-11-upstream-tls/prd.md", "reason": "逐条核对验收清单，尤其是三场景 e2e、删掉的拒绝分支、角色矩阵与文件预算"}
+{"file": ".trellis/tasks/11-11-upstream-tls/design.md", "reason": "复查实现是否遵守五条不变量（校验不可关闭、根集单一来源、失败不降级、CA 不热加载、单栈）"}
+{"file": ".trellis/tasks/11-11-upstream-tls/research/rustls-backend-facts.md", "reason": "复查实现依赖的每条 pingora 事实是否与取证一致，尤其是\"根集替换而非追加\"与\"connector 在 service 构建时定型\""}

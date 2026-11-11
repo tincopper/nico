@@ -41,17 +41,17 @@ fn validate_error_response(plugin: &PluginSpec) -> Result<(), DocumentError> {
     let Some(response) = plugin.error_response() else {
         return Ok(());
     };
-    if let Some(status) = response.status() {
-        if !super::REJECTION_STATUS.contains(&status) {
-            return Err(invalid(
-                "plugins[].error_response.status",
-                format!(
-                    "must be in {}..={}",
-                    super::REJECTION_STATUS.start(),
-                    super::REJECTION_STATUS.end()
-                ),
-            ));
-        }
+    if let Some(status) = response.status()
+        && !super::REJECTION_STATUS.contains(&status)
+    {
+        return Err(invalid(
+            "plugins[].error_response.status",
+            format!(
+                "must be in {}..={}",
+                super::REJECTION_STATUS.start(),
+                super::REJECTION_STATUS.end()
+            ),
+        ));
     }
     validate_content_type(FIELD, response.content_type())
 }

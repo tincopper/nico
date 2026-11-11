@@ -7,4 +7,4 @@ allow-expect-in-tests = true
 allow-panic-in-tests = true
 
 # Keep in sync with `[workspace.package] rust-version`.
-msrv = "1.85"
+msrv = "1.88"

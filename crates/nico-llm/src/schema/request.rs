@@ -223,12 +223,12 @@ impl JsonSchema {
     /// # Errors
     /// Returns the same variants as [`JsonSchema::try_new`].
     pub fn validate(&self) -> Result<(), SchemaError> {
-        if let Some(name) = &self.name {
-            if name.trim().is_empty() {
-                return Err(SchemaError::Empty {
-                    field: "response_format.json_schema.name",
-                });
-            }
+        if let Some(name) = &self.name
+            && name.trim().is_empty()
+        {
+            return Err(SchemaError::Empty {
+                field: "response_format.json_schema.name",
+            });
         }
         if !self.schema.is_object() {
             return Err(SchemaError::NotAnObject {
@@ -303,12 +303,12 @@ fn validate_tools(tools: &[Tool], choice: &ToolChoice) -> Result<(), SchemaError
             });
         }
     }
-    if let ToolChoice::Tool(name) = choice {
-        if !tools.iter().any(|tool| tool.name() == name) {
-            return Err(SchemaError::UndeclaredTool {
-                name: excerpt(name.as_str()),
-            });
-        }
+    if let ToolChoice::Tool(name) = choice
+        && !tools.iter().any(|tool| tool.name() == name)
+    {
+        return Err(SchemaError::UndeclaredTool {
+            name: excerpt(name.as_str()),
+        });
     }
     Ok(())
 }

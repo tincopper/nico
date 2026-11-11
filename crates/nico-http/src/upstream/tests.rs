@@ -3,8 +3,8 @@ use std::{net::SocketAddr, time::Duration};
 use nico_core::{Scheme, Upstream};
 use pingora::protocols::tls::ALPN;
 
-use super::{Destination, build, host_header, peer, refuse_unavailable_tls};
-use crate::{HttpError, test_support::document_with};
+use super::{Destination, build, host_header, peer};
+use crate::test_support::document_with;
 
 const CLEARTEXT: &str = concat!(
     "  - name: api-backend\n",
@@ -76,33 +76,15 @@ fn a_cleartext_destination_builds_a_peer_without_tls() {
 }
 
 #[test]
-fn an_https_destination_is_refused_while_no_tls_provider_is_compiled() {
-    // Pingora's no-provider backend is a pass-through stub, so a `tls: true` peer would send
-    // plaintext. Refusing is the only answer that cannot silently downgrade the connection.
-    let error = refuse_unavailable_tls(&destination(SECURE))
-        .expect_err("https needs a TLS provider this build does not compile");
+fn an_https_destination_builds_a_peer_that_speaks_tls() {
+    // The backend is compiled in, so the scheme decides only *whether* to hand the connection to
+    // the TLS connector. Which roots it is verified against is a service-built fact (`tls`).
+    let peer = build(&destination(SECURE), address(443), BUDGET);
 
-    assert!(
-        matches!(error, HttpError::UpstreamFailed { .. }),
-        "expected UpstreamFailed, got {error:?}"
-    );
+    assert!(peer.is_tls(), "scheme https must enable TLS");
     assert_eq!(
-        error.category(),
-        nico_core::ErrorCategory::Upstream,
-        "a missing TLS provider is an upstream-side failure"
-    );
-    assert!(
-        error.to_string().contains("upstream request failed"),
-        "the caller-facing text stays generic: {error}"
-    );
-    let source = std::error::Error::source(&error).expect("the cause is kept for logs");
-    assert!(
-        source.to_string().contains("no TLS provider"),
-        "the log must name the real cause: {source}"
-    );
-    assert!(
-        source.to_string().contains("127.0.0.1:443"),
-        "the log must name the peer that was refused: {source}"
+        peer.sni, "127.0.0.1",
+        "SNI is the destination host, which is also what the certificate is verified against"
     );
 }
 
@@ -137,17 +119,6 @@ async fn a_peer_resolves_an_address_literal_without_a_lookup() {
         peer.to_string().contains("127.0.0.1:8080"),
         "the resolved address must be the destination's: {peer}"
     );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn an_https_destination_is_refused_before_the_host_is_resolved() {
-    // The refusal is the first step on purpose: a scheme this build cannot speak must not spend a
-    // resolver query, and `localhost` would resolve if it were reached.
-    let error = peer(&destination(SECURE_NAMED_HOST), BUDGET)
-        .await
-        .expect_err("https needs a TLS provider this build does not compile");
-
-    assert!(matches!(error, HttpError::UpstreamFailed { .. }));
 }
 
 #[test]

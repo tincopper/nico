@@ -233,10 +233,10 @@ impl JwtPlugin {
                 return Err(WRONG_ISSUER);
             }
         }
-        if let Some(audience) = &self.audience {
-            if !audience_matches(claims.get("aud"), audience) {
-                return Err(WRONG_AUDIENCE);
-            }
+        if let Some(audience) = &self.audience
+            && !audience_matches(claims.get("aud"), audience)
+        {
+            return Err(WRONG_AUDIENCE);
         }
         let subject = claims
             .get("sub")

@@ -118,3 +118,55 @@ fn a_status_that_cannot_carry_a_body_is_written_without_one() {
     assert_eq!(value(&header, "content-length").as_deref(), Some("0"));
     assert!(body.is_empty());
 }
+
+mod tls {
+    use pingora::{Error, ErrorSource, ErrorType};
+
+    use super::super::{classify, is_upstream_timeout};
+    use crate::HttpContext;
+
+    /// Builds the upstream-sourced failure a TLS layer reports, as Pingora would hand it over.
+    fn upstream(etype: ErrorType) -> Box<Error> {
+        Error::create(etype, ErrorSource::Upstream, None, None)
+    }
+
+    /// Returns what the caller would receive for `error`.
+    fn answer(error: &Error) -> (u16, String) {
+        let failure = classify(&HttpContext::default(), error)
+            .expect("an upstream failure always has a response to write");
+        let respond = failure.respond().expect("a mapped failure is renderable");
+        (respond.status().as_u16(), respond.code().to_owned())
+    }
+
+    #[test]
+    fn a_tls_handshake_that_ran_out_of_budget_answers_a_timeout() {
+        let error = upstream(ErrorType::TLSHandshakeTimedout);
+
+        assert!(
+            is_upstream_timeout(&error),
+            "a handshake deadline is a timeout"
+        );
+        assert_eq!(
+            answer(&error),
+            (504, "upstream_timeout".to_owned()),
+            "the caller must learn its request can be retried, not that the peer is broken"
+        );
+    }
+
+    #[test]
+    fn a_tls_handshake_failure_is_not_reported_as_a_timeout() {
+        for etype in [ErrorType::TLSHandshakeFailure, ErrorType::InvalidCert] {
+            let error = upstream(etype);
+
+            assert!(
+                !is_upstream_timeout(&error),
+                "an untrusted certificate or a failed handshake is not the deadline expiring"
+            );
+            assert_eq!(
+                answer(&error),
+                (502, "upstream_unreachable".to_owned()),
+                "a peer this gateway cannot trust is unreachable, and the cause stays in the log"
+            );
+        }
+    }
+}

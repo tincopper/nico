@@ -51,3 +51,13 @@ http:
   # Worker threads per service. At least one: the count is handed to Tokio's runtime builder, which
   # rejects zero, so a written zero fails at startup instead of panicking on the first request.
   threads: 1
+
+# Upstream TLS trust roots. The whole section may be omitted, in which case the platform certificate
+# store is used and `SSL_CERT_FILE` / `SSL_CERT_DIR` are honoured by the TLS provider itself. A
+# written `ca_file` is a **complete** trust-root set: it *replaces* the platform store rather than
+# adding to it, so a deployment that needs both concatenates the public roots and its private CA into
+# one file. The roots are read once, when the service is built, so changing this file takes a restart
+# and never a reload. If neither source can be read, or reads as no certificate at all, the process
+# refuses to start instead of serving with an empty trust store.
+# tls:
+#   ca_file: /etc/nico/roots.pem

@@ -18,10 +18,20 @@ nico-core.workspace = true
 # facade and not the exporter: `nico-metrics` owns the recorder, and the data plane must not
 # pull the exporter (or a second network stack) into its dependency tree.
 metrics.workspace = true
-# `proxy` pulls `pingora-proxy`, whose `ProxyHttp` hooks this crate implements. No TLS backend is
-# enabled yet: TLS termination is out of scope for this milestone, and an upstream peer built here
-# is cleartext unless the document declares `https`, which needs the `tls`-terminating task.
-pingora = { workspace = true, features = ["proxy"] }
+# `proxy` pulls `pingora-proxy`, whose `ProxyHttp` hooks this crate implements. `rustls` is the one
+# upstream TLS backend this build speaks: cargo features are additive across the graph, so enabling
+# it here is what makes `https` reachable from every crate that links this one. It brings rustls
+# 0.23 with `ring`, whose build script needs a C compiler (see `CONTRIBUTING.md`); no cmake, no
+# ninja, and no second HTTP stack.
+pingora = { workspace = true, features = ["proxy", "rustls"] }
+# The same parser pingora itself uses to turn `tls.ca_file` into a trust store. A bundle is refused
+# at startup by running the *identical* parse (see `upstream/tls/policy.rs`), so a file pingora
+# would `unwrap()` on can never reach it.
+rustls.workspace = true
+# The platform trust store, read at startup by the same call Pingora's connector makes. A machine
+# where it cannot be read is refused before the service is built, instead of panicking inside it.
+rustls-native-certs.workspace = true
+rustls-pemfile.workspace = true
 thiserror.workspace = true
 # `time` bounds every filter stage by the request's remaining budget, and `net`+`rt` let an upstream
 # name be resolved on Tokio's blocking pool instead of the worker thread the request runs on. The
@@ -30,6 +40,9 @@ tokio = { workspace = true, features = ["net", "rt", "time"] }
 tracing.workspace = true
 
 [dev-dependencies]
+# A temporary directory for the fixtures that have to exist on disk: the startup probe reads a
+# bundle path again, so "the file is gone" and "the file is a key" are behaviours about real files.
+tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
 
 [lints]

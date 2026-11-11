@@ -22,6 +22,16 @@ ignore = [
     # a macro-only helper (`pin_mut!`, `unsafe_pinned!`); nothing of ours is written against it.
     # Re-check on every pingora upgrade: drop this entry as soon as futures-util stops depending on it.
     "RUSTSEC-2026-0441",
+    # rustls-pemfile 2.2.0 <- pingora-rustls (and our own direct dependency on the same crate, so the
+    # startup check and the handshake agree on what a certificate is) and <- rustls-native-certs.
+    # Deprecated, not vulnerable: upstream archived the repository and moved the identical parsing
+    # code into `rustls-pki-types` (`PemObject`), of which 2.2.0 is a thin wrapper — so the logic is
+    # still maintained, just at its new home. It cannot be compiled out (pingora-rustls depends on
+    # it non-optionally), and what it parses here is local, operator-owned input read once at
+    # startup: the `tls.ca_file` bundle and the platform store. No request byte ever reaches it.
+    # Re-check on every pingora upgrade: drop this entry when pingora-rustls moves to
+    # `rustls-pki-types` directly.
+    "RUSTSEC-2025-0134",
 ]
 
 [licenses]

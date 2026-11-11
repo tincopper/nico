@@ -82,18 +82,18 @@ impl JwtSpec {
     /// - Every failure the entry's refusal presentation can have: an unknown template variable, an
     ///   unclosed placeholder, an unusable status, or a non-JSON content type without a body.
     pub(crate) fn compile(plugin: &PluginSpec, config: &JwtConfig) -> Result<Self, PluginError> {
-        if config.keys.len() > 1 {
-            if let Some(keyless) = config.keys.iter().find(|key| key.kid.is_none()) {
-                return Err(PluginError::InvalidParameter {
-                    plugin: plugin.name().to_owned(),
-                    field: "config.keys[].kid",
-                    reason: format!(
-                        "must be set on every key of a multi-key set; the key reading `{}` could never be selected",
-                        keyless.secret_ref
-                    )
-                    .into(),
-                });
-            }
+        if config.keys.len() > 1
+            && let Some(keyless) = config.keys.iter().find(|key| key.kid.is_none())
+        {
+            return Err(PluginError::InvalidParameter {
+                plugin: plugin.name().to_owned(),
+                field: "config.keys[].kid",
+                reason: format!(
+                    "must be set on every key of a multi-key set; the key reading `{}` could never be selected",
+                    keyless.secret_ref
+                )
+                .into(),
+            });
         }
         let instance = Arc::from(plugin.name());
         Ok(Self {

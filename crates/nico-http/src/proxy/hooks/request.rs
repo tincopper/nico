@@ -140,10 +140,10 @@ async fn route_request(session: &mut Session, ctx: &mut HttpContext, state: &Htt
     // 5. A declared length over the route's limit is refused before a plugin runs: the body will never
     //    be accepted, so no policy has a decision to make about it.
     let declared = budget::declared_length(session.req_header());
-    if let (Some(limit), Some(declared)) = (ctx.body_limit(), declared) {
-        if budget::over_limit(limit, declared) {
-            return Verdict::Refuse(HttpError::BodyTooLarge { limit });
-        }
+    if let (Some(limit), Some(declared)) = (ctx.body_limit(), declared)
+        && budget::over_limit(limit, declared)
+    {
+        return Verdict::Refuse(HttpError::BodyTooLarge { limit });
     }
 
     // 6. Record what this request runs and how it is framed. Both flags are publication decisions, read

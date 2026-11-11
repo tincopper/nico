@@ -1,15 +1,17 @@
 //! The process-level HTTP settings the local bootstrap file owns.
 //!
-//! A listening address, plaintext HTTP/2, drain windows and a thread count describe the *process*,
-//! not the configuration a control plane pushes, so they are read once from the bootstrap file and
-//! never from a configuration source. This module owns their defaults and their accepted ranges,
-//! which is why [`HttpSettings`] can only be built by [`HttpSettings::resolve`]: every field in an
-//! instance was either omitted and defaulted, or written and accepted as written.
+//! A listening address, plaintext HTTP/2, drain windows, a thread count and the upstream trust
+//! roots describe the *process*, not the configuration a control plane pushes, so they are read once
+//! from the bootstrap file and never from a configuration source. This module owns their defaults and
+//! their accepted ranges, which is why [`HttpSettings`] can only be built by [`HttpSettings::resolve`]:
+//! every field in an instance was either omitted and defaulted, or written and accepted as written.
 //!
 //! The values are the only source of the numbers the startup diagnostics quote: an error message is
 //! built from the constant the check applied, never from a second copy of it.
 
 use std::{borrow::Cow, net::SocketAddr, time::Duration};
+
+use crate::upstream::tls::TlsPolicy;
 
 /// Address the data plane listens on when the bootstrap file names none.
 const DEFAULT_LISTEN: &str = "0.0.0.0:8080";
@@ -48,6 +50,7 @@ pub struct HttpSettings {
     grace_period: Duration,
     graceful_shutdown: Duration,
     threads: usize,
+    tls: TlsPolicy,
 }
 
 impl HttpSettings {
@@ -58,6 +61,11 @@ impl HttpSettings {
     /// windows are also checked against each other: the shutdown deadline may never be shorter than
     /// the grace period, because that would cut streaming responses off before they could finish.
     ///
+    /// `tls` is passed in rather than defaulted here: building one means reading a file, and reading
+    /// files is not this module's job. The bootstrap section is the one caller, and it validates the
+    /// bundle before constructing the policy, so the value that reaches the server configuration was
+    /// checked — a policy records the fact, and this module does not re-check it.
+    ///
     /// # Errors
     /// Returns [`HttpSettingsError`] naming the field and the rule that rejected it, with the bound
     /// quoted from the constant the check applied.
@@ -67,8 +75,12 @@ impl HttpSettings {
         grace_period_ms: Option<u64>,
         graceful_shutdown_ms: Option<u64>,
         threads: Option<usize>,
+        tls: TlsPolicy,
     ) -> Result<Self, HttpSettingsError> {
-        let mut settings = Self::default();
+        let mut settings = Self {
+            tls,
+            ..Self::default()
+        };
 
         if let Some(listen) = listen {
             settings.listen = listen.to_owned();
@@ -138,6 +150,15 @@ impl HttpSettings {
     pub const fn threads(&self) -> usize {
         self.threads
     }
+
+    /// Returns the trust roots an upstream TLS handshake is verified against.
+    ///
+    /// It is a startup fact, not a document field: Pingora builds its connector from this value
+    /// once, so changing it takes a restart rather than a reload.
+    #[must_use]
+    pub const fn tls(&self) -> &TlsPolicy {
+        &self.tls
+    }
 }
 
 impl Default for HttpSettings {
@@ -152,6 +173,7 @@ impl Default for HttpSettings {
             grace_period: Duration::from_millis(DEFAULT_GRACE_PERIOD_MS),
             graceful_shutdown: Duration::from_millis(DEFAULT_GRACEFUL_SHUTDOWN_MS),
             threads: DEFAULT_THREADS,
+            tls: TlsPolicy::default(),
         }
     }
 }

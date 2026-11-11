@@ -3,12 +3,28 @@ use std::sync::Arc;
 use pingora::{server::configuration::ServerConf, services::Service as ServiceApi};
 
 use super::{server_conf, service};
-use crate::{settings::HttpSettings, state::HttpStateHandle};
+use crate::{TlsPolicy, settings::HttpSettings, state::HttpStateHandle, test_support::tls_bundle};
+
+/// Settings whose trust roots are a bundle this crate owns.
+///
+/// A service cannot be built against the platform store here: Pingora reads it while building its
+/// TLS connector, and a test process may not be allowed to read the host's trust settings. The
+/// bundle makes the root set a fact of the test instead of a fact of the machine.
+fn tls() -> TlsPolicy {
+    TlsPolicy::from_bootstrap(Some(tls_bundle().to_owned()))
+}
 
 /// Settings whose two drain windows are `grace_ms` and `shutdown_ms`.
 fn settings(grace_ms: u64, shutdown_ms: u64) -> HttpSettings {
-    HttpSettings::resolve(None, Some(true), Some(grace_ms), Some(shutdown_ms), None)
-        .expect("the fixture windows are in range")
+    HttpSettings::resolve(
+        None,
+        Some(true),
+        Some(grace_ms),
+        Some(shutdown_ms),
+        None,
+        tls(),
+    )
+    .expect("the fixture windows are in range")
 }
 
 fn conf(settings: &HttpSettings) -> Arc<ServerConf> {
@@ -77,14 +93,16 @@ fn the_attempt_ceiling_covers_every_chain_a_document_can_declare() {
 
 #[test]
 fn the_thread_count_is_passed_through() {
-    let settings = HttpSettings::resolve(None, None, None, None, Some(8)).expect("8 is in range");
+    let settings =
+        HttpSettings::resolve(None, None, None, None, Some(8), tls()).expect("8 is in range");
 
     assert_eq!(conf(&settings).threads, 8);
 }
 
 #[test]
 fn the_default_thread_count_is_pingoras_own_default() {
-    let settings = HttpSettings::resolve(None, None, None, None, None).expect("defaults are valid");
+    let settings =
+        HttpSettings::resolve(None, None, None, None, None, tls()).expect("defaults are valid");
 
     assert_eq!(
         conf(&settings).threads,
@@ -111,7 +129,8 @@ fn h2c_reaches_the_proxy_server_options() {
 
 #[test]
 fn h2c_stays_disabled_when_the_settings_do_not_ask_for_it() {
-    let settings = HttpSettings::resolve(None, None, None, None, None).expect("defaults are valid");
+    let settings =
+        HttpSettings::resolve(None, None, None, None, None, tls()).expect("defaults are valid");
     let service = service(&conf(&settings), HttpStateHandle::new(), &settings);
 
     let proxy = service.app_logic().expect("the application is held");
@@ -125,12 +144,27 @@ fn h2c_stays_disabled_when_the_settings_do_not_ask_for_it() {
 
 #[test]
 fn the_configured_listener_is_registered_once() {
-    let settings = HttpSettings::resolve(Some("127.0.0.1:18080"), None, None, None, None)
+    let settings = HttpSettings::resolve(Some("127.0.0.1:18080"), None, None, None, None, tls())
         .expect("the fixture address is valid");
     let service = service(&conf(&settings), HttpStateHandle::new(), &settings);
 
     assert_eq!(
         ServiceApi::listen_addresses(&service),
         Some(vec!["127.0.0.1:18080".to_owned()])
+    );
+}
+
+#[test]
+fn a_configured_bundle_reaches_the_server_configuration() {
+    let policy = TlsPolicy::from_bootstrap(Some(std::path::PathBuf::from("/etc/nico/roots.pem")));
+    let settings = HttpSettings::resolve(None, None, None, None, None, policy)
+        .expect("the fixture policy is valid");
+
+    let conf = conf(&settings);
+
+    assert_eq!(
+        conf.ca_file.as_deref(),
+        Some("/etc/nico/roots.pem"),
+        "Pingora reads this field once, when it builds the connector the service uses"
     );
 }

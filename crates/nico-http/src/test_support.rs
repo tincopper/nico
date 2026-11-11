@@ -6,7 +6,8 @@
 
 use std::{
     net::{IpAddr, Ipv4Addr},
-    sync::Arc,
+    path::{Path, PathBuf},
+    sync::{Arc, OnceLock},
     time::Instant,
 };
 
@@ -203,3 +204,41 @@ mod llm;
 pub(crate) use llm::{
     FakeLlmRoute, FakeLlmRoutes, LlmCalls, llm_context, llm_snapshot, llm_snapshot_with,
 };
+
+/// A self-signed EC certificate a test can configure as its only trust root.
+///
+/// Valid far beyond any clock a test will see. It carries no key material: it is a trust anchor and
+/// nothing else, so committing it is safe.
+pub(crate) const TEST_ROOT_PEM: &str = "\
+-----BEGIN CERTIFICATE-----
+MIIBoTCCAUegAwIBAgIUEt8o0UNscp3Lwon0omZoZsZOOkwwCgYIKoZIzj0EAwIw
+HTEbMBkGA1UEAwwSbmljbyB0ZXN0IHJvb3Qgb25lMCAXDTI2MTExMTA3Mjg1OFoY
+DzIxMjYxMDE4MDcyODU4WjAdMRswGQYDVQQDDBJuaWNvIHRlc3Qgcm9vdCBvbmUw
+WTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARUW8ZyKse5cT4emOomnnXp/E28o1yN
+Zmlodpe9IBhQQCLUR0Gl3dMZJixVwfQ0vpI1aYu8dMCiR2t6ItRXxmzto2MwYTAd
+BgNVHQ4EFgQUneYc2pRsCc5JwdjcdQNNR5jI/qwwHwYDVR0jBBgwFoAUneYc2pRs
+Cc5JwdjcdQNNR5jI/qwwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMCAgQw
+CgYIKoZIzj0EAwIDSAAwRQIhAOQbPbb+aw5l9N8JERpU8ZajiiY+wF+EzV20fBTA
+uTHPAiAb6xBdOVSdgqWqSnggn4c27L3Zd0u/ZDTLCUc3ZDJeHw==
+-----END CERTIFICATE-----
+";
+
+/// Returns the path of a PEM bundle holding [`TEST_ROOT_PEM`], written once per process.
+///
+/// A test that builds a service must not depend on the host's trust store: Pingora reads it while
+/// building its TLS connector, and a sandboxed or headless process — a test runner, a CI job over
+/// SSH — may not be allowed to. Handing the connector a bundle makes the root set a fact of the
+/// test rather than of the machine it runs on.
+///
+/// The name carries the process id so two test binaries can run at once without reading each
+/// other's half-written file.
+pub(crate) fn tls_bundle() -> &'static Path {
+    static PATH: OnceLock<PathBuf> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let path =
+            std::env::temp_dir().join(format!("nico-test-tls-roots-{}.pem", std::process::id()));
+        std::fs::write(&path, TEST_ROOT_PEM).expect("the test bundle is writable");
+        path
+    })
+    .as_path()
+}

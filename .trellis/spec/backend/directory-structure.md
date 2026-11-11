@@ -100,7 +100,8 @@ nico/
     │       ├── state/          # plan.rs: the chains and the two per-route framing decisions
     │       ├── llm.rs          # the byte-level LLM seam: LlmRoutes/LlmRoute/ResponseTransform
     │       ├── llm/            # request.rs, response.rs, routes.rs: one data structure per file
-    │       └── upstream.rs     # crate-private: Destination → HttpPeer
+    │       ├── upstream.rs     # crate-private: Destination → HttpPeer
+    │       └── upstream/       # tls/: policy.rs (roots, no framework, no I/O) + adapter.rs (ServerConf)
     ├── nico-llm/            # canonical LLM model + client codecs + provider adapters
     │   └── src/
     │       ├── lib.rs           # //! + builtin_registry(): the four codecs and four adapters this build serves
@@ -198,7 +199,7 @@ submodules. Name modules after the capability (`debounce`, `publish`, `cache`), 
 
 | Kind of code | Location |
 |---|---|
-| HTTP/Pingora lifecycle, route matching, the `Plugin` contract, upstream TLS policy | `nico-http` |
+| HTTP/Pingora lifecycle, route matching, the `Plugin` contract, upstream TLS policy and its Pingora adapter (`upstream/tls/{policy,adapter}`) | `nico-http` |
 | Signals, runtime ownership, shutdown token, drain wiring | `nico-server` |
 | LLM canonical schema, client protocol codecs, provider adapters, SSE translation | `nico-llm` |
 | The byte-level seam an LLM front-end implements (destination, wire body, per-response transform) | `nico-http/src/llm.rs` |
@@ -210,6 +211,22 @@ submodules. Name modules after the capability (`debounce`, `publish`, `cache`), 
 
 If you cannot name the second real consumer of an abstraction, it does **not** belong in
 `nico-core`. One implementation behind a trait is a warning sign, not a design.
+
+### Upstream TLS: two layers inside `nico-http`
+
+`crates/nico-http/src/upstream/tls/` is split so the policy could move to its own crate without a
+rewrite:
+
+| File | Owns | Must not |
+|---|---|---|
+| `policy.rs` | the root source (`Platform`, or one `Bundle(PathBuf)` that **replaces** it), `TlsPolicy`, and `validate_bundle` — a pure check of PEM bytes | name any `pingora` identifier, or touch the file system: reading a file belongs to the caller, which is what makes every refusal testable on bytes |
+| `adapter.rs` | the only mapping onto Pingora's `ServerConf` (`ca_file`); the only file in the crate that writes framework TLS configuration | carry a policy decision of its own |
+| `mod.rs` | the module's public face, plus `ensure_usable` — the assembly-time probe that re-reads whatever source the policy names **and loads every entry the way the connector will** (`RootCertStore::add`, `validate_bundle`) | run per request: it reads files and belongs to startup |
+
+TLS is a hard dependency of the crate, not a feature: there is no "build without TLS" product, and a
+feature flag would keep a false branch (`refuse https`) alive for a shape nobody ships. `rustls` is
+declared with `default-features = false` and only the provider `pingora-rustls` uses (`ring`); see
+`pingora-guidelines.md` §3 for why a second provider is a defect rather than an addition.
 
 Crate names state the capability, not the product. The product is an AI gateway, but there is no
 `nico-ai`: LLM provider/stream semantics live in `nico-llm`, and a future MCP data plane becomes
