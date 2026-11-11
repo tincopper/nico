@@ -96,12 +96,17 @@ lefthook install             # writes .git/hooks/{pre-commit,pre-push}
 ```
 
 - `pre-commit` (fast, `scripts/gates/pre-commit.sh`): runs only when a `*.rs` / `*.toml` / `*.lock`
-  path is staged. rustfmt check, `cargo check --workspace --all-targets`, tests for the changed
-  crates **and their reverse dependencies**, the 500-line file budget for staged files, and a
-  warning when `src/` changed without a test change.
-- `pre-push` (full, `scripts/gates/pre-push.sh`): fmt, `clippy -D warnings`,
-  `cargo test --workspace`, `cargo doc` with `RUSTDOCFLAGS="-D warnings"`, and `cargo deny check`
-  when installed.
+  path is staged. rustfmt check, `cargo check --workspace --all-targets` (every target's types,
+  `tests/*.rs` included), **unit tests (`--lib`)** for the changed crates and their reverse
+  dependencies, the 500-line file budget for staged files, and a warning when `src/` changed
+  without a test change.
+  It does **not** run the integration suite: those targets start real sockets, processes and file
+  watchers, and they are the slowest thing in this repository. Each step prints its own duration,
+  and a total over `SLOW_GATE_SECONDS` (default 120) warns — visible, not fatal, because turning
+  slowness into a failure is how a gate gets bypassed.
+- `pre-push` (full, `scripts/gates/pre-push.sh`): the **only** gate that runs the whole test suite.
+  fmt, `clippy -D warnings`, `cargo test --workspace`, `cargo doc` with `RUSTDOCFLAGS="-D warnings"`,
+  the feature matrix, and `cargo deny check` when installed.
 - Manual invocation: `lefthook run pre-commit` / `lefthook run pre-push`.
 - Skips: `merge` and `rebase` for pre-commit (a replay would produce false failures).
 

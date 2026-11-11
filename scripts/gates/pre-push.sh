@@ -3,9 +3,11 @@
 #
 # Invoked by lefthook (see lefthook.yml); safe to run directly.
 #
-# The pre-commit hook keeps commits fast; this one runs everything the spec lists
-# as "done": formatting, clippy with -D warnings, the whole test suite, docs, and
-# cargo-deny when it is installed.
+# This is the **only** gate that runs the whole test suite, integration tests included: the
+# pre-commit hook is limited to formatting, a workspace type check and the changed crates' unit
+# tests, so that it stays fast enough to actually run on every commit. Everything the spec lists
+# as "done" lives here: formatting, clippy with -D warnings, the whole test suite, docs, the
+# feature matrix and cargo-deny when it is installed.
 #
 # Bypass for emergencies: SKIP_NICO_HOOKS=1 git push
 set -euo pipefail

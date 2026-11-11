@@ -1,8 +1,15 @@
-use std::{
-    future::poll_fn,
-    path::Path,
-    time::{Duration, Instant},
-};
+//! Unit tests for the local source: reading a document, and what a trigger turns into.
+//!
+//! Everything here is a **decision**, not an observation. Reading is a file read; a trigger is
+//! pushed through the same channel the file backend feeds, so the watch task can be driven without
+//! a watcher, a signal handler or a running kernel notification stream.
+//!
+//! The behaviour that *is* an observation — an atomic rename, a deleted-and-recreated document, a
+//! Kubernetes-style symlink swap, a SIGHUP — lives in `tests/local_watch.rs`. Those scenarios need a
+//! real filesystem and real notifications, cost seconds each, and would make the commit gate slow
+//! enough to be worth bypassing.
+
+use std::{path::Path, time::Duration};
 
 use nico_core::RevisionOrdering;
 use tempfile::TempDir;
@@ -14,7 +21,8 @@ const DOC_A: &[u8] =
 const DOC_B: &[u8] =
     b"apiVersion: gateway/v1\nrequest:\n  max_body_bytes: 2048\n  timeout_ms: 2000\n";
 
-/// Generous enough for macOS `FSEvents` latency, short enough to fail a hung test.
+/// Budget for an injected trigger's item. Nothing here waits on the operating system, so this only
+/// has to be longer than a scheduling round trip.
 const WAIT: Duration = Duration::from_secs(10);
 
 fn config(path: &Path) -> LocalConfig {
@@ -23,57 +31,6 @@ fn config(path: &Path) -> LocalConfig {
 
 fn write(path: &Path, bytes: &[u8]) {
     std::fs::write(path, bytes).expect("fixture write succeeds");
-}
-
-/// Replaces `path` the way a deployer does: write a sibling, then rename over the target.
-fn replace_atomically(path: &Path, bytes: &[u8]) {
-    let temporary = path.with_extension("tmp");
-    write(&temporary, bytes);
-    std::fs::rename(&temporary, path).expect("rename over the target succeeds");
-}
-
-async fn next_event(watch: &mut ConfigWatch) -> Option<WatchItem> {
-    poll_fn(|context| watch.as_mut().poll_next(context)).await
-}
-
-/// Reads events until one matches, failing the test when the budget runs out.
-async fn snapshot_with_bytes(
-    watch: &mut ConfigWatch,
-    expected: &[u8],
-    budget: Duration,
-) -> ConfigVersion {
-    let deadline = Instant::now() + budget;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let event = tokio::time::timeout(remaining, next_event(watch))
-            .await
-            .expect("an event arrives within the budget");
-        match event {
-            Some(Ok(ConfigEvent::Snapshot(version))) => {
-                if version.bytes().as_ref() == expected {
-                    return version;
-                }
-            }
-            Some(Ok(ConfigEvent::ResyncRequired)) => {}
-            Some(Err(_error)) => {}
-            None => panic!("the watch ended before the expected document arrived"),
-        }
-    }
-}
-
-async fn error_event(watch: &mut ConfigWatch, budget: Duration) -> ConfigSourceError {
-    let deadline = Instant::now() + budget;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let event = tokio::time::timeout(remaining, next_event(watch))
-            .await
-            .expect("an event arrives within the budget");
-        match event {
-            Some(Err(error)) => return error,
-            Some(Ok(_event)) => {}
-            None => panic!("the watch ended before the expected error arrived"),
-        }
-    }
 }
 
 mod load {
@@ -203,136 +160,153 @@ mod construction {
     }
 }
 
-mod watch {
+mod watch_task {
     use super::*;
 
-    #[tokio::test]
-    async fn watch_emits_a_snapshot_after_an_atomic_rename() {
-        let directory = TempDir::new().expect("temporary directory");
-        let path = directory.path().join("resources.yaml");
-        write(&path, DOC_A);
-        let source = LocalFileSource::new(config(&path)).expect("configuration is valid");
-        let mut watch = source.watch(None).await.expect("watch starts");
+    /// A watch task with **no operating-system backend**: the trigger channel is its only input.
+    ///
+    /// That is the seam this module exists to use. `WatchTriggers::changed` selects between the
+    /// file-notification channel and a SIGHUP; leaving both sources empty makes the channel the only
+    /// thing that can wake the task, so "what does a trigger produce" becomes a unit test instead of
+    /// a filesystem observation. The real backends are exercised by `tests/local_watch.rs`, which is
+    /// an integration target precisely because they cannot run without the kernel.
+    fn spawn_injected(path: &Path) -> InjectedWatch {
+        let source = LocalFileSource::new(config(path)).expect("configuration is valid");
+        let (trigger, trigger_receiver) = mpsc::channel::<()>(1);
+        let (sink_sender, events) = mpsc::channel::<WatchItem>(2);
+        let token = CancellationToken::new();
+        let (finished_sender, finished) = oneshot::channel();
 
-        replace_atomically(&path, DOC_B);
+        let watchers = WatchTriggers {
+            _watcher: None,
+            #[cfg(unix)]
+            sighup: None,
+        };
+        let inner = Arc::clone(&source.inner);
+        let task_token = token.clone();
+        tokio::spawn(async move {
+            run_watch(
+                inner,
+                EventSink::new(sink_sender),
+                task_token,
+                trigger_receiver,
+                watchers,
+                finished_sender,
+            )
+            .await;
+        });
 
-        let version = snapshot_with_bytes(&mut watch, DOC_B, WAIT).await;
-        assert!(
-            version.revision().seq() >= 1,
-            "a watched change must carry a revision"
-        );
+        InjectedWatch {
+            trigger,
+            events,
+            token,
+            finished,
+        }
+    }
+
+    /// The handles one injected watch needs: something to trigger it, a stream to read, a way to
+    /// stop it, and the guard that closes when its task ends.
+    struct InjectedWatch {
+        trigger: mpsc::Sender<()>,
+        events: mpsc::Receiver<WatchItem>,
+        token: CancellationToken,
+        finished: oneshot::Receiver<()>,
+    }
+
+    impl InjectedWatch {
+        /// Pushes one trigger, which is what a file notification would do.
+        async fn trigger(&self) {
+            self.trigger.send(()).await.expect("the task is running");
+        }
+
+        /// Reads the single item the trigger produced, failing the budget with a diagnosis.
+        async fn next(&mut self) -> WatchItem {
+            tokio::time::timeout(WAIT, self.events.recv())
+                .await
+                .expect("a triggered reload produces an item within the budget")
+                .expect("the task sends exactly the item it produced")
+        }
     }
 
     #[tokio::test]
-    async fn watch_reports_unavailable_after_deletion_and_recovers_on_recreation() {
+    async fn a_trigger_delivers_the_current_document_as_a_snapshot() {
         let directory = TempDir::new().expect("temporary directory");
         let path = directory.path().join("resources.yaml");
         write(&path, DOC_A);
-        let source = LocalFileSource::new(config(&path)).expect("configuration is valid");
-        let mut watch = source.watch(None).await.expect("watch starts");
+        let mut watch = spawn_injected(&path);
 
-        std::fs::remove_file(&path).expect("delete succeeds");
-        let error = error_event(&mut watch, WAIT).await;
-        assert!(
-            matches!(
-                error,
-                ConfigSourceError::Unavailable {
-                    source_name: "local",
-                    ..
-                }
-            ),
-            "a deleted document is unavailable, not empty, got {error:?}"
-        );
+        watch.trigger().await;
+
+        match watch.next().await {
+            Ok(ConfigEvent::Snapshot(version)) => {
+                assert_eq!(
+                    version.bytes().as_ref(),
+                    DOC_A,
+                    "the snapshot carries the document as it is now"
+                );
+                assert!(
+                    version.revision().seq() >= 1,
+                    "a triggered reload carries a revision"
+                );
+            }
+            other => panic!("expected a snapshot, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_trigger_re_reads_the_document_rather_than_replaying_the_first_read() {
+        // The trigger means "look again", not "deliver what you saw last time": a change written
+        // between the first reload and the second must be what the second one reports.
+        let directory = TempDir::new().expect("temporary directory");
+        let path = directory.path().join("resources.yaml");
+        write(&path, DOC_A);
+        let mut watch = spawn_injected(&path);
+
+        watch.trigger().await;
+        assert!(matches!(watch.next().await, Ok(ConfigEvent::Snapshot(_))));
 
         write(&path, DOC_B);
-        snapshot_with_bytes(&mut watch, DOC_B, WAIT).await;
+        watch.trigger().await;
+        match watch.next().await {
+            Ok(ConfigEvent::Snapshot(version)) => assert_eq!(version.bytes().as_ref(), DOC_B),
+            other => panic!("expected the rewritten document, got {other:?}"),
+        }
     }
 
     #[tokio::test]
-    async fn watch_emits_a_snapshot_when_the_file_is_created_after_the_watch_started() {
+    async fn a_trigger_for_a_missing_document_delivers_the_error() {
+        // Nothing is ever written: the trigger finds nothing to read, and the item delivered is the
+        // failure rather than silence. That is what lets the pipeline mark itself degraded.
         let directory = TempDir::new().expect("temporary directory");
         let path = directory.path().join("resources.yaml");
-        let source = LocalFileSource::new(config(&path)).expect("configuration is valid");
-        let mut watch = source.watch(None).await.expect("watch starts");
+        let mut watch = spawn_injected(&path);
 
-        write(&path, DOC_A);
+        watch.trigger().await;
 
-        snapshot_with_bytes(&mut watch, DOC_A, WAIT).await;
+        let item = watch.next().await;
+        assert!(
+            matches!(item, Err(ConfigSourceError::Unavailable { .. })),
+            "a missing document is Unavailable, got {item:?}"
+        );
     }
 
-    #[cfg(unix)]
     #[tokio::test]
-    async fn watch_emits_a_snapshot_after_a_kubernetes_style_symlink_swap() {
-        use std::os::unix::fs::symlink;
-
-        let directory = TempDir::new().expect("temporary directory");
-        let version_one = directory.path().join("..data_v1");
-        let version_two = directory.path().join("..data_v2");
-        std::fs::create_dir_all(&version_one).expect("create the first version");
-        std::fs::create_dir_all(&version_two).expect("create the second version");
-        write(&version_one.join("resources.yaml"), DOC_A);
-        write(&version_two.join("resources.yaml"), DOC_B);
-
-        symlink("..data_v1", directory.path().join("..data")).expect("link ..data");
-        let path = directory.path().join("resources.yaml");
-        symlink("..data/resources.yaml", &path).expect("link the document name");
-
-        let source = LocalFileSource::new(config(&path)).expect("configuration is valid");
-        let mut watch = source.watch(None).await.expect("watch starts");
-
-        // The ConfigMap update pattern: build a new symlink, then rename it over `..data`.
-        let pending = directory.path().join("..data_tmp");
-        symlink("..data_v2", &pending).expect("link the pending ..data");
-        std::fs::rename(&pending, directory.path().join("..data")).expect("swap ..data");
-
-        snapshot_with_bytes(&mut watch, DOC_B, WAIT).await;
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn watch_emits_a_snapshot_on_sighup() {
+    async fn cancelling_the_token_ends_the_task() {
+        // The task must not outlive the stream that owns it: a leaked watch task keeps a watcher and
+        // a channel alive for the rest of the process.
         let directory = TempDir::new().expect("temporary directory");
         let path = directory.path().join("resources.yaml");
         write(&path, DOC_A);
-        let source = LocalFileSource::new(config(&path).with_watch_mode(WatchMode::Signal))
-            .expect("configuration is valid");
-        let mut watch = source.watch(None).await.expect("watch starts");
+        let watch = spawn_injected(&path);
 
-        raise_sighup();
+        watch.token.cancel();
 
-        snapshot_with_bytes(&mut watch, DOC_A, WAIT).await;
-    }
-
-    #[tokio::test]
-    async fn dropping_the_stream_stops_the_watch_task() {
-        let directory = TempDir::new().expect("temporary directory");
-        let path = directory.path().join("resources.yaml");
-        write(&path, DOC_A);
-        let source = LocalFileSource::new(config(&path)).expect("configuration is valid");
-
-        let (watch, finished) = source.spawn_watch().expect("watch starts");
-        // The first event proves the task is actually running before it is dropped.
-        let mut watch = watch;
-        replace_atomically(&path, DOC_B);
-        snapshot_with_bytes(&mut watch, DOC_B, WAIT).await;
-        drop(watch);
-
-        match tokio::time::timeout(WAIT, finished).await {
+        match tokio::time::timeout(WAIT, watch.finished).await {
             Ok(Ok(())) => panic!("the guard must never receive a value"),
             // A closed channel without a value means the task dropped the guard, i.e. it ended.
             Ok(Err(_closed)) => {}
             Err(_elapsed) => panic!("the watch task did not stop within the budget"),
         }
-    }
-
-    #[cfg(unix)]
-    fn raise_sighup() {
-        let status = std::process::Command::new("kill")
-            .arg("-HUP")
-            .arg(std::process::id().to_string())
-            .status()
-            .expect("kill runs");
-        assert!(status.success(), "sending SIGHUP must succeed");
     }
 }
 

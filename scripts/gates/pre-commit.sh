@@ -3,12 +3,26 @@
 #
 # Invoked by lefthook (see lefthook.yml); safe to run directly.
 #
-# Runs only when a Rust-relevant file is staged:
+# Runs only when a Rust-relevant file is staged, and does three things:
 #   1. rustfmt check (nightly when available)
-#   2. cargo check --workspace --all-targets (syntax, types, test targets)
-#   3. tests for the changed crates and their reverse dependencies
+#   2. cargo check --workspace --all-targets (every target's types, test files included)
+#   3. unit tests (`--lib`) for the changed crates and their reverse dependencies
 #   4. file budget: reject staged .rs files that exceed 500 lines or grew past it
 #   5. soft reminder when src/ changed without a test change
+#
+# What is deliberately **not** here: the integration suite (`crates/*/tests/`). Those targets
+# start real sockets, real processes and real file watchers, which is the slowest thing this
+# repository runs, and `pre-push.sh` already runs the whole suite. Moving them out is what keeps
+# this gate under its one-minute budget; a gate nobody waits for protects nothing.
+#
+# `cargo check` is **not** redundant with the test step and must not be deleted: check covers
+# every workspace target, including crates outside the change closure and every `tests/*.rs`
+# file, while `--lib` covers only the closure's library. A type error in an untouched crate's
+# integration test is caught by check and by nothing else before pre-push.
+#
+# Each step prints its own duration, and a total over `SLOW_GATE_SECONDS` (default 120) warns.
+# That is not a failure — slow is not wrong — but it has to be visible, or the next slowdown costs
+# someone another round of manual bisection.
 #
 # Bypass for emergencies: SKIP_NICO_HOOKS=1 git commit ...
 # Full baseline (clippy, docs, deny, workspace tests) lives in scripts/gates/pre-push.sh.
@@ -21,6 +35,25 @@ fi
 
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
+
+# Seconds a whole gate may take before it says so. Overridable for a slow machine without editing
+# the file, which is the only reason it is an environment variable.
+SLOW_GATE_SECONDS="${SLOW_GATE_SECONDS:-120}"
+TOTAL=0
+STEP_NAME=""
+STEP_STARTED=0
+
+step_start() {
+    STEP_NAME="$1"
+    STEP_STARTED=$(date +%s)
+    echo "[hook] $STEP_NAME ..."
+}
+
+step_done() {
+    local elapsed=$(( $(date +%s) - STEP_STARTED ))
+    echo "[hook] $STEP_NAME: ${elapsed}s"
+    TOTAL=$(( TOTAL + elapsed ))
+}
 
 staged="$(git diff --cached --name-only --diff-filter=ACMR)"
 if [[ -z "$staged" ]]; then
@@ -49,6 +82,7 @@ fail() {
 }
 
 # --- 1. formatting -----------------------------------------------------------
+step_start "formatting"
 if rustup toolchain list 2>/dev/null | grep -q '^nightly'; then
     cargo +nightly fmt --all -- --check \
         || fail "formatting: run 'cargo +nightly fmt --all'"
@@ -57,12 +91,21 @@ else
     cargo fmt --all -- --check \
         || fail "formatting: run 'cargo fmt --all'"
 fi
+step_done
 
 # --- 2. syntax / types (all targets, so test code is covered) ----------------
+# Kept even though step 3 builds too: check is the only step that sees the types of crates outside
+# the change closure and of every `tests/*.rs` file. See the header for why that matters.
+step_start "check"
 cargo check --workspace --all-targets --all-features --locked \
     || fail "cargo check (syntax or type error)"
+step_done
 
-# --- 3. tests for changed crates and their dependents ------------------------
+# --- 3. unit tests for changed crates and their dependents -------------------
+# The crate set is the reverse-dependency closure: a change to nico-core still tests nico-config,
+# nico-http and nico-server, because a kernel change that breaks a downstream is exactly what this
+# step exists to catch at commit time. Only the *target kind* is narrowed — `--lib` — so the run
+# stays inside `src/` and never starts a real socket, process or file watcher.
 packages="$(python3 - "$staged" <<'PY'
 import json, subprocess, sys
 
@@ -98,13 +141,19 @@ PY
 )"
 
 if [[ -z "$packages" ]]; then
-    # Workspace-level manifest or toolchain change: nothing maps to a crate.
-    cargo test --workspace --all-features --locked \
-        || fail "workspace tests"
+    # Workspace-level manifest or toolchain change: nothing maps to a crate, so every crate's
+    # library is the unit under test. Still `--lib`: the integration suite belongs to pre-push.
+    step_start "unit tests (whole workspace)"
+    cargo test --workspace --lib --all-features --locked \
+        || fail "workspace unit tests"
+    step_done
 else
+    echo "[hook] unit tests for: $packages"
+    step_start "unit tests"
     # shellcheck disable=SC2086 # word splitting is intended: one -p per package
-    cargo test $(for p in $packages; do printf -- '-p %s ' "$p"; done) --all-features --locked \
-        || fail "tests for changed crates: $packages"
+    cargo test --lib $(for p in $packages; do printf -- '-p %s ' "$p"; done) --all-features --locked \
+        || fail "unit tests for changed crates: $packages"
+    step_done
 fi
 
 # --- 4. file budget (300-500 lines, hard cap 500) ----------------------------
@@ -178,4 +227,8 @@ if [[ "$src_changed" -eq 1 && "$test_changed" -eq 0 ]]; then
     echo "[hook] warn: source changed without a test change; confirm coverage is still honest"
 fi
 
-echo "[hook] commit gate passed"
+if (( TOTAL > SLOW_GATE_SECONDS )); then
+    echo "[hook] warn: gate took ${TOTAL}s (budget ${SLOW_GATE_SECONDS}s); the per-step times above say which step"
+fi
+
+echo "[hook] commit gate passed (${TOTAL}s)"

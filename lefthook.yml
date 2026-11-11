@@ -25,6 +25,10 @@ pre-commit:
   jobs:
     - name: rust-gate
       # Only run when a Rust-relevant path is staged; documentation-only commits skip free.
+      #
+      # Fast by design: formatting, a workspace type check and the changed crates' unit tests
+      # (`--lib`). The integration suite belongs to pre-push, because a gate nobody waits for
+      # protects nothing. Each step prints its own duration.
       glob: "*.{rs,toml,lock}"
       run: scripts/gates/pre-commit.sh
 

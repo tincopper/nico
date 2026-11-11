@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "复查 lefthook 小节的三处描述（脚本头注释、lefthook.yml、spec）是否一致"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "复查 pre-commit 的检查集合仍满足该 spec 对提交门禁的要求，且全量测试确实由 pre-push 承接"}

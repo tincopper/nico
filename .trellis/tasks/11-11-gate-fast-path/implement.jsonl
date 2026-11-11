@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "质量基线定义五条门禁命令与 lefthook 分工；本任务改变的是 pre-commit 与 pre-push 的职责边界，必须与它一致"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Local gates: lefthook 一节是 pre-commit 行为的文档契约，步骤 4 要同步它"}
