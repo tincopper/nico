@@ -88,17 +88,17 @@
 
 ## Acceptance Criteria
 
-- [ ] 只暂存文档（无 Rust 文件）时，pre-commit 跳过 Rust 门禁（现有行为不变）。
-- [ ] 暂存 Rust 文件时，脚本依次执行 fmt、check、`--lib` 测试，**不执行**任何 `tests/` 目录下的集成目标。可用 `cargo test --lib -p nico-server` 的输出证明：只有 `Running unittests src/lib.rs`，没有 `Running tests/*.rs`。
-- [ ] 改动 `nico-core` 时，`--lib` 测试的 crate 集合仍包含 `nico-http` / `nico-server` 等反向依赖（打印出将被测试的 crate 列表，并由一条断言/输出核对）。
-- [ ] 在热构建下（`target/` 已就绪），一次 pre-commit 的**总耗时**打印在日志里，且 `nico-server` 那一档不再出现 62 个套件的 `finished in` 行。
-- [ ] 每一步打印耗时；总耗时超过 120s 时打印一行 warn 指明慢的步骤。
-- [ ] `pre-push.sh` 仍执行全量 `cargo test --workspace --all-features`，且其头部注释描述新的分工。
-- [ ] `scripts/gates/pre-commit.sh` 头部注释、`lefthook.yml` 的 job 注释、`.trellis/spec/backend/index.md` 的 lefthook 小节三处描述一致。
-- [ ] 一次真实的 `git commit` 走完整钩子并成功（用本任务自己的提交验证），日志里能看到三个步骤各自耗时。
-- [ ] `cargo test -p nico-config --lib` 的**套件内耗时**从约 20s 降到 1s 以内，且用例数不减少覆盖：被移走的 5 个场景在 `cargo test -p nico-config --test local_watch` 中全部通过。
-- [ ] `local::tests` 里不再出现 `notify`、`TempDir` 之外的监听等待，也不再出现 10s 级预算：`WAIT` 只用于注入触发的一次调度往返。
-- [ ] 新增的 `run_watch` 单测有变异检查证据：把生产代码改成交付错误事件后，`a_trigger_delivers_the_current_document_as_a_snapshot` 与 `a_trigger_re_reads_the_document_rather_than_replaying_the_first_read` 必须失败。
+- [x] 只暂存文档（无 Rust 文件）时，pre-commit 跳过 Rust 门禁：直接跑脚本输出 `[hook] no Rust changes staged: skipping Rust gate`（实测）。
+- [x] 暂存 Rust 文件时，脚本依次执行 fmt、check、`--lib` 测试，**不执行**集成目标：`f079a2e` 的钩子日志里恰好 2 条 `test result: ok`（`nico-config` 与 `nico-server` 的 lib），`Running tests/` 出现 0 次。
+- [x] 改动 `nico-core` 时，`--lib` 测试的 crate 集合仍包含反向依赖：钩子打印 `[hook] unit tests for: nico-config nico-server`（该次提交只动了 `nico-config` 与脚本，闭包因此收窄；先前手工跑改动 `nico-core` 的版本打印的是全部七个 crate）。
+- [x] 一次 pre-commit 的总耗时打印在日志里：`[hook] commit gate passed (295s)`，且不再有 62 个套件的 `finished in` 行（只有 2 条）。同一次门禁从改造前的 **896s** 降到 **295s**。
+- [x] 每一步打印耗时（`formatting: 1s` / `check: 231s` / `unit tests: 63s`），总耗时超预算时 warn：`[hook] warn: gate took 295s (budget 120s)`。
+- [x] `pre-push.sh` 仍执行 `cargo test --workspace --all-features --locked`（未改动），头部注释已改写为「这是唯一跑全量测试的门禁」。
+- [x] 三处描述一致：脚本头注释、`lefthook.yml` 的 `rust-gate` 注释、`.trellis/spec/backend/index.md` 的 lefthook 小节都写明 pre-commit = fmt + check + `--lib`，全量在 pre-push。
+- [x] 一次真实的 `git commit` 走完整钩子并成功（`f079a2e`），日志里有三个步骤各自耗时与总耗时。
+- [x] `cargo test -p nico-config --lib` 的套件内耗时 **19.87s → 0.06s**（热态整条命令 0.14–0.26s），用例 51 个；被移走的 5 个场景在 `cargo test -p nico-config --test local_watch` 中 5 passed。
+- [x] `local::tests` 里不再有真实监听等待：`notify` 只经 `WatchTriggers { _watcher: None, .. }` 出现（后端留空），`WAIT` 的注释已改为「注入触发的一次调度往返」。
+- [x] 新增的 `run_watch` 单测有变异检查证据：把 `run_watch` 改成交付 `ResyncRequired` 而非 snapshot 后，上述两个用例双双 FAILED（`2 passed; 2 failed`），生产代码已还原。
 
 ## Open Questions
 
