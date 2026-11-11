@@ -12,8 +12,6 @@ contract for structure, errors, logging, tests and the file budget.
 | nightly toolchain + rustfmt | `cargo +nightly fmt` (import grouping is nightly-only) | `rustup toolchain install nightly --profile minimal && rustup component add rustfmt --toolchain nightly` |
 | `cargo-deny` | license / advisory / source policy | `cargo install cargo-deny --locked` |
 | `lefthook` | git hook orchestration | macOS `brew install lefthook`; elsewhere `go install github.com/evilmartians/lefthook@latest` |
-| `cmake` | only for `poc/` (Pingora's zlib-ng build) | `brew install cmake` |
-| `curl` with HTTP/2 | `poc/` probes | `curl --version` must list nghttp2 |
 
 ## First-time setup
 
@@ -106,11 +104,15 @@ and [`directory-structure.md`](.trellis/spec/backend/directory-structure.md). Th
 crates/nico-core/     document model, revisions, snapshots, error categories
 crates/nico-config/   ConfigSource contract, local file source, LKG cache, fake
 crates/nico-http/     Pingora data plane: routing, filters, forwarding, one error mapping
+crates/nico-llm/      LLM protocol codecs, provider adapters, the retry/fallback chain
+crates/nico-metrics/  self-reporting capability layer: recorder, renderer, readiness (no socket, no framework)
+crates/nico-plugins/  built-in policies: jwt, api_key, rate_limit
 crates/nico-server/   bootstrap, reload pipeline, process assembly, CLI (binary `nico`)
 config/                  bootstrap.yaml + resources.yaml for local runs
 scripts/gates/           the checks behind the git hooks
-poc/                     throwaway Pingora probes; not part of the workspace
 ```
 
-`poc/` is a one-off verification asset. Do not copy its code into `crates/`; its conclusions live in
-`.trellis/tasks/archive/2026-11/11-03-phase0-tech-verification/research/phase0-capability-report.md`.
+The Pingora behaviour this data plane relies on was verified against `0.9.1` source before the first
+crate was written. That evidence lives in
+`.trellis/tasks/archive/2026-11/11-03-phase0-tech-verification/research/phase0-capability-report.md`
+and is the reason the hook contract looks the way it does.
