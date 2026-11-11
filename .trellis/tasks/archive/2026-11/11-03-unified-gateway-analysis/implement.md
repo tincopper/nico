@@ -7,9 +7,14 @@
 ## 1. 前置决策门
 
 阶段 1 的两个门已由实际交付回答（provider 范围 = OpenAI/Anthropic/Gemini 四方言，部署 = 单进程双面）；
-下面两项是**阶段 2 及以后**的待决门，随本任务归档保留在案，进入阶段 2 规划时先回答：
+下面两项是**阶段 3 及以后**的待决门，随本任务归档保留在案：
 
-- [ ] 确认 `quick` 是否指 QUIC，以及目标是 HTTP/3、QUIC proxy 还是 WebTransport；未确认前不进入该阶段。
+- [x] `quick` 指 **QUIC**（2026-11-11 确认）。目标面仍未定：入站 HTTP/3、上游 HTTP/3、QUIC 转发
+      （含 WebTransport）是成本相差一个量级的三件事，选定之前不进入该阶段。
+      Pingora `0.9.1` 不含任何 QUIC / HTTP/3 支持（`pingora-core` 与 `pingora-proxy` 源码无相关符号，
+      `Cargo.lock` 无 `quinn` / `h3`），所以该阶段必然引入新传输栈，不是打开一个 feature。
+      它与上游 TLS 缺口正交：入站 HTTP/3 不解决「连不上 https provider」，只有上游 HTTP/3 顺带决定
+      TLS 后端（届时只能是 rustls 一侧）。优先级低于上游 TLS。
 - [ ] 确认第二期 LLM provider 范围、模型兼容范围、最大请求体、SLA 和部署环境。
 - [x] 「依赖 body 的路由」策略已定：阶段 1 **不依赖 body**（vhost / path / 路由级 `provider` 字段）。
       "有界缓冲 + 单次重放"作为独立设计项在阶段 1 之后评审，不进入阶段 1 范围。
@@ -42,16 +47,37 @@ reload 失败不影响旧流量；非 AI 路由不读 body；AI convert 路由�
 
 **回滚点**：一旦发现路由需要读取 body 才能决定上游，停止实现并回到设计：该能力属于"有界缓冲 + 单次重放"设计项，不在路由实现里临时打补丁。
 
-## 3. 阶段 2：Provider 与长寿命状态
+## 3. 阶段 2：Provider 与长寿命状态——部分交付，余项并入阶段 3
 
-- [ ] 在 `nico-llm::provider` 新增异构 Provider，复用 HTTP upstream。
-- [ ] per-stream SSE/Provider 状态、错误事件与 usage 归一化。
-- [ ] 限流、熔断、重试预算与显式兼容模型 fallback。
-- [ ] `SharedServices` 与配置 generation 的继承、drain 和回收。
-- [ ] 用 Cargo feature/role 构建并部署 traffic 与 llm 两种组合。
+已交付（`11-08-s2-provider-state`，`c43195b`）：
+
+- [x] 熔断、重试预算与显式兼容模型 fallback：目标身份级熔断（半开探测 + 跨 generation 继承）、
+      `retry_budget` 内从规范化请求重编码后重试、`fallback` 链发布期物化且能力取交集。
+      请求体超过 64 KiB（Pingora 重放缓冲区）后不可重试，是已记录的设计边界。
+- [x] `SharedServices` 与配置 generation 的继承：进程级 breaker 表，配置未变的目标继承历史、
+      改参的目标被丢弃（`crates/nico-server/src/llm/runtime.rs`）。
+- [x] Cargo feature/role 构建：`traffic` 角色不编入 `nico-llm`，注册表为空，声明 provider 路由的
+      文档在发布期被拒绝而不是静默跳过。
+- [x] per-stream SSE 与 provider 错误事件：四个 adapter 各自折叠流，错误事件映射为类型化
+      `ProviderError`。
+- [x] 限流：以 `rate_limit` 插件形式随阶段 1 交付（令牌桶、有界表、跨 reload 保留），作用于请求粒度，
+      不是 token 额度。
+
+未交付，并入阶段 3：
+
+- [x] **上游 TLS（最高优先）**：立项时构建拒绝所有 `https` 目标（`TLS_BACKEND_ENABLED = false`），
+      因此所有真实 provider 都不可达、LLM 转换只在明文 mock 上被验证过。已由 `11-11-upstream-tls`
+      关闭：`pingora/rustls` 后端已编入、`tls.ca_file` 可控信任根、真 TLS 上游的成功／不受信／
+      主机名不匹配三条路径均有 e2e。
+- [ ] 异构 Provider（非 HTTP/JSON 原生、或需要本地模型服务器语义的 kind）：语义待澄清。
+- [ ] usage 归一化与计费：`schema::usage` 只定义了形状（provider 报数与网关计数分桶保留），
+      provider 的 usage 按原样记录、不做归一化。
+- [ ] LLM token 限额：与请求级限流是两件事，需要 usage 先有归一口径。
+- [ ] 部署形态：role 只做到"可构建"，没有镜像、部署清单或远端 CI。
 
 ## 4. 阶段 3：按真实需求扩展
 
+- [ ] 收取 §3 末的未交付项（上游 TLS、异构 Provider、usage 归一化与计费、token 限额、部署形态）。
 - [ ] 新协议使用独立 crate/binary 和协议原生 trait，不穿透 HTTP Filter。
 - [ ] 出现第二个真实消费者后，才下沉公共 trait 或拆分新 crate。
 - [ ] 第三方动态插件若成为需求，独立评估 WASM/进程隔离、签名、权限、资源和背压。
