@@ -10,7 +10,10 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-use super::{route::RouteMode, upstream::Scheme};
+use super::{
+    route::RouteMode,
+    upstream::{Scheme, Strategy},
+};
 
 /// The document exactly as written.
 #[derive(Debug, Deserialize)]
@@ -84,6 +87,10 @@ pub(super) struct RawCircuitBreaker {
 }
 
 /// One `upstreams` entry exactly as written.
+///
+/// `scheme`, `host` and `port` are always required: they are the upstream's logical identity (`Host`
+/// and the TLS server name) and the defaults a member inherits. `endpoints` is the optional member
+/// list; absent means exactly one member, expanded while the document is validated.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawUpstream {
@@ -91,6 +98,36 @@ pub(super) struct RawUpstream {
     pub(super) scheme: Scheme,
     pub(super) host: String,
     pub(super) port: u16,
+    /// Absent and `[..]` are different documents: an absent list is one member, an empty list is
+    /// refused. `None` and `Some([])` therefore cannot be normalized here without losing that.
+    pub(super) endpoints: Option<Vec<RawEndpoint>>,
+    /// Absent means [`Strategy::RoundRobin`](super::Strategy::RoundRobin).
+    pub(super) strategy: Option<Strategy>,
+    /// Consecutive failures that eject one member. Absent means the built-in default; `0` is legal
+    /// and means "never eject", which is the spelling for an upstream whose members are not
+    /// interchangeable.
+    pub(super) max_fails: Option<u32>,
+    /// How long an ejected member stays out of rotation before one probe is admitted. Absent means
+    /// the built-in default; `0` is refused, because a cooldown of zero admits every request as a
+    /// probe and therefore ejects nothing at all.
+    pub(super) fail_timeout_ms: Option<u32>,
+}
+
+/// One `upstreams[].endpoints[]` entry exactly as written.
+///
+/// A member carries no `scheme`: one upstream has one transport, and mixing two protocols behind one
+/// name is two services, which a document writes as two upstreams.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawEndpoint {
+    pub(super) name: String,
+    /// Absent means the upstream's `host`: the logical name is also where the request goes until the
+    /// document splits the two.
+    pub(super) address: Option<String>,
+    /// Absent means the upstream's `port`.
+    pub(super) port: Option<u16>,
+    /// Absent means 1; `0` is refused by semantic validation.
+    pub(super) weight: Option<u16>,
 }
 
 /// One `routes` entry exactly as written.
@@ -104,6 +141,18 @@ pub(super) struct RawRoute {
     /// [`RouteTarget`](super::RouteTarget) during validation so both mistakes get their own error.
     pub(super) upstream: Option<String>,
     pub(super) provider: Option<String>,
+    /// The provider pool, when the route distributes across several providers.
+    ///
+    /// Mutually exclusive with `provider`; absent means the single-target forms above. `Some([])` is
+    /// refused — a pool with no member is a route with no target, which the document already has its
+    /// own error for.
+    pub(super) providers: Option<Vec<RawPoolMember>>,
+    /// How the pool chooses a member for one attempt.
+    ///
+    /// Absent means [`PoolStrategy::WeightedRandom`](super::PoolStrategy::WeightedRandom). Refused on
+    /// a route with no pool: a strategy for a set of one is a value nothing reads, and accepting it
+    /// would make a typo look like configuration.
+    pub(super) strategy: Option<super::PoolStrategy>,
     pub(super) timeout_ms: Option<u32>,
     pub(super) max_body_bytes: Option<u32>,
     /// The client protocol a provider route converts, kept as written: whether a codec exists for it
@@ -126,6 +175,20 @@ pub(super) struct RawRoute {
     /// `[]` mean the same thing — no fallback — so a single-target route does not have to spell an
     /// empty chain out. Whether a named member can be served is the publication's decision.
     pub(super) fallback: Option<Vec<String>>,
+}
+
+/// One `routes[].providers[]` entry exactly as written.
+///
+/// A member names a declared provider and its share of the traffic. It carries no `base_url` or
+/// credential: those belong to the provider entry, which is also what a member without a pool uses,
+/// so one endpoint is described once.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawPoolMember {
+    pub(super) name: String,
+    /// Absent means `1`. `0` is legal and means "not a distribution candidate", which is why this
+    /// range starts at zero where the traffic layer's member weights start at one.
+    pub(super) weight: Option<u16>,
 }
 
 /// One `plugins` entry exactly as written.

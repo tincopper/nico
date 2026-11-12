@@ -60,6 +60,86 @@ pub enum RouteMode {
     Passthrough,
 }
 
+/// How a provider pool chooses the member one attempt is sent to.
+///
+/// The set is closed and deliberately separate from [`Strategy`](super::Strategy): the traffic layer
+/// chooses between addresses (a connection, an in-flight count, a caller's address), while a provider
+/// pool chooses between services. Only `round_robin` means the same thing on both sides, and a shared
+/// enum would carry two variants that are meaningless in one of the two domains.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PoolStrategy {
+    /// Draw a member in proportion to its weight.
+    ///
+    /// The default: it is the only distribution that does not drift when the member set changes, and
+    /// it needs no state about the caller.
+    #[default]
+    WeightedRandom,
+    /// The members in document order, one attempt each.
+    RoundRobin,
+}
+
+/// One member of a provider pool: a declared provider, and its share of the traffic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoolMember {
+    pub(super) name: String,
+    pub(super) weight: u16,
+}
+
+impl PoolMember {
+    /// Builds a member from values the parser has already defaulted.
+    pub(super) fn new(name: String, weight: u16) -> Self {
+        Self { name, weight }
+    }
+
+    /// Returns the name of the [`Provider`](super::Provider) this member serves from.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns this member's share of the traffic, in `0..=1000`.
+    ///
+    /// Zero means **not a distribution candidate**: the member is only used when a fallback chain
+    /// names it explicitly. That is the opposite of the traffic layer, where zero is refused, and the
+    /// difference comes from the domain: a provider pool has a fallback concept and an address list
+    /// with weights does not.
+    #[must_use]
+    pub const fn weight(&self) -> u16 {
+        self.weight
+    }
+}
+
+/// The providers one route may send an attempt to, and how it chooses among them.
+///
+/// A pool replaces the route's single `provider` target. The members are declared providers, resolved
+/// while the document is validated, so "a member nobody declared" is a publication error rather than
+/// a request-time refusal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pool {
+    pub(super) members: Vec<PoolMember>,
+    pub(super) strategy: PoolStrategy,
+}
+
+impl Pool {
+    /// Builds a pool from values the parser has already validated.
+    pub(super) fn new(members: Vec<PoolMember>, strategy: PoolStrategy) -> Self {
+        Self { members, strategy }
+    }
+
+    /// Returns the members, in document order.
+    #[must_use]
+    pub fn members(&self) -> &[PoolMember] {
+        &self.members
+    }
+
+    /// Returns how the pool chooses a member for one attempt.
+    #[must_use]
+    pub const fn strategy(&self) -> PoolStrategy {
+        self.strategy
+    }
+}
+
 /// One routing rule.
 ///
 /// Fields are private and there is no public constructor: a `Route` only exists inside a
@@ -78,6 +158,11 @@ pub struct Route {
     pub(super) plugins: Vec<String>,
     pub(super) retry_budget: u8,
     pub(super) fallback: Vec<String>,
+    /// The provider pool, when the document named several providers instead of one.
+    ///
+    /// `None` for a single-provider route and for every upstream route; the two forms are mutually
+    /// exclusive by construction, so a route never has both a `Provider` target and a pool.
+    pub(super) pool: Option<Pool>,
 }
 
 impl Route {
@@ -176,5 +261,16 @@ impl Route {
     #[must_use]
     pub fn fallback(&self) -> &[String] {
         &self.fallback
+    }
+
+    /// Returns the provider pool this route distributes across, when it declares one.
+    ///
+    /// `None` means the route has a single target: the [`Route::target`] it names is the whole
+    /// answer. A pooled route's [`target`](Route::target) is the pool's first member, so a caller
+    /// that does not know about pools still uses the head of the distribution — the behaviour a
+    /// single-target route had before pools existed.
+    #[must_use]
+    pub const fn pool(&self) -> Option<&Pool> {
+        self.pool.as_ref()
     }
 }

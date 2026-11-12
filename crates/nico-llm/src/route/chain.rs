@@ -22,7 +22,8 @@ use std::{fmt, sync::Arc};
 use nico_http::{LlmRejection, error::HttpError};
 
 use crate::{
-    Exchange, ExchangeError, protocol::Capabilities, provider::ProviderKind, schema::CanonicalError,
+    Exchange, ExchangeError, protocol::Capabilities, provider::ProviderKind, route::PoolOrder,
+    schema::CanonicalError,
 };
 
 /// Why an attempt chain could not be built.
@@ -194,9 +195,17 @@ impl fmt::Debug for TargetIdentity {
 /// Built once per route at publication and held by the data plane through the converting front-end.
 /// Every member is a full exchange, so serving attempt *n* is a lookup plus an encode — nothing is
 /// resolved, decoded or re-paired while a request is being retried.
+///
+/// A route that declares a provider **pool** compiles its members into the head of this same list:
+/// positions `0..pool.len()` are the pool, and everything after them is the fallback chain. The
+/// distinction is [`AttemptChain::pool`], and it decides *order* alone — which pooled member one
+/// attempt tries first is the strategy's answer, while every rule about budgets, breakers and
+/// fallbacks reads the list the way it always did.
 pub struct AttemptChain {
     members: Vec<ChainMember>,
     capabilities: Capabilities,
+    /// The pooled members' ordering, when the route distributes instead of naming one target.
+    pool: Option<PoolOrder>,
 }
 
 impl AttemptChain {
@@ -207,9 +216,27 @@ impl AttemptChain {
     /// target, so a caller reaching this has skipped its own compile step; the refusal keeps the
     /// publication panic-free instead of trusting an invariant the type cannot see.
     pub fn try_new(members: Vec<ChainMember>) -> Result<Self, ChainBuildError> {
+        Self::with_pool(members, None)
+    }
+
+    /// Builds a chain whose first `pool` members form a provider pool.
+    ///
+    /// The pool is told how many leading members it owns, so a caller cannot hand it a count that
+    /// disagrees with the list: too many names members the chain does not have, which is refused.
+    ///
+    /// # Errors
+    /// Returns [`ChainBuildError`] when `members` is empty, or when the pool claims more members than
+    /// the chain holds.
+    pub fn with_pool(
+        members: Vec<ChainMember>,
+        pool: Option<PoolOrder>,
+    ) -> Result<Self, ChainBuildError> {
         let Some(first) = members.first() else {
             return Err(ChainBuildError);
         };
+        if pool.as_ref().is_some_and(|pool| pool.len() > members.len()) {
+            return Err(ChainBuildError);
+        }
         // The chain serves what every member can serve: one target that lacks a capability would
         // fail a request the earlier members already accepted, after the caller had reason to expect
         // an answer. Folding here keeps the refusal at publication time, where the route's whole
@@ -222,6 +249,7 @@ impl AttemptChain {
         Ok(Self {
             members,
             capabilities,
+            pool,
         })
     }
 
@@ -229,6 +257,16 @@ impl AttemptChain {
     #[must_use]
     pub fn members(&self) -> &[ChainMember] {
         &self.members
+    }
+
+    /// Returns the pool's ordering, when the route distributes across several providers.
+    ///
+    /// `None` means the route names one target and an ordered fallback chain, which is the behaviour
+    /// every route had before pools existed. The pooled members are the list's first
+    /// [`PoolOrder::len`] entries; the rest is still the fallback chain.
+    #[must_use]
+    pub const fn pool(&self) -> Option<&PoolOrder> {
+        self.pool.as_ref()
     }
 
     /// Returns the primary target, which serves every attempt until the chain moves on.

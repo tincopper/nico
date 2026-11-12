@@ -1,0 +1,10 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "backend 规格索引：实现前的分层入口"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "R3 的失败分类与 R5 的 403 model_not_allowed 必须落在既有 CanonicalError 映射与单一出口内"}
+{"file": ".trellis/spec/backend/pingora-guidelines.md", "reason": "模型列表与尝试序列必须与既有 llm.target/attempt 记录和重试门一致"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "R7 的指标名与 llm.pool/llm.excluded 字段必须按既有命名与允许标签集"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "门禁、文件预算，以及 MAX_ATTEMPTS_PER_ROUTE 熔丝与文档界一致的要求"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "池的编译落在 nico-server 的 llm 发布链路、选择落在 nico-llm，归属与依赖方向要按 spec"}
+{"file": ".trellis/tasks/11-11-model-lb/research/synthesis-bifrost-vs-aiway.md", "reason": "目标效果拆解、两层池压成一层的理由、分阶段与不做项"}
+{"file": ".trellis/tasks/11-11-model-lb/research/bifrost-model-load-balancing.md", "reason": "bifrost 的权重随机、失败分类轮转、有序 fallback、会话粘性的取证"}
+{"file": ".trellis/tasks/11-11-model-lb/prd.md", "reason": "R1–R10 与 M1/M2/M3 验收清单"}
+{"file": ".trellis/tasks/11-11-model-lb/design.md", "reason": "池配置、失败分类、表隔离、尝试上界的唯一依据"}

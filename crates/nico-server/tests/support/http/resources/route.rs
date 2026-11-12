@@ -31,6 +31,8 @@ pub(crate) struct Route {
     pub(super) retry_budget: Option<u8>,
     /// The fallback chain; `None` leaves no chain. A scenario writes names the document declares.
     pub(super) fallback: Option<Vec<String>>,
+    /// The provider pool, when the route distributes instead of naming one target.
+    pub(super) pool: Option<(Vec<(String, u16)>, &'static str)>,
 }
 
 impl Route {
@@ -49,6 +51,7 @@ impl Route {
             plugins: Vec::new(),
             retry_budget: None,
             fallback: None,
+            pool: None,
         }
     }
 
@@ -67,6 +70,7 @@ impl Route {
             plugins: Vec::new(),
             retry_budget: None,
             fallback: None,
+            pool: None,
         }
     }
 
@@ -121,6 +125,27 @@ impl Route {
     /// Declares the fallback chain: provider names tried in order after the route's target fails.
     pub(crate) fn fallback(mut self, names: &[&str]) -> Self {
         self.fallback = Some(names.iter().map(|name| (*name).to_owned()).collect());
+        self
+    }
+
+    /// Declares a provider pool: members with their weights, and the distribution strategy.
+    ///
+    /// The route's [`Target`] becomes the pool's first member, which is what every single-target
+    /// reader expects of a pooled route; the pool itself is written beside it.
+    pub(crate) fn pool(mut self, members: &[(&str, u16)], strategy: &'static str) -> Self {
+        self.target = Target::Provider(
+            members
+                .first()
+                .map(|(name, _)| (*name).to_owned())
+                .unwrap_or_default(),
+        );
+        self.pool = Some((
+            members
+                .iter()
+                .map(|(name, weight)| ((*name).to_owned(), *weight))
+                .collect(),
+            strategy,
+        ));
         self
     }
 }

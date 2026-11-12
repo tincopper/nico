@@ -207,10 +207,12 @@ fn the_chain_end_answers_with_the_last_response() {
 }
 
 #[test]
-fn a_non_retryable_failure_serves_immediately_without_moving_the_chain() {
-    // 401 is final: the caller is refused with it, no budget is burned, and no other target is
-    // asked — a fallback would answer the same misconfigured credential somewhere else. The
-    // members here use the strict posture: their closed table marks no status retryable.
+fn a_credential_failure_moves_the_chain_without_burning_the_budget() {
+    // A 401 is about *this member's* credential, not about the request: another provider may well
+    // serve it, so the walk moves on — with the budget untouched, because the budget measures how
+    // hard the route may try one target. The members here use the strict posture: their closed table
+    // marks no status retryable, so this also proves the classification does not depend on that flag
+    // for the statuses it names.
     let chain = Arc::new(
         AttemptChain::try_new(vec![
             member(
@@ -233,9 +235,14 @@ fn a_non_retryable_failure_serves_immediately_without_moving_the_chain() {
     let now = Instant::now();
     assert_eq!(
         sequence.classify(401, now).expect("the failure classifies"),
-        Verdict::Answer
+        Verdict::Retry
     );
-    assert_eq!(sequence.current(), 0, "no other target was asked");
+    assert_eq!(sequence.current(), 1, "the next target was asked");
+    assert_eq!(
+        sequence.budget(),
+        3,
+        "a credential failure is the member's, not the route's, so the budget is untouched"
+    );
 }
 
 #[test]

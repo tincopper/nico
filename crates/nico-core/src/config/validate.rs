@@ -16,17 +16,23 @@
 //! so a document that has both reports the defect; each stage stops at its first violation, which
 //! keeps the error a caller sees stable from one release to the next.
 
+use std::sync::Arc;
+
 use super::{
     bounds::{Bound, ParseLimits},
     document::{API_VERSION, Document},
     error::DocumentError,
     plugin,
     provider::{CircuitBreaker, DEFAULT_COOLDOWN_MS, DEFAULT_FAILURE_THRESHOLD, Provider},
-    raw::RawDocument,
+    raw::{RawDocument, RawUpstream},
     reference,
     request::{DEFAULT_MAX_RESPONSE_BYTES, RequestBounds},
+    route::Route,
     semantic,
-    upstream::Upstream,
+    upstream::{
+        DEFAULT_ENDPOINT_NAME, DEFAULT_ENDPOINT_WEIGHT, DEFAULT_FAIL_TIMEOUT_MS, DEFAULT_MAX_FAILS,
+        Ejection, Endpoint, Upstream,
+    },
 };
 
 /// Assembles a [`Document`] from the raw shape, applying every validation stage in order.
@@ -86,12 +92,7 @@ pub(super) fn assemble(
         .collect::<Vec<_>>();
     let upstreams = raw_upstreams
         .into_iter()
-        .map(|raw| Upstream {
-            name: raw.name,
-            scheme: raw.scheme,
-            host: raw.host,
-            port: raw.port,
-        })
+        .map(materialize_upstream)
         .collect::<Vec<_>>();
     let plugins = raw_plugins
         .into_iter()
@@ -103,6 +104,8 @@ pub(super) fn assemble(
     semantic::validate(&routes, &upstreams, &providers, &plugins, request)?;
 
     let schema = parse_limits.schema();
+    check_endpoint_counts(&upstreams, schema.get(Bound::Endpoints))?;
+    check_pool_counts(&routes, schema.get(Bound::PoolMembers))?;
     check_count("providers", providers.len(), schema.get(Bound::Providers))?;
     check_count("upstreams", upstreams.len(), schema.get(Bound::Upstreams))?;
     check_count("plugins", plugins.len(), schema.get(Bound::Plugins))?;
@@ -117,6 +120,83 @@ pub(super) fn assemble(
         plugins,
         global_plugins,
     ))
+}
+
+/// Turns one written upstream into its logical identity plus its members.
+///
+/// The single-address form is expanded here, not read later: a document that writes no `endpoints`
+/// becomes exactly one member named [`DEFAULT_ENDPOINT_NAME`], with the upstream's host as its
+/// address. Every consumer consequently sees one shape, and "there was no member list" stops being a
+/// case the data plane could get wrong.
+fn materialize_upstream(raw: RawUpstream) -> Upstream {
+    let RawUpstream {
+        name,
+        scheme,
+        host,
+        port,
+        endpoints,
+        strategy,
+        max_fails,
+        fail_timeout_ms,
+    } = raw;
+    let endpoints: Arc<[Endpoint]> = match endpoints {
+        Some(members) => members
+            .into_iter()
+            .map(|member| {
+                Endpoint::new(
+                    member.name,
+                    member.address.unwrap_or_else(|| host.clone()),
+                    member.port.unwrap_or(port),
+                    member.weight.unwrap_or(DEFAULT_ENDPOINT_WEIGHT),
+                )
+            })
+            .collect(),
+        None => Arc::from([Endpoint::new(
+            DEFAULT_ENDPOINT_NAME,
+            host.clone(),
+            port,
+            DEFAULT_ENDPOINT_WEIGHT,
+        )]),
+    };
+    Upstream {
+        name: name.into(),
+        scheme,
+        host: host.into(),
+        port,
+        strategy: strategy.unwrap_or_default(),
+        endpoints,
+        // The ejection budget is materialized here rather than left to the data plane, so "what a
+        // document that wrote nothing gets" has exactly one definition — the same rule the
+        // provider breaker follows.
+        ejection: Ejection::new(
+            max_fails.unwrap_or(DEFAULT_MAX_FAILS),
+            fail_timeout_ms.unwrap_or(DEFAULT_FAIL_TIMEOUT_MS),
+        ),
+    }
+}
+
+/// Rejects an upstream whose member list exceeds the per-entry bound.
+///
+/// The bound is per upstream, not collection-wide: it is a memory and blast-radius posture for one
+/// request's candidate set, which is what a selection walks on every attempt.
+fn check_endpoint_counts(upstreams: &[Upstream], limit: usize) -> Result<(), DocumentError> {
+    for upstream in upstreams {
+        check_count("upstreams[].endpoints", upstream.endpoints().len(), limit)?;
+    }
+    Ok(())
+}
+
+/// Rejects a route whose provider pool exceeds the per-route bound.
+///
+/// Per route, for the reason [`check_endpoint_counts`] is per upstream: the list is the candidate set
+/// one attempt's selection walks, and it is a factor of the route's attempt ceiling.
+fn check_pool_counts(routes: &[Route], limit: usize) -> Result<(), DocumentError> {
+    for route in routes {
+        if let Some(pool) = route.pool() {
+            check_count("routes[].providers", pool.members().len(), limit)?;
+        }
+    }
+    Ok(())
 }
 
 /// Rejects a collection that holds more entries than its bound allows.
@@ -270,6 +350,53 @@ mod tests {
                 "expected TooMany for plugins, got {error:?}"
             );
             assert_eq!(error.category(), ErrorCategory::Limit);
+        }
+
+        #[test]
+        fn endpoints_beyond_the_bound_are_rejected_per_upstream() {
+            let members = (0..3)
+                .map(|index| {
+                    format!("      - name: member-{index}\n        address: 10.0.0.{index}\n")
+                })
+                .collect::<String>();
+            let upstreams = format!(
+                concat!(
+                    "  - name: api-backend\n",
+                    "    scheme: http\n",
+                    "    host: 127.0.0.1\n",
+                    "    port: 8080\n",
+                    "    endpoints:\n",
+                    "{}",
+                ),
+                members
+            );
+            let document = document(NO_ENTRIES, &upstreams, NO_ENTRIES);
+            let schema = SchemaBounds::default()
+                .with(Bound::Endpoints, 2)
+                .expect("2 is a legal bound");
+            let error = parse(&document, schema).expect_err("three members, bound is two");
+            assert!(
+                matches!(
+                    error,
+                    DocumentError::TooMany {
+                        kind: "upstreams[].endpoints",
+                        count: 3,
+                        limit: 2
+                    }
+                ),
+                "expected TooMany for upstreams[].endpoints, got {error:?}"
+            );
+            assert_eq!(error.category(), ErrorCategory::Limit);
+        }
+
+        #[test]
+        fn a_single_instance_upstream_is_within_every_endpoint_bound() {
+            let document = document(NO_ENTRIES, UPSTREAM, NO_ENTRIES);
+            let schema = SchemaBounds::default()
+                .with(Bound::Endpoints, 1)
+                .expect("1 is a legal bound");
+            let document = parse(&document, schema).expect("one implicit member, bound is one");
+            assert_eq!(document.upstreams()[0].endpoints().len(), 1);
         }
 
         #[test]

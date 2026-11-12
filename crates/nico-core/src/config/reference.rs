@@ -37,10 +37,17 @@ use super::{
     error::DocumentError,
     plugin::PluginSpec,
     provider::Provider,
-    raw::RawRoute,
-    route::{Route, RouteMode, RouteTarget},
+    raw::{RawPoolMember, RawRoute},
+    route::{Pool, PoolMember, PoolStrategy, Route, RouteMode, RouteTarget},
     upstream::Upstream,
 };
+
+/// Inclusive upper bound for `routes[].providers[].weight`.
+///
+/// The same ceiling the traffic layer's member weights use, for the same reason: a larger number is
+/// not a ratio an operator means, it is arithmetic they got wrong. Zero stays legal here, unlike
+/// there, because a provider pool can name a member explicitly as a fallback.
+const MAX_POOL_WEIGHT: u16 = 1000;
 
 /// Resolves every route target and plugin reference, rejecting dangling and duplicate references.
 ///
@@ -139,6 +146,8 @@ fn resolve(
         path_prefix,
         upstream,
         provider,
+        providers: raw_pool,
+        strategy,
         timeout_ms,
         max_body_bytes,
         protocol,
@@ -149,16 +158,42 @@ fn resolve(
         fallback: raw_fallback,
     } = raw;
 
-    let target = match (upstream, provider) {
-        (None, None) => return Err(DocumentError::RouteTargetMissing { id }),
-        (Some(_), Some(_)) => return Err(DocumentError::RouteTargetAmbiguous { id }),
-        (Some(name), None) => {
-            ensure_known(upstreams, "upstream", &name)?;
-            RouteTarget::Upstream(name)
+    let (target, pool) = match (upstream, provider, raw_pool) {
+        (None, None, None) => return Err(DocumentError::RouteTargetMissing { id }),
+        // Two ways to name a provider target is ambiguous even when both name the same provider: the
+        // routing decisions differ (one call versus a distribution), so the document must say which.
+        (None, Some(_), Some(_)) => return Err(DocumentError::RouteTargetAmbiguous { id }),
+        (Some(_), Some(_), _) | (Some(_), None, Some(_)) => {
+            return Err(DocumentError::RouteTargetAmbiguous { id });
         }
-        (None, Some(name)) => {
+        (Some(name), None, None) => {
+            ensure_known(upstreams, "upstream", &name)?;
+            // A strategy with no pool chooses among one member, so it is a value nothing reads. The
+            // document is refused rather than silently ignoring it: an operator who wrote it believed
+            // it changed something.
+            if strategy.is_some() {
+                return Err(DocumentError::StrategyWithoutPool { id });
+            }
+            (RouteTarget::Upstream(name), None)
+        }
+        (None, Some(name), None) => {
             ensure_known(providers, "provider", &name)?;
-            RouteTarget::Provider(name)
+            if strategy.is_some() {
+                return Err(DocumentError::StrategyWithoutPool { id });
+            }
+            (RouteTarget::Provider(name), None)
+        }
+        (None, None, Some(members)) => {
+            let pool = resolve_pool(id.as_str(), members, strategy, providers)?;
+            // The route's single target is the pool's first member, so every rule that already asks
+            // "is this route's target named again in its fallback chain" keeps its meaning for a
+            // pooled route: the head of the chain is the head of the pool.
+            let first = pool
+                .members()
+                .first()
+                .map(|member| member.name().to_owned())
+                .ok_or_else(|| DocumentError::PoolEmpty { id: id.clone() })?;
+            (RouteTarget::Provider(first), Some(pool))
         }
     };
 
@@ -214,7 +249,45 @@ fn resolve(
         plugins,
         retry_budget: retry_budget.unwrap_or(1),
         fallback,
+        pool,
     })
+}
+
+/// Resolves one route's `providers` list into a pool.
+///
+/// Every member is a declared provider, listed once, and inside the configured member bound. The
+/// strategy is the document's or the default; a `strategy` on a route without a pool is refused,
+/// because a value no code path reads is a typo rather than configuration.
+fn resolve_pool(
+    route: &str,
+    raw: Vec<RawPoolMember>,
+    strategy: Option<PoolStrategy>,
+    providers: &HashSet<&str>,
+) -> Result<Pool, DocumentError> {
+    if raw.is_empty() {
+        return Err(DocumentError::PoolEmpty {
+            id: route.to_owned(),
+        });
+    }
+    let mut seen = HashSet::with_capacity(raw.len());
+    let mut members = Vec::with_capacity(raw.len());
+    for member in raw {
+        ensure_known(providers, "provider", &member.name)?;
+        if !seen.insert(member.name.clone()) {
+            return Err(DocumentError::DuplicateId {
+                kind: "route-pool-member",
+                id: member.name,
+            });
+        }
+        if member.weight.is_some_and(|weight| weight > MAX_POOL_WEIGHT) {
+            return Err(DocumentError::LimitOutOfRange {
+                field: "routes[].providers[].weight",
+                value: u64::from(member.weight.unwrap_or_default()),
+            });
+        }
+        members.push(PoolMember::new(member.name, member.weight.unwrap_or(1)));
+    }
+    Ok(Pool::new(members, strategy.unwrap_or_default()))
 }
 
 /// Rejects a field that the route's target kind does not own, and a provider route without a

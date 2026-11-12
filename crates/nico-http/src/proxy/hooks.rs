@@ -45,7 +45,7 @@
 mod body;
 pub(super) mod llm;
 mod request;
-mod response;
+pub(super) mod response;
 
 use pingora::{
     Error,

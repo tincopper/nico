@@ -413,3 +413,5 @@ mod plugin_references {
 }
 
 mod fallback;
+
+mod pool;

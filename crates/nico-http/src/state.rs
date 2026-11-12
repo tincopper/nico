@@ -22,6 +22,11 @@
 //! served with another generation's endpoint would send a caller's prompt to a peer the operator
 //! removed.
 //!
+//! A sixth is the member list each document upstream selects a destination from. Only the *list* is
+//! this generation's: the counters behind it are process-level and live in [`HttpStateHandle`]'s
+//! pools, so a reload replaces the members without resetting what the gateway has observed about
+//! them.
+//!
 //! [`SnapshotHandle`] is still the configuration-state fact source (readiness, degradation, generation
 //! for operators); it is not part of the request path, and the reload pipeline writes both in one step.
 //!
@@ -39,6 +44,7 @@ use crate::{
     error::HttpError,
     llm::{LlmRoute, LlmRoutes},
     plugin::PluginChain,
+    upstream::pools::{SelectionTable, UpstreamPools},
 };
 
 /// The configuration one generation serves requests from.
@@ -49,6 +55,7 @@ pub struct HttpState {
     snapshot: Arc<RuntimeSnapshot>,
     policies: PublishedChains,
     llm: Arc<dyn LlmRoutes>,
+    selection: Arc<SelectionTable>,
 }
 
 impl HttpState {
@@ -105,6 +112,17 @@ impl HttpState {
     pub fn llm(&self) -> &dyn LlmRoutes {
         &*self.llm
     }
+
+    /// Returns the members this generation may select a destination from.
+    ///
+    /// It travels with the snapshot for the same reason the chains do: a request that selected from
+    /// another generation's member list would connect to an address its own document does not name.
+    /// The counters inside it are process-level and outlive the generation — only the list of members
+    /// is this document's.
+    #[must_use]
+    pub(crate) fn selection(&self) -> Arc<SelectionTable> {
+        Arc::clone(&self.selection)
+    }
 }
 
 impl fmt::Debug for HttpState {
@@ -117,6 +135,7 @@ impl fmt::Debug for HttpState {
             .field("buffered", &self.buffered())
             .field("rewriting_responses", &self.policies.rewriting_responses())
             .field("llm_routes", &self.llm.len())
+            .field("upstreams", &self.selection.len())
             .finish()
     }
 }
@@ -129,6 +148,12 @@ impl fmt::Debug for HttpState {
 #[derive(Debug, Default)]
 pub struct HttpStateHandle {
     current: ArcSwapOption<HttpState>,
+    /// The process-level selection state, written by publication and never republished.
+    ///
+    /// It lives here rather than inside [`HttpState`] because it must survive a reload: a member's
+    /// rotation position and in-flight count are facts about the process, not about one document.
+    /// Publication reads it to build the next generation's member list and inherits by identity.
+    pools: UpstreamPools,
 }
 
 impl HttpStateHandle {
@@ -156,10 +181,11 @@ impl HttpStateHandle {
         self.current.load_full().is_some()
     }
 
-    /// Publishes one generation: the snapshot, the policies derived from it and its LLM front-ends.
+    /// Publishes one generation: the snapshot, the policies derived from it, its LLM front-ends and
+    /// the member list each upstream selects from.
     ///
-    /// All three are one store, so a request cannot route with this generation and translate with the
-    /// previous one's endpoints.
+    /// All four are one store, so a request cannot route with this generation, translate with the
+    /// previous one's endpoints, or select from another one's members.
     ///
     /// `chains` must be the plan compiled from `snapshot`'s document, and it must cover **every**
     /// route that names a plugin: a missing entry is not "no policy", it is a request that bypasses
@@ -174,10 +200,17 @@ impl HttpStateHandle {
         chains: PublishedChains,
         llm: Arc<dyn LlmRoutes>,
     ) {
+        // The member table is built from the same document, before the state is stored, so the
+        // generation a request reads is never missing the members it names. A request that read the
+        // previous generation keeps selecting from its own list: that table is still alive through
+        // its `HttpState`, which is what makes an in-flight selection and its document one
+        // generation.
+        let selection = self.pools.publish(snapshot.document());
         self.current.store(Some(Arc::new(HttpState {
             snapshot,
             policies: chains,
             llm,
+            selection,
         })));
     }
 }

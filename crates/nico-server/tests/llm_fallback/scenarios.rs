@@ -279,7 +279,7 @@ pub(super) async fn an_open_breaker_is_not_contacted_at_all(
 }
 
 /// 401 is not retryable: the caller is refused with the canonical answer, no budget, no chain.
-pub(super) async fn a_final_failure_is_answered_without_asking_the_fallback(
+pub(super) async fn a_credential_failure_asks_the_fallback_without_burning_the_budget(
     source: &Arc<TestSource>,
     address: &SocketAddr,
     credential: &str,
@@ -298,27 +298,24 @@ pub(super) async fn a_final_failure_is_answered_without_asking_the_fallback(
             .render(),
     );
 
-    let response = settled(*address, &chat(), &primary, 1, 502).await;
+    // A 401 is about *this member's* credential: the next provider may hold a working one, so the
+    // walk moves on instead of answering the caller with a fault that is not theirs.
+    let response = settled(*address, &chat(), &secondary, 1, 200).await;
     assert_eq!(
         response.status(),
-        502,
-        "a credential failure answers 502: {}",
-        response.text()
-    );
-    assert!(
-        !response.text().contains("provider-internal-detail"),
-        "the provider's message never reaches the caller: {}",
+        200,
+        "the fallback served the request: {}",
         response.text()
     );
     assert_eq!(
         primary.observation().connections,
         1,
-        "a final failure burns no budget"
+        "the failing member is not retried: a credential failure is not a jitter"
     );
     assert_eq!(
         secondary.observation().connections,
-        0,
-        "the fallback is never asked"
+        1,
+        "the fallback was asked exactly once"
     );
 }
 

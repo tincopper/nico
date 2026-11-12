@@ -65,9 +65,9 @@ fn provider_response(status: u16) -> ResponseHeader {
 fn a_provider_route_with_a_published_front_end_has_a_destination() {
     let calls = Arc::new(Mutex::new(LlmCalls::default()));
     let snapshot = llm_snapshot();
-    let ctx = llm_context(&snapshot, front_end(&calls));
+    let mut ctx = llm_context(&snapshot, front_end(&calls));
 
-    let chosen = destination(&ctx).expect("the front-end resolved the provider");
+    let chosen = destination(&mut ctx).expect("the front-end resolved the provider");
 
     assert_eq!(
         chosen,

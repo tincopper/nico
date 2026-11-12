@@ -170,11 +170,12 @@ mod schema_bounds {
     use super::*;
 
     /// Bounds a test writes, paired with the value it expects to read back.
-    const WRITTEN: [(Bound, usize); 6] = [
+    const WRITTEN: [(Bound, usize); 7] = [
         (Bound::Routes, 8),
         (Bound::Upstreams, 7),
         (Bound::Providers, 6),
         (Bound::Plugins, 3),
+        (Bound::Endpoints, 2),
         (Bound::Nodes, 5),
         (Bound::Depth, 4),
     ];

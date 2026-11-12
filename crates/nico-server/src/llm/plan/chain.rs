@@ -17,10 +17,10 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use nico_core::{Document, Provider, Route};
+use nico_core::{Document, PoolStrategy, Provider, Route};
 use nico_llm::{
     AttemptChain, BreakerParams, ChainBuildError, ChainMember, ClientCodec, Credential, Exchange,
-    ExchangeMode, ProviderKind, ProviderRegistry, TargetIdentity,
+    ExchangeMode, PoolOrder, ProviderKind, ProviderRegistry, TargetIdentity,
 };
 
 use super::{provider_entry, route_facts};
@@ -28,12 +28,16 @@ use crate::llm::{CredentialResolver, LlmBuildError};
 
 /// Compiles the route's primary target and its fallback members into one attempt chain.
 ///
+/// A route with a provider pool compiles its members into the chain's head — in document order — and
+/// then its fallback chain, so the published list is one sequence with the pool as its prefix. The
+/// fallback chain keeps its meaning: it is what the route tries after the pool has had its attempts.
+///
 /// Members are compiled in attempt order, so a failure names the first member that cannot be served
 /// and stops there — the same first-violation order the document's own validation uses.
 ///
 /// # Errors
-/// Returns [`LlmBuildError`] for the first member that cannot be served: a provider the document
-/// does not declare, a kind no adapter serves, an unreadable credential, unusable route facts, or an
+/// Returns [`LlmBuildError`] for the first member that cannot be served: a provider the document does
+/// not declare, a kind no adapter serves, an unreadable credential, unusable route facts, or an
 /// exchange the pair cannot assemble.
 pub(super) fn compile_chain(
     document: &Document,
@@ -43,24 +47,79 @@ pub(super) fn compile_chain(
     route: &Route,
     codec: Arc<dyn ClientCodec>,
 ) -> Result<Arc<AttemptChain>, LlmBuildError> {
-    let primary = route.target().name();
     let mut members = Vec::with_capacity(route.fallback().len() + 1);
-    for name in std::iter::once(primary).chain(route.fallback().iter().map(String::as_str)) {
-        members.push(compile_member(
-            document,
-            providers,
-            credentials,
-            materialized,
-            route,
-            &codec,
-            name,
-        )?);
-    }
-    let chain =
-        AttemptChain::try_new(members).map_err(|ChainBuildError| LlmBuildError::EmptyChain {
+    let pool = match route.pool() {
+        // A single-target route: its one target, then its chain, exactly as before pools existed.
+        None => {
+            let primary = route.target().name();
+            for name in std::iter::once(primary).chain(route.fallback().iter().map(String::as_str))
+            {
+                members.push(compile_member(
+                    document,
+                    providers,
+                    credentials,
+                    materialized,
+                    route,
+                    &codec,
+                    name,
+                )?);
+            }
+            None
+        }
+        Some(pool) => {
+            let mut weights = Vec::with_capacity(pool.members().len());
+            for member in pool.members() {
+                members.push(compile_member(
+                    document,
+                    providers,
+                    credentials,
+                    materialized,
+                    route,
+                    &codec,
+                    member.name(),
+                )?);
+                weights.push(member.weight());
+            }
+            for name in route.fallback() {
+                members.push(compile_member(
+                    document,
+                    providers,
+                    credentials,
+                    materialized,
+                    route,
+                    &codec,
+                    name,
+                )?);
+            }
+            Some(PoolOrder::new(build_pool_picker(pool.strategy()), weights))
+        }
+    };
+    let chain = AttemptChain::with_pool(members, pool).map_err(|ChainBuildError| {
+        LlmBuildError::EmptyChain {
             route: route.id().to_owned(),
-        })?;
+        }
+    })?;
     Ok(Arc::new(chain))
+}
+
+/// Builds the picker a document's pool strategy names.
+///
+/// The one place the pool vocabulary becomes an implementation, and the reason `PoolStrategy` is a
+/// closed enum: a variant with no arm fails to compile instead of falling back to a default.
+fn build_pool_picker(strategy: PoolStrategy) -> Arc<dyn nico_llm::route::select::Picker> {
+    match strategy {
+        PoolStrategy::WeightedRandom => {
+            // Seeded from the process start: the draw only has to differ between requests, and a
+            // fixed seed would make every process start with the same sequence.
+            let seed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.subsec_nanos().into());
+            Arc::new(nico_llm::route::select::WeightedRandom::new(Arc::new(
+                nico_llm::route::select::Random::new(seed),
+            )))
+        }
+        PoolStrategy::RoundRobin => Arc::new(nico_llm::route::select::RoundRobin::default()),
+    }
 }
 
 /// Compiles one chain member: its provider entry, adapter, credential, route facts and exchange.

@@ -6,7 +6,8 @@
 //!
 //! 1. a retryable failure on the primary target is answered by the fallback, buffered and streamed;
 //! 2. a target whose breaker opened is not contacted at all — its connection count stays zero;
-//! 3. a final failure (401) is answered immediately, with no fallback contacted and no budget spent;
+//! 3. a credential failure (401) moves to the fallback without spending the budget — the fault is the
+//!    member's, not the caller's;
 //! 4. a failure after the response head reached the caller is never retried — the stream ends;
 //! 5. a body above Pingora's replay buffer is answered, not retried once dispatched;
 //! 6. a target whose name does not resolve is walked past — the resolve failure is its transport
@@ -64,7 +65,7 @@ async fn the_attempt_sequence_answers_from_the_chain_on_the_wire() {
     .await;
     scenarios::an_open_breaker_is_not_contacted_at_all(&captured, &source, &address, &credential)
         .await;
-    scenarios::a_final_failure_is_answered_without_asking_the_fallback(
+    scenarios::a_credential_failure_asks_the_fallback_without_burning_the_budget(
         &source,
         &address,
         &credential,

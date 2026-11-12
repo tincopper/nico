@@ -1213,6 +1213,7 @@ dependencies = [
  "bytes",
  "metrics",
  "nico-core",
+ "nico-lb",
  "pingora",
  "rustls",
  "rustls-native-certs",
@@ -1224,11 +1225,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nico-lb"
+version = "0.0.0"
+
+[[package]]
 name = "nico-llm"
 version = "0.0.0"
 dependencies = [
+ "metrics",
  "nico-core",
  "nico-http",
+ "nico-lb",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

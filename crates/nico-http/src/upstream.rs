@@ -12,6 +12,10 @@
 //! - [`peer`] composes [`resolve`] and [`build`]. Resolution is the only I/O step and is asynchronous
 //!   on purpose: a blocking lookup on a worker thread would stall every request sharing that runtime,
 //!   and the default runtime here is one thread per service.
+//! - [`pools`] answers *which* member of a multi-address upstream a request connects to. The strategy
+//!   itself comes from `nico-lb`, which owns the selection contract and each strategy's state; the
+//!   pool here owns what the gateway observed about the members, so a reload replaces the members
+//!   without resetting either.
 //!
 //! Three facts about this layer are easy to get wrong later, so they are stated here:
 //!
@@ -28,21 +32,33 @@
 //!   that its target is `https` and carries the SNI host; nothing on this path can downgrade the
 //!   connection to plaintext, because the backend is compiled in.
 
-use std::{io, net::SocketAddr, time::Duration};
+use std::{io, net::SocketAddr, sync::Arc, time::Duration};
 
-use nico_core::{Scheme, Upstream};
+use nico_core::Scheme;
 use pingora::upstreams::peer::HttpPeer;
 
 use crate::error::HttpError;
 
+pub(crate) mod pools;
 pub(crate) mod tls;
 
-/// Where one request goes: a scheme, a host and a port.
+/// Where one request goes: a transport, the address to connect to, and the name the peer answers to.
 ///
 /// This is the data plane's only input for reaching a peer, and it is deliberately constructible
 /// outside this crate: a filter that owns a target kind this crate does not understand (a provider
 /// named by a route) resolves it and stores the destination in the [`HttpContext`], so provider
 /// semantics stay in `nico-llm` while TLS policy, budgets and header rewriting stay here.
+///
+/// `host` and `authority` are two different questions:
+///
+/// - `host` is the **connection target**: what the resolver looks up and what the socket is opened to.
+/// - `authority` is the **name** the peer is addressed by: the `Host` header and the TLS server name.
+///
+/// They are equal for every destination a target owner builds by hand, which is why
+/// [`Destination::new`] sets both. They differ once an upstream has several members: one certificate
+/// names a service, and the service may run on many machines, so a request connects to `10.0.0.7` and
+/// still says `api.example.test`. Writing the machine into `Host` would address a virtual host nobody
+/// declared; using it for SNI would fail a certificate that was issued for the service.
 ///
 /// The caller that resolves a target is also the one that validates it — a provider whose
 /// `base_url` yields an empty host fails when the peer is connected, exactly like an unreachable
@@ -52,19 +68,35 @@ pub(crate) mod tls;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Destination {
     scheme: Scheme,
-    host: String,
+    host: Arc<str>,
     port: u16,
+    authority: Arc<str>,
 }
 
 impl Destination {
     /// Builds a destination from the three values a target owner knows.
+    ///
+    /// The authority starts equal to `host`, because a target owner that names one address has one
+    /// name for it. Only the upstream selector separates the two.
     #[must_use]
-    pub fn new(scheme: Scheme, host: impl Into<String>, port: u16) -> Self {
+    pub fn new(scheme: Scheme, host: impl Into<Arc<str>>, port: u16) -> Self {
+        let host = host.into();
         Self {
             scheme,
-            host: host.into(),
+            authority: Arc::clone(&host),
+            host,
             port,
         }
+    }
+
+    /// Replaces the name the peer is addressed by, leaving the connection target alone.
+    ///
+    /// The one caller is the upstream selector: it chose a member's address and keeps the upstream's
+    /// logical host for `Host` and SNI. A policy building a destination directly never needs it.
+    #[must_use]
+    pub fn with_authority(mut self, authority: impl Into<Arc<str>>) -> Self {
+        self.authority = authority.into();
+        self
     }
 
     /// Returns the transport scheme this destination must be reached with.
@@ -73,26 +105,29 @@ impl Destination {
         self.scheme
     }
 
-    /// Returns the destination host, for example `127.0.0.1` or `api.openai.com`.
+    /// Returns the connection target, for example `127.0.0.1` or `10.0.0.7`.
+    ///
+    /// This is what the resolver looks up. It is **not** what the upstream is addressed by: see
+    /// [`Destination::authority`].
     #[must_use]
     pub fn host(&self) -> &str {
         &self.host
     }
 
-    /// Returns the destination port.
+    /// Returns the destination port, which is the port the connection is opened to.
     #[must_use]
     pub const fn port(&self) -> u16 {
         self.port
     }
-}
 
-impl From<&Upstream> for Destination {
-    /// Reads a document upstream as the destination it describes.
+    /// Returns the name the peer is addressed by: the `Host` header and the TLS server name.
     ///
-    /// The upstream's name is dropped on purpose: it is a configuration reference used for logging
-    /// and for the route lookup, not something the connection needs.
-    fn from(upstream: &Upstream) -> Self {
-        Self::new(upstream.scheme(), upstream.host(), upstream.port())
+    /// For a destination a target owner built by hand this equals [`Destination::host`]. For a member
+    /// of a multi-address upstream it is the upstream's logical host, so a certificate issued for the
+    /// service verifies no matter which machine served the request.
+    #[must_use]
+    pub fn authority(&self) -> &str {
+        &self.authority
     }
 }
 
@@ -117,14 +152,18 @@ pub(crate) async fn peer(
     Ok(build(destination, address, budget))
 }
 
-/// Returns the `Host` header value to send upstream: the host, plus the port when it is not the
+/// Returns the `Host` header value to send upstream: the authority, plus the port when it is not the
 /// scheme's default.
+///
+/// The port is the one the connection uses. A member that declares its own port therefore still says
+/// the logical host, and the pair reads as the service the caller addressed — which is what a virtual
+/// host matches on.
 #[must_use]
 pub(crate) fn host_header(destination: &Destination) -> String {
     if is_default_port(destination.scheme(), destination.port()) {
-        destination.host().to_owned()
+        destination.authority().to_owned()
     } else {
-        format!("{}:{}", destination.host(), destination.port())
+        format!("{}:{}", destination.authority(), destination.port())
     }
 }
 
@@ -142,13 +181,16 @@ async fn resolve(destination: &Destination) -> Result<SocketAddr, HttpError> {
 }
 
 /// Builds the peer from an address that has already been resolved.
+///
+/// The server name is the destination's authority, never its connection target: a certificate names
+/// the service, and a member's address is a machine. A cleartext peer carries it too — `Host`
+/// rewriting and TLS verification both read it — so a later upgrade of the same route to `https`
+/// verifies against the name the operator wrote.
 fn build(destination: &Destination, address: SocketAddr, budget: Duration) -> Box<HttpPeer> {
-    // Cleartext upstreams still carry the host as SNI: `Host` rewriting and TLS verification both
-    // read it, and a peer built for `https` needs it before the handshake.
     let mut peer = HttpPeer::new(
         address,
         destination.scheme() == Scheme::Https,
-        destination.host().to_owned(),
+        destination.authority().to_owned(),
     );
     peer.options.connection_timeout = Some(budget);
     peer.options.read_timeout = Some(budget);

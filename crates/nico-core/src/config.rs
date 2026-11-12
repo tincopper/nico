@@ -5,9 +5,10 @@
 //! it can become part of a published snapshot.
 //!
 //! The model is split by data structure: [`Document`] and [`RequestBounds`] describe the envelope,
-//! [`Provider`], [`Upstream`], [`PluginSpec`] and [`Route`] describe what a route can point at and
-//! run, and [`ParseLimits`] carries the byte and shape bounds. The serde shape, the byte-level parser
-//! and the validation stages stay private: callers get [`Document::parse`] and nothing else.
+//! [`Provider`], [`Upstream`] (with the [`Endpoint`] members it selects between and the [`Strategy`]
+//! it selects them by), [`PluginSpec`] and [`Route`] describe what a route can point at and run, and
+//! [`ParseLimits`] carries the byte and shape bounds. The serde shape, the byte-level parser and the
+//! validation stages stay private: callers get [`Document::parse`] and nothing else.
 //! Reference validation (does the name exist, is it unique?) and semantic validation (is the field
 //! itself legal?) are separate private modules because they answer different questions.
 
@@ -39,7 +40,10 @@ pub use plugin::{
 };
 pub use provider::{CircuitBreaker, DEFAULT_COOLDOWN_MS, DEFAULT_FAILURE_THRESHOLD, Provider};
 pub use request::{DEFAULT_MAX_RESPONSE_BYTES, RequestBounds};
-pub use route::{Route, RouteMode, RouteTarget};
+pub use route::{Pool, PoolMember, PoolStrategy, Route, RouteMode, RouteTarget};
 pub use secret_ref::is_secret_ref;
-pub use semantic::{MAX_ATTEMPTS_PER_ROUTE, MAX_FALLBACK_MEMBERS};
-pub use upstream::{Scheme, Upstream};
+pub use semantic::{MAX_ATTEMPTS_PER_ROUTE, MAX_FALLBACK_MEMBERS, attempt_ceiling};
+pub use upstream::{
+    DEFAULT_ENDPOINT_NAME, DEFAULT_ENDPOINT_WEIGHT, DEFAULT_FAIL_TIMEOUT_MS, DEFAULT_MAX_FAILS,
+    Ejection, Endpoint, Scheme, Strategy, Upstream,
+};

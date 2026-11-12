@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "检查的分层入口"}
+{"file": ".trellis/spec/backend/pingora-guidelines.md", "reason": "复查选择点唯一、SNI/Host 来自逻辑身份、全部剔除的 502 行与既有 hook 纪律一致"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "复查失败计入没有把 4xx 与客户端取消算成实例失败，且对外 code 未新增"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "复查指标名/标签落在允许集内，upstream.endpoint 只在多成员时出现"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "复查门禁、文件预算与「无第二个真实消费者不加抽象」的约束"}
+{"file": ".trellis/tasks/11-11-upstream-lb/prd.md", "reason": "逐条核对验收清单：策略分布、状态机、继承、e2e、回归零改动"}
+{"file": ".trellis/tasks/11-11-upstream-lb/design.md", "reason": "复查实现是否遵守五条不变量与第 9 节的备选取舍（尤其没有引入 pingora lb）"}

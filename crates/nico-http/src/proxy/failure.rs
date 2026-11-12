@@ -106,6 +106,20 @@ pub(super) fn is_upstream_timeout(error: &Error) -> bool {
     )
 }
 
+/// Reports whether a Pingora error is a *connection* that spent the request's budget.
+///
+/// Narrower than [`is_upstream_timeout`] on purpose, because the two answer different questions. That
+/// one decides the response (`504`, retryable, our clock ran out). This one decides whether a member
+/// failed, and a read or write timeout is explicitly not a member failure: the peer accepted the
+/// request and the gateway waited exactly as long as it was configured to, so ejecting the machine
+/// for it would take a healthy but slow peer out of rotation for being slower than one budget.
+pub(super) fn is_connect_timeout(error: &Error) -> bool {
+    matches!(
+        error.etype(),
+        ErrorType::ConnectTimedout | ErrorType::TLSHandshakeTimedout
+    )
+}
+
 /// Reports whether a Pingora error means the downstream connection ended.
 pub(super) fn is_downstream_gone(error: &Error) -> bool {
     *error.esource() == ErrorSource::Downstream

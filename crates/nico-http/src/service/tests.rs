@@ -74,8 +74,9 @@ fn both_windows_come_from_the_settings_rather_than_from_a_pingora_default() {
 fn the_attempt_ceiling_covers_every_chain_a_document_can_declare() {
     // Pingora's loop is `while retries < max_retries`, and it is the loop's *fuse*, not the
     // sequence: a route that declared nothing makes one attempt because its walk answers "no"
-    // immediately. The fuse must be large enough never to be what ends a legitimate chain — the
-    // longest one a document can express is `retry_budget` (≤ 4) times the chain's targets.
+    // immediately. The fuse must be large enough never to be what ends a legitimate chain — and the
+    // longest one a document can express is `retry_budget` (≤ 4) times the pool's members (≤ 8) times
+    // the chain's targets.
     let configured = conf(&settings(5_000, 30_000)).max_retries;
     assert!(
         configured > 1,
@@ -86,7 +87,7 @@ fn the_attempt_ceiling_covers_every_chain_a_document_can_declare() {
         "the fuse must exceed the longest declarable chain: {configured}"
     );
     assert_eq!(
-        configured, 16,
+        configured, 128,
         "the ceiling is a constant, and this test pins it so lowering it is a deliberate change"
     );
 }

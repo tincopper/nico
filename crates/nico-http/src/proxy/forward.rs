@@ -20,13 +20,17 @@
 //! why [`Framing`] snapshots the two framing headers before the chains run and restores them
 //! afterwards: framing is the data plane's.
 
-use std::{io, net::IpAddr};
+use std::{io, net::IpAddr, time::Instant};
 
-use nico_core::{Document, RouteTarget, Upstream};
+use nico_core::RouteTarget;
 use pingora::{http::RequestHeader, proxy::Session};
 
 use super::failure::abort;
-use crate::{context::HttpContext, error::HttpError, upstream::Destination};
+use crate::{
+    context::HttpContext,
+    error::HttpError,
+    upstream::{Destination, pools::Selected},
+};
 
 /// The two request headers that decide how the request body is framed.
 ///
@@ -110,22 +114,31 @@ pub(super) fn peer_ip(session: &Session) -> Option<IpAddr> {
 /// 2. the LLM front-end the route was published with, which resolved the provider's address when the
 ///    document was compiled — the same decision, made earlier and by the crate that understands the
 ///    provider;
-/// 3. the document upstream the route names, if the document has it;
+/// 3. one member of the document upstream the route names, chosen by that upstream's strategy from
+///    the member list this request's own generation published. Only members the health machine admits
+///    are candidates, so a member ejected for failing is not chosen by a strategy that prefers it, and
+///    asking a member for admission is what claims the single half-open probe;
 /// 4. a refusal. A provider target with no front-end is [`HttpError::ProviderNotConfigured`], because
 ///    this crate does not know provider semantics and guessing an address would be worse than failing;
-///    an upstream name the document lacks is [`HttpError::UpstreamFailed`], which reference validation
-///    makes unreachable for a published document.
+///    an upstream with no member left to choose — because every member is ejected, or because the
+///    generation published none — is [`HttpError::UpstreamFailed`]. The refusal happens before a socket
+///    is opened: sending the request to a member just judged failed would stack another timeout on the
+///    failure the caller is already paying for.
 ///
-/// The two are ordered, never mixed. A recorded destination wins outright, and step 2's headers are
-/// written to whichever peer won — so the day a filter can record a destination for a *provider* route,
-/// that filter must also decide what credential goes with it. Nothing exposes that today
-/// (`PluginContext` has no destination setter, and the only writer is the crate's own request hook), and
-/// this note is the condition under which that stops being true.
+/// This is the **only** selection point in the data plane. A request's retries stay on the member
+/// they selected — the recorded destination wins above — so no second call can move a round to a
+/// machine the first round never reached.
+///
+/// The two halves are ordered, never mixed. A recorded destination wins outright, and step 2's
+/// headers are written to whichever peer won — so the day a filter can record a destination for a
+/// *provider* route, that filter must also decide what credential goes with it. Nothing exposes that
+/// today (`PluginContext` has no destination setter, and the only writer is the crate's own request
+/// hook), and this note is the condition under which that stops being true.
 ///
 /// # Errors
 /// Returns the failure that explains why no destination exists. It is never a fallback: the request
 /// ends with the response the error maps to.
-pub(super) fn destination(ctx: &HttpContext) -> Result<Destination, HttpError> {
+pub(super) fn destination(ctx: &mut HttpContext) -> Result<Destination, HttpError> {
     // A recorded destination is the peer this request connected to, and it belongs to the target it
     // addressed. An LLM round that moved to another chain member must not reuse it — the head would go
     // to the endpoint the request just failed on — so a converting route always re-resolves below and
@@ -145,38 +158,56 @@ pub(super) fn destination(ctx: &HttpContext) -> Result<Destination, HttpError> {
         return Ok(llm.route().destination().clone());
     }
 
-    let Some(snapshot) = ctx.snapshot() else {
-        return Err(HttpError::NotReady);
-    };
-    match ctx.target() {
-        None => Err(HttpError::NotReady),
-        Some(RouteTarget::Upstream(name)) => {
-            let Some(upstream) = find_upstream(snapshot.document(), name) else {
-                return Err(HttpError::UpstreamFailed {
-                    source: Box::new(io::Error::other(format!(
-                        "the matched route names upstream `{name}`, which the document does not contain"
-                    ))),
-                });
-            };
-            Ok(Destination::from(upstream))
-        }
-        Some(RouteTarget::Provider(name)) => {
-            Err(HttpError::ProviderNotConfigured { name: name.clone() })
-        }
-        // A target kind this build does not know: treat it like a provider with no front-end
-        // rather than guessing an address.
-        Some(target) => Err(HttpError::ProviderNotConfigured {
-            name: target.name().to_owned(),
-        }),
-    }
+    // Selected inside a shared borrow of the context, and recorded after it ends: the member's
+    // in-flight count has to be held by the context the borrow came from.
+    let selected = select_member(ctx)?;
+    let destination = selected.destination;
+    ctx.hold_connection(selected.guard);
+    Ok(destination)
 }
 
-/// Returns the upstream named `name` from a document, if it has one.
-fn find_upstream<'a>(document: &'a Document, name: &str) -> Option<&'a Upstream> {
-    document
-        .upstreams()
-        .iter()
-        .find(|upstream| upstream.name() == name)
+/// Chooses one member of the upstream this request's route names.
+///
+/// The target, the generation's member list and the caller's address all come from the context, so the
+/// choice is made against the document the request was routed with — not against whatever the store
+/// holds now.
+fn select_member(ctx: &HttpContext) -> Result<Selected, HttpError> {
+    let Some(target) = ctx.target() else {
+        return Err(HttpError::NotReady);
+    };
+    let RouteTarget::Upstream(name) = target else {
+        return Err(match target {
+            RouteTarget::Provider(name) => HttpError::ProviderNotConfigured { name: name.clone() },
+            // A target kind this build does not know: treat it like a provider with no front-end
+            // rather than guessing an address.
+            other => HttpError::ProviderNotConfigured {
+                name: other.name().to_owned(),
+            },
+        });
+    };
+    let Some(selection) = ctx.selection() else {
+        return Err(HttpError::NotReady);
+    };
+    let Some(state) = selection.upstream(name) else {
+        return Err(no_member(name));
+    };
+    state
+        .select(ctx.client_ip(), Instant::now())
+        .ok_or_else(|| no_member(name))
+}
+
+/// Builds the refusal for an upstream with nothing left to select.
+///
+/// `502 upstream_unreachable` is the existing row for "the peer cannot be reached", and it is the
+/// honest one here: the gateway has just decided that no member is available, so refusing is what
+/// keeps the failure visible instead of stacking another timeout on it. The message names the upstream,
+/// never a member address.
+fn no_member(name: &str) -> HttpError {
+    HttpError::UpstreamFailed {
+        source: Box::new(io::Error::other(format!(
+            "upstream `{name}` has no available member"
+        ))),
+    }
 }
 
 /// Sets a request header, converting the header-name failure into a recorded data-plane error.

@@ -13,7 +13,9 @@
 mod attempt;
 mod chain;
 mod convert;
+mod disposition;
 mod passthrough;
+mod pool;
 mod support;
 mod transform;
 

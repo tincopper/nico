@@ -30,6 +30,9 @@ lru = "=0.18.5"
 # The metrics facade: a recording call is one atomic read when no recorder is installed, which is
 # why the request path and the config pipeline emit through it unconditionally.
 metrics = "=0.24.6"
+# Member selection: the Picker contract and its strategies. A workspace member crate rather than an
+# external dependency; listed here so every consumer names it the same way.
+nico-lb = { path = "crates/nico-lb" }
 # The Prometheus recorder, used only by `nico-metrics`. `default-features = false` is mandatory:
 # the default features pull in hyper/tokio/rustls and would create a second network stack beside
 # Pingora's. `install_recorder()` starts no task, so upkeep runs at scrape time.

@@ -138,11 +138,28 @@ macro_rules! record {
 
 /// Chooses the record shape the request's facts allow.
 ///
-/// The `llm.model` guard is the decoded-body guard: [`LlmExchange::record_prepared`] sets the model
-/// label and the stream flag together, and a passthrough route never calls it. A front-end that
-/// reports a stream flag without a model label is recorded with the two publication facts only — an
-/// absent field is honest, and an empty one would be a value the front-end never reported.
+/// Two independent facts decide the shape, and both are answered by absence rather than by an empty
+/// value:
+///
+/// - `upstream.endpoint` exists only for a request that selected one member of a multi-member
+///   upstream. A single-member deployment names its only machine in `upstream` already, and writing
+///   the member there would change the shape of every existing deployment's logs to say nothing new.
+/// - the `llm.*` fields exist only on an AI route: [`LlmExchange::record_prepared`] sets the model
+///   label and the stream flag together, and a passthrough route never calls it. A front-end that
+///   reports a stream flag without a model label is recorded with the two publication facts only.
 macro_rules! emit {
+    ($level:expr, $ctx:expr, $message:literal, $($fields:tt)*) => {
+        match $ctx.upstream_endpoint() {
+            Some(endpoint) => {
+                shape!($level, $ctx, $message, upstream.endpoint = %endpoint, $($fields)*)
+            }
+            None => shape!($level, $ctx, $message, $($fields)*),
+        }
+    };
+}
+
+/// Chooses the `llm.*` shape, having already decided the member field.
+macro_rules! shape {
     ($level:expr, $ctx:expr, $message:literal, $($fields:tt)*) => {
         match $ctx.llm() {
             Some(llm) if llm.model().is_some() => {

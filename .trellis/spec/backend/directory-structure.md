@@ -100,8 +100,12 @@ nico/
     │       ├── state/          # plan.rs: the chains and the two per-route framing decisions
     │       ├── llm.rs          # the byte-level LLM seam: LlmRoutes/LlmRoute/ResponseTransform
     │       ├── llm/            # request.rs, response.rs, routes.rs: one data structure per file
-    │       ├── upstream.rs     # crate-private: Destination → HttpPeer
-    │       └── upstream/       # tls/: policy.rs (roots, no framework, no I/O) + adapter.rs (ServerConf)
+    │       ├── upstream.rs     # crate-private: Destination → HttpPeer; `host` connects, `authority` names
+    │       └── upstream/       # picker.rs (Picker trait + four strategies, each owning its state),
+    │                           #   pools.rs (inheritance store, one generation's table, the selection
+    │                           #   metric), pools/health.rs (ejection: streak, cooldown, one probe),
+    │                           #   pools/member.rs (identity, in-flight count, ConnectionGuard),
+    │                           #   tls/: policy.rs (roots, no framework, no I/O) + adapter.rs (ServerConf)
     ├── nico-llm/            # canonical LLM model + client codecs + provider adapters
     │   └── src/
     │       ├── lib.rs           # //! + builtin_registry(): the four codecs and four adapters this build serves
@@ -200,6 +204,7 @@ submodules. Name modules after the capability (`debounce`, `publish`, `cache`), 
 | Kind of code | Location |
 |---|---|
 | HTTP/Pingora lifecycle, route matching, the `Plugin` contract, upstream TLS policy and its Pingora adapter (`upstream/tls/{policy,adapter}`) | `nico-http` |
+| Which member of a multi-address upstream a request connects to (`upstream/picker`: the `Picker` trait and the strategies, each owning its state), and what the gateway has observed about that member (`upstream/pools`) | `nico-http` |
 | Signals, runtime ownership, shutdown token, drain wiring | `nico-server` |
 | LLM canonical schema, client protocol codecs, provider adapters, SSE translation | `nico-llm` |
 | The byte-level seam an LLM front-end implements (destination, wire body, per-response transform) | `nico-http/src/llm.rs` |
@@ -211,6 +216,21 @@ submodules. Name modules after the capability (`debounce`, `publish`, `cache`), 
 
 If you cannot name the second real consumer of an abstraction, it does **not** belong in
 `nico-core`. One implementation behind a trait is a warning sign, not a design.
+
+### Upstream selection: the strategy and the state
+
+`crates/nico-http/src/upstream/{picker,pools}` keeps *the rule* and *the observed history* apart:
+
+| File | Owns | Must not |
+|---|---|---|
+| `picker.rs` | the `Picker` trait (`pick` + `inherit`), the `Members`/`View` accessors a rule may read, the four implementations and the state each of them keeps, and `build` — the one exhaustive `Strategy → impl` match | know a `Destination`, an `HttpContext`, or how a member is reached. A new strategy must be implementable without touching `pools` |
+| `pools.rs` | the process-level inheritance store, the `SelectionTable` one generation serves from, member weights, and the selection counter | know any strategy's state layout: it holds `Arc<dyn Picker>` and passes facts in |
+| `pools/health.rs` | the ejection machine: streak, cooldown, the single probe | know an upstream's name, log anything, or emit a metric |
+| `pools/member.rs` | member identity, the in-flight count, and the `ConnectionGuard` that reports an outcome and logs it | decide availability (that is `health`'s verdict) and re-derive a member's name for a label |
+
+`Strategy` in `nico-core` is deliberately **not** `#[non_exhaustive]`: it is a closed vocabulary the
+data plane maps exhaustively, so a variant without a picker fails to compile instead of falling
+through a default arm.
 
 ### Upstream TLS: two layers inside `nico-http`
 

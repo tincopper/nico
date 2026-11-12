@@ -75,15 +75,29 @@ pub enum DocumentError {
         limit: usize,
     },
     /// A route names neither an upstream nor a provider.
-    #[error("route {id} has no target: set exactly one of `upstream` or `provider`")]
+    #[error("route {id} has no target: set exactly one of `upstream`, `provider` or `providers`")]
     RouteTargetMissing {
         /// The route that is missing a target.
         id: String,
     },
-    /// A route names both an upstream and a provider.
-    #[error("route {id} has two targets: set exactly one of `upstream` or `provider`")]
+    /// A route names more than one way of targeting the same request.
+    #[error("route {id} has two targets: set exactly one of `upstream`, `provider` or `providers`")]
     RouteTargetAmbiguous {
         /// The route that names two targets.
+        id: String,
+    },
+    /// A route's `providers` list is empty.
+    #[error("route {id} declares an empty `providers` pool: name at least one provider")]
+    PoolEmpty {
+        /// The route whose pool is empty.
+        id: String,
+    },
+    /// A route names a `strategy` without a pool to apply it to.
+    #[error(
+        "route {id} sets `strategy` without `providers`: a strategy needs a pool to choose from"
+    )]
+    StrategyWithoutPool {
+        /// The route that sets a strategy with no pool.
         id: String,
     },
     /// A route references a name that no entry defines.
@@ -135,6 +149,8 @@ impl DocumentError {
             | Self::Yaml { .. }
             | Self::RouteTargetMissing { .. }
             | Self::RouteTargetAmbiguous { .. }
+            | Self::PoolEmpty { .. }
+            | Self::StrategyWithoutPool { .. }
             | Self::ReferenceUnknown { .. }
             | Self::DuplicateId { .. }
             | Self::InvalidField { .. } => ErrorCategory::Client,

@@ -40,9 +40,12 @@ use crate::{
     filter::required,
     protocol::RequestFacts,
     provider::{Endpoint, WireRequest},
-    route::{AttemptChain, TargetIdentity},
+    route::{AttemptChain, TargetIdentity, disposition::Exclusion},
     schema::{CanonicalError, ChatRequest, ModelRef},
 };
+
+mod failure;
+mod pool;
 
 /// What follows one attempt's response head.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,6 +142,32 @@ pub struct AttemptSequence {
     skipped: Vec<String>,
     /// How many attempts have been encoded, so the attempt log can number them.
     attempts: u32,
+    /// The pooled members this request has already tried, in attempt order.
+    ///
+    /// Only a pooled route fills this. It is what keeps one request from drawing the same member twice:
+    /// the order is asked for the members *not* in this set, so a strategy ordering a shrinking list
+    /// cannot hand back a member the request already gave up on.
+    tried: Vec<usize>,
+    /// Whether the response head's verdict is already this attempt's outcome.
+    ///
+    /// A head that was classified is the attempt's answer. A later "this round failed" signal — the
+    /// data plane reports one for every non-2xx response it did not keep — must not classify the same
+    /// attempt a second time as a *transport* failure: a `400` would become retryable, and one request
+    /// would be sent to every provider. Reset when a new attempt is available.
+    classified: bool,
+    /// The members this request retired, and why, in attempt order.
+    ///
+    /// A member excluded for a rate limit or a credential problem must not be drawn again by this
+    /// request, so it is recorded here *and* pushed onto `tried`: the set the order is drawn from is
+    /// what enforces it, and this record is what the request log reports.
+    excluded: Vec<(String, Exclusion)>,
+    /// The pooled members in the order this request draws them.
+    ///
+    /// Built once, before the first attempt: the order is a property of the request's draw, not of each
+    /// step, so asking the strategy again after every failure would let a random draw produce a
+    /// different first choice for the same request. The members the request has already tried are
+    /// filtered out of it on every walk, which is what keeps one request from repeating a member.
+    pool_order: Option<Vec<usize>>,
 }
 
 impl AttemptSequence {
@@ -155,6 +184,10 @@ impl AttemptSequence {
             plan: None,
             skipped: Vec::new(),
             attempts: 0,
+            tried: Vec::new(),
+            excluded: Vec::new(),
+            classified: false,
+            pool_order: None,
         }
     }
 
@@ -219,6 +252,7 @@ impl AttemptSequence {
         let streaming = prepared.request().stream();
         let model = prepared.model().clone();
         self.attempts += 1;
+        self.classified = false;
         self.plan = Some(AttemptPlan {
             member: self.current,
             wire: prepared.into_wire(),
@@ -226,60 +260,6 @@ impl AttemptSequence {
             model,
         });
         Ok(())
-    }
-
-    /// Classifies a non-2xx response head from the current target.
-    ///
-    /// The provider status becomes the canonical error through the member's own closed table — the
-    /// same one its body decoding uses — and the failure is what the breaker remembers.
-    ///
-    /// # Errors
-    /// Returns the encoding error of a member the sequence moved to.
-    pub fn classify(&mut self, status: u16, now: Instant) -> Result<Verdict, ExchangeError> {
-        let member = &self.chain.members()[self.current];
-        let failure = member.exchange().error_for_status(status);
-        if !failure.retryable() {
-            // The target's answer is final: the client is refused with it and no other target is
-            // asked. Leaving the target is still a failure the breaker should count — a target that
-            // 401s every request is exactly the one a breaker exists to stop trying first.
-            self.leave_current(AttemptOutcome::Failure, Some(&failure), now);
-            return Ok(Verdict::Answer);
-        }
-        if self.remaining > 1 {
-            // Budget left: retry the target that just failed. No breaker movement — a jittery
-            // target within its budget has not earned one.
-            self.remaining -= 1;
-            self.encode_current()?;
-            return Ok(Verdict::Retry);
-        }
-        // The budget is exhausted: leave the target, counting one failure for it, and move on.
-        self.leave_current(AttemptOutcome::Failure, Some(&failure), now);
-        self.advance(now)
-    }
-
-    /// Classifies an attempt that failed without producing a response head — a connection that never
-    /// established, a read that broke before the head arrived.
-    ///
-    /// The failure is the transport row of the current target's own closed table (a `502`, which the
-    /// table marks retryable), so the budget and the breaker move exactly as they would for a
-    /// provider that answered one.
-    ///
-    /// # Errors
-    /// Returns the encoding error of a member the sequence moved to.
-    pub fn transport_failed(&mut self, now: Instant) -> Result<Verdict, ExchangeError> {
-        let member = &self.chain.members()[self.current];
-        let failure = member.exchange().error_for_status(502);
-        if self.remaining > 1 {
-            // Budget left: retry the target that just failed. No breaker movement — a jittery
-            // target within its budget has not earned one. A connect that never established is
-            // exactly the "network jitter heals" case the budget-first rule exists for.
-            self.remaining -= 1;
-            self.encode_current()?;
-            return Ok(Verdict::Retry);
-        }
-        // The budget is exhausted: leave the target, counting one failure for it, and move on.
-        self.leave_current(AttemptOutcome::Failure, Some(&failure), now);
-        self.advance(now)
     }
 
     /// Records that the current attempt's response head was a success.
@@ -379,6 +359,13 @@ impl AttemptSequence {
         Some(self.primary_failure())
     }
 
+    /// Returns the members this request retired and why, in attempt order, and clears the record.
+    ///
+    /// The data plane logs each one; the sequence only records what its own classification decided.
+    pub fn take_excluded(&mut self) -> Vec<(String, Exclusion)> {
+        std::mem::take(&mut self.excluded)
+    }
+
     /// Returns the targets the most recent walk skipped, in walk order, and clears the record.
     ///
     /// The data plane logs each one; the sequence only collects what its own walk decided.
@@ -413,14 +400,19 @@ impl AttemptSequence {
     }
 
     /// Walks the chain from `first`, taking the first member whose breaker admits.
+    ///
+    /// A pooled route walks its pool in the strategy's order and then the fallback chain in document
+    /// order. The two are one list — the pool is its prefix — so the only difference is *which* index
+    /// comes next: the strategy's for the pool, `index + 1` after it.
     fn select_from(&mut self, first: usize, now: Instant) -> Result<(), SelectionRefused> {
         self.skipped.clear();
-        for index in first..self.chain.members().len() {
+        for index in self.walk_order(first) {
             let member = &self.chain.members()[index];
             match self.breakers.admit(member.identity(), now) {
                 Admission::Admit => {
                     self.current = index;
                     self.remaining = self.budget;
+                    self.note_tried(index);
                     return Ok(());
                 }
                 // An open target produces no attempt plan at all: no connection is made and the
@@ -436,8 +428,12 @@ impl AttemptSequence {
     }
 
     /// Leaves the current member for the next one that admits.
+    ///
+    /// A pooled route asks its pool before its fallback chain, and "the next member" is whoever the
+    /// order has not used — not the member with the next index. Only the fallback part advances by
+    /// index, which is what `select_from` does with `first`.
     fn advance(&mut self, now: Instant) -> Result<Verdict, ExchangeError> {
-        if self.current + 1 < self.chain.members().len() {
+        if self.has_member_after(self.current) {
             if self.select_from(self.current + 1, now).is_ok() {
                 self.encode_current()?;
                 return Ok(Verdict::Retry);

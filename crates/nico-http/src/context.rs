@@ -34,6 +34,7 @@ mod attempt;
 mod buffer;
 mod identity;
 mod llm;
+mod member;
 
 use std::{
     net::IpAddr,
@@ -47,7 +48,15 @@ use nico_core::{Generation, Route, RouteTarget, RuntimeSnapshot};
 use pingora::http::{Method, RequestHeader};
 
 use self::{buffer::BodyBuffer, llm::LlmExchange};
-use crate::{budget, error::HttpError, plugin::PluginChain, upstream::Destination};
+use crate::{
+    budget,
+    error::HttpError,
+    plugin::PluginChain,
+    upstream::{
+        Destination,
+        pools::{ConnectionGuard, SelectionTable},
+    },
+};
 
 /// What the data plane remembers about one in-flight request.
 ///
@@ -64,6 +73,10 @@ pub struct HttpContext {
     started: Option<Instant>,
     deadline: Option<Instant>,
     destination: Option<Destination>,
+    /// The members this request may select from: its own generation's list.
+    selection: Option<Arc<SelectionTable>>,
+    /// The in-flight count the selected member holds until this context is dropped.
+    connection: Option<ConnectionGuard>,
     client_ip: Option<IpAddr>,
     body_limit: Option<u32>,
     response_limit: Option<u32>,

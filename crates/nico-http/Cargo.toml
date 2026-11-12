@@ -14,6 +14,9 @@ arc-swap.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 nico-core.workspace = true
+# The selection contract and its strategies. The crate knows nothing about HTTP or Pingora, which is
+# what lets the model-layer pool reuse it (see `.trellis/tasks/11-11-model-lb/design.md`).
+nico-lb.workspace = true
 # The request path emits two metrics per request through the facade. It is deliberately the
 # facade and not the exporter: `nico-metrics` owns the recorder, and the data plane must not
 # pull the exporter (or a second network stack) into its dependency tree.

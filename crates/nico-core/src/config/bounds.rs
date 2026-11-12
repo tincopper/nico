@@ -9,9 +9,9 @@
 //! unrepresentable. The defaults live in exactly one place, [`SchemaBounds::default`]; operators
 //! override them through the local bootstrap file, never through a second copy of the numbers.
 //!
-//! A bound is addressed by [`Bound`] rather than by a per-field method: the six fields differ only
-//! in name, so one [`SchemaBounds::get`] and one [`SchemaBounds::with`] keep the table of names in a
-//! single place, and adding a seventh bound means adding one variant instead of two dozen lines of
+//! A bound is addressed by [`Bound`] rather than by a per-field method: the fields differ only in
+//! name, so one [`SchemaBounds::get`] and one [`SchemaBounds::with`] keep the table of names in a
+//! single place, and adding a bound means adding one variant instead of two dozen lines of
 //! copy-pasted accessors.
 
 use std::num::NonZeroUsize;
@@ -32,6 +32,17 @@ pub enum Bound {
     Upstreams,
     /// Maximum accepted number of providers.
     Providers,
+    /// Maximum accepted number of members of one upstream's `endpoints` list.
+    ///
+    /// Per entry rather than collection-wide: the list is the candidate set one request's selection
+    /// walks, so its size is a per-request cost rather than a document-wide budget.
+    Endpoints,
+    /// Maximum accepted number of members of one route's `providers` pool.
+    ///
+    /// Per route rather than collection-wide, for the same reason [`Bound::Endpoints`] is: the list is
+    /// the candidate set one attempt's selection walks, and it is also a factor of the route's attempt
+    /// ceiling.
+    PoolMembers,
     /// Maximum accepted number of plugins.
     Plugins,
     /// Maximum accepted number of YAML nodes in the whole document.
@@ -48,6 +59,8 @@ impl Bound {
             Self::Routes => "max_routes",
             Self::Upstreams => "max_upstreams",
             Self::Providers => "max_providers",
+            Self::Endpoints => "max_endpoints",
+            Self::PoolMembers => "max_pool_members",
             Self::Plugins => "max_plugins",
             Self::Nodes => "max_nodes",
             Self::Depth => "max_depth",
@@ -65,6 +78,8 @@ pub struct SchemaBounds {
     max_upstreams: NonZeroUsize,
     max_providers: NonZeroUsize,
     max_plugins: NonZeroUsize,
+    max_endpoints: NonZeroUsize,
+    max_pool_members: NonZeroUsize,
     max_nodes: NonZeroUsize,
     max_depth: NonZeroUsize,
 }
@@ -80,6 +95,8 @@ impl Default for SchemaBounds {
             max_upstreams: default_bound(256),
             max_providers: default_bound(64),
             max_plugins: default_bound(256),
+            max_endpoints: default_bound(64),
+            max_pool_members: default_bound(8),
             max_nodes: default_bound(100_000),
             max_depth: default_bound(32),
         }
@@ -95,6 +112,8 @@ impl SchemaBounds {
             Bound::Upstreams => self.max_upstreams.get(),
             Bound::Providers => self.max_providers.get(),
             Bound::Plugins => self.max_plugins.get(),
+            Bound::Endpoints => self.max_endpoints.get(),
+            Bound::PoolMembers => self.max_pool_members.get(),
             Bound::Nodes => self.max_nodes.get(),
             Bound::Depth => self.max_depth.get(),
         }
@@ -121,6 +140,14 @@ impl SchemaBounds {
             },
             Bound::Plugins => Self {
                 max_plugins: value,
+                ..self
+            },
+            Bound::Endpoints => Self {
+                max_endpoints: value,
+                ..self
+            },
+            Bound::PoolMembers => Self {
+                max_pool_members: value,
                 ..self
             },
             Bound::Nodes => Self {
@@ -227,11 +254,12 @@ mod tests {
     use super::*;
 
     /// The documented defaults, keyed by the bound they belong to.
-    const DEFAULTS: [(Bound, usize); 6] = [
+    const DEFAULTS: [(Bound, usize); 7] = [
         (Bound::Routes, 1024),
         (Bound::Upstreams, 256),
         (Bound::Providers, 64),
         (Bound::Plugins, 256),
+        (Bound::Endpoints, 64),
         (Bound::Nodes, 100_000),
         (Bound::Depth, 32),
     ];

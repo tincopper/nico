@@ -36,7 +36,7 @@ use crate::{
     plugin::ResponseData,
     route,
     state::{self, HttpState},
-    upstream,
+    upstream::{self, pools::MemberFailure},
 };
 
 /// What the request phase decided, before anything is written.
@@ -75,6 +75,9 @@ pub(super) async fn request_filter(
     // The document budget first: the global chain below runs before any route is known, and a stage
     // with no deadline would be the one stage no budget covers.
     ctx.begin(state.snapshot(), session.req_header(), now);
+    // The member list travels with the snapshot: a request that selected from another generation's
+    // list would connect to an address its own document does not name.
+    ctx.set_selection(state.selection());
     if let Some(address) = client_ip {
         ctx.set_client_ip(address);
     }
@@ -197,7 +200,14 @@ pub(super) async fn upstream_peer(
     let chosen = destination(ctx).map_err(|error| abort(ctx, error))?;
     let peer = match upstream::peer(&chosen, budget).await {
         Ok(peer) => peer,
-        Err(error) => return Err(failed_target(ctx, error)),
+        Err(error) => {
+            // The name did not resolve, so this member never accepted a connection: the failure is
+            // the member's own, and it is the first of the three counting points (the other two are
+            // `fail_to_connect` and the response head). Nothing else in this path may count it, or a
+            // single request would spend two failures of the member's budget.
+            ctx.member_failed(MemberFailure::Connect, Instant::now());
+            return Err(failed_target(ctx, error));
+        }
     };
     ctx.set_destination(chosen);
     Ok(peer)

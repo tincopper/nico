@@ -121,7 +121,8 @@ impl Observation {
 pub(crate) struct MockUpstream {
     address: SocketAddr,
     shared: Arc<Shared>,
-    accept: JoinHandle<()>,
+    /// `None` while the origin is stopped: the port refuses connections and the observation stays.
+    accept: Option<JoinHandle<()>>,
 }
 
 impl MockUpstream {
@@ -130,6 +131,23 @@ impl MockUpstream {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("the mock upstream binds a loopback port");
+        Self::serve(listener, reply).await
+    }
+
+    /// Starts answering at a specific address, so a scenario can bring the same peer back.
+    ///
+    /// A load-balancing scenario has to make one member of a fleet disappear and reappear, and the
+    /// document names the members by address: the second instance must therefore bind the port the
+    /// first one released, which is why the address is an argument here.
+    pub(crate) async fn start_at(address: SocketAddr, reply: Reply) -> Self {
+        let listener = TcpListener::bind(address)
+            .await
+            .unwrap_or_else(|error| panic!("the mock upstream rebinds {address}: {error}"));
+        Self::serve(listener, reply).await
+    }
+
+    /// Starts the accept loop on an already-bound listener.
+    async fn serve(listener: TcpListener, reply: Reply) -> Self {
         let address = listener
             .local_addr()
             .expect("the mock upstream has an address");
@@ -139,9 +157,18 @@ impl MockUpstream {
             observation: Mutex::new(Observation::default()),
             changed,
         });
+        let accept = Self::accept(listener, &shared);
+        Self {
+            address,
+            shared,
+            accept: Some(accept),
+        }
+    }
 
-        let accepted = Arc::clone(&shared);
-        let accept = tokio::spawn(async move {
+    /// Spawns the accept loop, sharing the observation with the running origin.
+    fn accept(listener: TcpListener, shared: &Arc<Shared>) -> JoinHandle<()> {
+        let accepted = Arc::clone(shared);
+        tokio::spawn(async move {
             loop {
                 let Ok((stream, _peer)) = listener.accept().await else {
                     return;
@@ -149,12 +176,18 @@ impl MockUpstream {
                 let connection = Arc::clone(&accepted);
                 tokio::spawn(async move { connection.serve(stream).await });
             }
-        });
+        })
+    }
 
-        Self {
-            address,
-            shared,
-            accept,
+    /// Stops accepting, keeping what was observed so far.
+    ///
+    /// Awaited rather than merely aborted: the port must be free before a test can bind it again, and
+    /// the listener lives inside the task that has to be dropped first. Without the await, a restart
+    /// would race the release and the failure would look like a flaky fixture.
+    pub(crate) async fn stop(&mut self) {
+        if let Some(accept) = self.accept.take() {
+            accept.abort();
+            let _cancelled = accept.await;
         }
     }
 
@@ -220,7 +253,9 @@ impl MockUpstream {
 impl Drop for MockUpstream {
     fn drop(&mut self) {
         // Without this the listener would keep accepting for the rest of the test binary's life.
-        self.accept.abort();
+        if let Some(accept) = self.accept.take() {
+            accept.abort();
+        }
     }
 }
 

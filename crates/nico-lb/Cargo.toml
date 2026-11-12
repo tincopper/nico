@@ -1,0 +1,13 @@
+[package]
+name = "nico-lb"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Member selection: the Picker contract and its strategies, independent of any transport"
+
+[dependencies]
+
+[lints]
+workspace = true

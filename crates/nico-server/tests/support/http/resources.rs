@@ -13,143 +13,12 @@ use std::net::SocketAddr;
 
 // --- resources document ------------------------------------------------------
 
+mod plugin;
 mod route;
 mod upstream;
 
-pub(crate) use self::route::Route;
+pub(crate) use self::{plugin::Plugin, route::Route};
 use self::{route::Target, upstream::UpstreamEntry};
-
-/// One entry of the document's `plugins` collection, rendered from parts.
-///
-/// A plugin's fields are the kind's own, so the builders here state the ones a scenario varies and
-/// leave the rest to the schema's defaults: a test that had to spell every field would hide which
-/// one it meant to exercise.
-#[derive(Debug, Clone)]
-pub(crate) struct Plugin {
-    /// The `name`/`kind` lines plus any envelope field and the `config:` block, in the order written.
-    entry: String,
-}
-
-impl Plugin {
-    /// A `jwt` entry: HS256, one key named `k1`, signed by the credential `secret_ref` names.
-    pub(crate) fn jwt(name: &str, secret_ref: &str) -> Self {
-        Self::new(name, "jwt").fields(&format!(
-            "      keys:\n        - kid: k1\n          secret_ref: {secret_ref}\n"
-        ))
-    }
-
-    /// An `api_key` entry: one accepted key, named `partner`, in the default `authorization` header.
-    pub(crate) fn api_key(name: &str, secret_ref: &str) -> Self {
-        Self::new(name, "api_key").fields(&format!(
-            "      keys:\n        - name: partner\n          secret_ref: {secret_ref}\n"
-        ))
-    }
-
-    /// An `api_key` entry that reads its key from `header` instead of `authorization`.
-    pub(crate) fn api_key_in(name: &str, header: &str, secret_ref: &str) -> Self {
-        Self::new(name, "api_key").fields(&format!(
-            "      header: {header}\n      keys:\n        - name: partner\n          secret_ref: {secret_ref}\n"
-        ))
-    }
-
-    /// A `rate_limit` entry: one bucket per caller, keyed by whatever identity exists.
-    pub(crate) fn rate_limit(name: &str, burst: u32, per_second: u32) -> Self {
-        Self::new(name, "rate_limit").fields(&format!(
-            "      burst: {burst}\n      per_second: {per_second}\n"
-        ))
-    }
-
-    /// A `mock` entry that appends `value` to the `header` request header.
-    ///
-    /// The kind exists only in the test harness, so a scenario can observe the order the scopes ran
-    /// in without asserting anything about a real policy's refusals.
-    pub(crate) fn mock_tag(name: &str, header: &str, value: &str) -> Self {
-        Self::mock(
-            name,
-            &format!("      action: tag\n      header: {header}\n      value: {value}\n"),
-        )
-    }
-
-    /// A `mock` entry that answers the request itself with `status`, `headers` and `body`.
-    pub(crate) fn mock_respond(
-        name: &str,
-        status: u16,
-        headers: &[(&str, &str)],
-        body: &str,
-    ) -> Self {
-        let mut config = format!("      action: respond\n      status: {status}\n");
-        if !headers.is_empty() {
-            config.push_str("      headers:\n");
-            for (header, value) in headers {
-                config.push_str(&format!("        - [{header}, \"{value}\"]\n"));
-            }
-        }
-        config.push_str(&format!("      body: \"{body}\"\n"));
-        Self::mock(name, &config)
-    }
-
-    /// A `mock` entry that rewrites the whole request body as `prefix + body + suffix`.
-    ///
-    /// Only meaningful on a route whose chain declares `buffers_body`; the entry that declares it is
-    /// the one built with [`Plugin::buffers_body`].
-    pub(crate) fn mock_rewrite_body(name: &str, prefix: &str, suffix: &str) -> Self {
-        Self::mock(
-            name,
-            &format!(
-                "      action: rewrite_body\n      prefix: \"{prefix}\"\n      suffix: \"{suffix}\"\n"
-            ),
-        )
-    }
-
-    /// A `mock` entry that appends `suffix` to every response-body chunk.
-    pub(crate) fn mock_append_response(name: &str, suffix: &str) -> Self {
-        Self::mock(
-            name,
-            &format!("      action: append_response\n      suffix: \"{suffix}\"\n"),
-        )
-    }
-
-    /// Writes the `name` and `kind` lines of an entry.
-    fn new(name: &str, kind: &str) -> Self {
-        Self {
-            entry: format!("  - name: {name}\n    kind: {kind}\n"),
-        }
-    }
-
-    /// Writes a `mock` entry with `config` as the block below `config:`.
-    fn mock(name: &str, config: &str) -> Self {
-        Self::new(name, "mock").fields(config)
-    }
-
-    /// Appends the kind's own configuration below a `config:` line.
-    fn fields(mut self, fields: &str) -> Self {
-        self.entry.push_str("    config:\n");
-        self.entry.push_str(fields);
-        self
-    }
-
-    /// Declares that this instance needs the whole request body in one call.
-    ///
-    /// A field of the envelope, written at the same level as `kind` and `config` rather than under
-    /// `config`: it decides how the data plane delivers the body, not what the kind does with it.
-    pub(crate) fn buffers_body(mut self) -> Self {
-        self.entry.push_str("    buffers_body: true\n");
-        self
-    }
-
-    /// Configures the refusal this instance presents.
-    ///
-    /// `body` is the YAML value the entry writes under `body:`, so a JSON body is a flow mapping
-    /// (`{detail: \"${message}\"}`) and any other content type is a quoted string. The shape follows the
-    /// content type because the schema decides it that way, and a test that wanted to spell one shape
-    /// under the other could not.
-    pub(crate) fn error_response(mut self, status: u16, content_type: &str, body: &str) -> Self {
-        self.entry.push_str(&format!(
-            "    error_response:\n      status: {status}\n      content_type: {content_type}\n      body: {body}\n"
-        ));
-        self
-    }
-}
 
 /// One entry of the document's `providers` collection, rendered from parts.
 ///
@@ -321,6 +190,63 @@ impl Resources {
         self
     }
 
+    /// Adds a plaintext upstream with an explicit member list on one logical host.
+    ///
+    /// `host` is the identity every member is addressed by; each member is `(name, address)` and
+    /// connects to its own address and port. This is the multi-instance form, and the only one whose
+    /// requests record an `upstream.endpoint`.
+    pub(crate) fn upstream_with_members(
+        mut self,
+        name: &str,
+        host: &str,
+        members: &[(&'static str, SocketAddr)],
+    ) -> Self {
+        self.upstreams
+            .push(UpstreamEntry::members(name, "http", host, members));
+        self
+    }
+
+    /// Adds an `https` upstream with an explicit member list on one logical host.
+    ///
+    /// The certificate must name `host`, not the members: a fleet of machines is one service.
+    pub(crate) fn tls_upstream_with_members(
+        mut self,
+        name: &str,
+        host: &str,
+        members: &[(&'static str, SocketAddr)],
+    ) -> Self {
+        self.upstreams
+            .push(UpstreamEntry::members(name, "https", host, members));
+        self
+    }
+
+    /// Sets the selection rule of the upstream added last.
+    ///
+    /// A builder step on the collection rather than an argument to every constructor: the strategy is
+    /// a property of one entry, and only the scenarios that assert on selection write one.
+    pub(crate) fn strategy(mut self, strategy: &'static str) -> Self {
+        let upstream = self
+            .upstreams
+            .pop()
+            .expect("a strategy applies to an upstream that was just added");
+        self.upstreams.push(upstream.with_strategy(strategy));
+        self
+    }
+
+    /// Sets the failure budget of the upstream added last.
+    ///
+    /// `max_fails` of `0` disables ejection, which is the document's own spelling; a scenario that
+    /// wants a member to leave rotation after one failure writes `1`.
+    pub(crate) fn ejection(mut self, max_fails: u32, fail_timeout_ms: u32) -> Self {
+        let upstream = self
+            .upstreams
+            .pop()
+            .expect("a failure budget applies to an upstream that was just added");
+        self.upstreams
+            .push(upstream.with_ejection(max_fails, fail_timeout_ms));
+        self
+    }
+
     /// Adds a route. A provider route is added with [`Resources::provider_route`].
     pub(crate) fn route(mut self, route: Route) -> Self {
         self.routes.push(route);
@@ -441,9 +367,27 @@ request:
                     // and `max_response_bytes` exist on a provider route alone. The builder keeps
                     // the protocol on the provider target so an upstream route cannot name one by
                     // accident; `mode` and the response bound are written below when set.
+                    // A pool route writes `providers` instead of `provider`, and the document
+                    // refuses both at once — so the two arms are exclusive by construction. The
+                    // protocol is still the route's own: a pool distributes across providers, it does
+                    // not change what the caller speaks.
+                    Target::Provider(_) if route.pool.is_some() => {
+                        let protocol = route.protocol.as_deref().unwrap_or("openai.chat");
+                        yaml.push_str(&format!("    protocol: {protocol}\n"));
+                    }
                     Target::Provider(name) => {
                         let protocol = route.protocol.as_deref().unwrap_or("openai.chat");
                         yaml.push_str(&format!("    provider: {name}\n    protocol: {protocol}\n"));
+                    }
+                }
+                if let Some((members, strategy)) = &route.pool {
+                    yaml.push_str(&format!("    strategy: {strategy}\n"));
+                    yaml.push_str("    providers:\n");
+                    for (name, weight) in members {
+                        yaml.push_str(&format!("      - name: {name}\n"));
+                        if *weight != 1 {
+                            yaml.push_str(&format!("        weight: {weight}\n"));
+                        }
                     }
                 }
                 if let Some(mode) = &route.mode {

@@ -42,10 +42,20 @@ mod attempt;
 mod attempt_adapter;
 mod chain;
 mod convert;
+mod disposition;
 mod passthrough;
+mod pool;
 mod transform;
 
 pub use attempt::{AttemptPlan, AttemptSequence, SelectionRefused, Verdict};
 pub use chain::{AttemptChain, BreakerParams, ChainBuildError, ChainMember, TargetIdentity};
 pub use convert::ConvertRoute;
+pub use disposition::{Disposition, Exclusion, classify};
 pub use passthrough::PassthroughRoute;
+pub use pool::PoolOrder;
+
+/// The selection vocabulary a pool strategy is built from, re-exported so a caller does not need
+/// `nico-lb` in its own dependency list to name the picker a document's strategy selects.
+pub mod select {
+    pub use nico_lb::{Picker, Random, RoundRobin, Source, WeightedRandom};
+}

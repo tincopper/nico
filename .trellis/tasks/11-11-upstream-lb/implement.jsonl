@@ -1,0 +1,8 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "backend 规格索引：实现前的分层入口"}
+{"file": ".trellis/spec/backend/pingora-guidelines.md", "reason": "第 2–4 步改动 upstream_peer（选成员、peer、SNI）、host_header 与响应阶段失败计入，必须遵守既定的 hook/ServerConf 纪律"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "第 3 步新增 upstream/{selector,pools} 的归属与依赖方向；Upstream 成员化的文档模型归属"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "第 4 步的 502 upstream_unreachable（全部剔除）与 4xx 不计入的失败分类要落在既有单一出口"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "第 4 步的两个新指标名、标签基数预算与 upstream.endpoint 字段必须按既有命名与允许标签集"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "第 7 步的五条门禁、文件预算（≤500 行）、结构测试与「两个真实消费者」判据"}
+{"file": ".trellis/tasks/11-11-upstream-lb/design.md", "reason": "五条不变量、Destination.authority 的拆分、UpstreamPools 的身份与继承、四种策略与会合哈希的取舍、剔除状态机"}
+{"file": ".trellis/tasks/11-11-upstream-lb/prd.md", "reason": "R1–R7 与验收清单：每一步完成后逐条勾销"}

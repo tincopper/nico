@@ -25,13 +25,16 @@ use pingora::{
 
 use super::super::{
     HttpApp,
-    failure::{abort, classify, is_downstream_gone, is_upstream_timeout, write_respond},
+    failure::{
+        abort, classify, is_connect_timeout, is_downstream_gone, is_upstream_timeout, write_respond,
+    },
     hooks::llm,
     record,
 };
 use crate::{
     context::{FailureStage, HttpContext},
     error::HttpError,
+    upstream::pools::MemberFailure,
 };
 
 /// Runs the response stages, in the reverse scope order, before the head is written.
@@ -55,6 +58,14 @@ pub(super) async fn upstream_response_filter(
     if response.status.is_informational() {
         return Ok(());
     }
+
+    // The member's answer, reported here and nowhere else. A 5xx is not an error to the framework —
+    // it is a successful exchange with a failure status — so `error_while_proxy` never runs for one;
+    // this hook is the only place that sees it, and it sees it before anything is written downstream,
+    // exactly once per response. Every other status (2xx, 3xx, 4xx) clears the streak instead of
+    // counting: a 4xx is the caller's fault and must never eject a member, but it does prove the link
+    // is alive. A response that cannot carry a body is no exception: it is still an answer.
+    record_member_answer(ctx, response.status.as_u16(), Instant::now());
 
     if ctx.llm().is_some() {
         let request = session.req_header();
@@ -90,6 +101,18 @@ pub(super) async fn upstream_response_filter(
         return Err(abort(ctx, error));
     }
     Ok(())
+}
+
+/// Reports one response head to the member that produced it.
+///
+/// A no-op without a selected member (an LLM route, a filter-chosen destination, a request answered
+/// before forwarding), so this needs no route-kind branch of its own.
+pub(in crate::proxy) fn record_member_answer(ctx: &HttpContext, status: u16, now: Instant) {
+    if status >= 500 {
+        ctx.member_failed(MemberFailure::Status, now);
+    } else {
+        ctx.member_answered(now);
+    }
 }
 
 /// Returns whether a response can still carry a body at all.
@@ -194,6 +217,23 @@ pub(super) fn fail_to_connect(
     mut error: Box<Error>,
     ctx: &mut HttpContext,
 ) -> Box<Error> {
+    // The connection-level counting point, and the only one for a peer that never accepted a socket.
+    // `error_while_proxy` does not run for a connect failure — the framework reports it here instead —
+    // so this cannot double-count with the response head below.
+    //
+    // Two exclusions, both deliberate: a client that left is not the member's fault (nothing about the
+    // peer is known), and an error the framework raised from its own layers says nothing about the
+    // machine either. A connect timeout counts as a timeout: the peer had the request's whole connect
+    // budget and did not open a socket within it. A *read* or *write* timeout cannot reach this hook,
+    // and would not count if it did — see `is_connect_timeout`.
+    if *error.esource() == ErrorSource::Upstream && !is_downstream_gone(&error) {
+        let failure = if is_connect_timeout(&error) {
+            MemberFailure::Timeout
+        } else {
+            MemberFailure::Connect
+        };
+        ctx.member_failed(failure, Instant::now());
+    }
     // Asking whether a response was committed is free and is the same gate's second fact: this hook
     // runs before the response pipeline exists, so the answer is always "no", and a future call site
     // that reported otherwise would be refused rather than trusted.

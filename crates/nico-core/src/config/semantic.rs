@@ -48,11 +48,32 @@ pub(crate) const MAX_RETRY_BUDGET: u8 = 4;
 pub const MAX_FALLBACK_MEMBERS: usize = 3;
 /// The most attempts one route can declare, which is what the data plane's loop fuse must cover.
 ///
-/// Derived rather than written down: a budget retries the same target, and a chain adds a target per
-/// member, so the longest sequence a document can express is exactly the product below. The data
-/// plane reads this constant as `ServerConf::max_retries`, which makes the framework's counter and the
-/// document model one fact instead of two numbers that must be kept in agreement.
-pub const MAX_ATTEMPTS_PER_ROUTE: usize = MAX_RETRY_BUDGET as usize * (1 + MAX_FALLBACK_MEMBERS);
+/// Derived rather than written down, because three independent bounds multiply: a budget retries one
+/// member, a pool adds members each of which the budget applies to, and a chain adds a target per
+/// member. The longest sequence a document can express is therefore the product below. The data
+/// plane reads this constant as `ServerConf::max_retries`, which makes the framework's counter and
+/// the document model one fact instead of two numbers kept in agreement by hand.
+///
+/// The pool factor is the built-in bound. A document validated against a raised `max_pool_members`
+/// gets its ceiling from [`attempt_ceiling`] instead, because a fuse sized for the default would
+/// truncate that document's legitimate sequence.
+pub const MAX_ATTEMPTS_PER_ROUTE: usize =
+    MAX_RETRY_BUDGET as usize * DEFAULT_MAX_POOL_MEMBERS * (1 + MAX_FALLBACK_MEMBERS);
+
+/// The most attempts one route of a document validated against `schema` can declare.
+///
+/// The fuse a data plane installs must cover the document it actually validated, not the default
+/// shape.
+#[must_use]
+pub const fn attempt_ceiling(schema: super::SchemaBounds) -> usize {
+    MAX_RETRY_BUDGET as usize * schema.get(super::Bound::PoolMembers) * (1 + MAX_FALLBACK_MEMBERS)
+}
+
+/// The built-in pool member bound [`MAX_ATTEMPTS_PER_ROUTE`] is derived from.
+///
+/// Named here so the constant cannot disagree with [`SchemaBounds::default`](super::SchemaBounds):
+/// the bounds module owns the number, this one derives from it.
+const DEFAULT_MAX_POOL_MEMBERS: usize = 8;
 /// Inclusive upper bound for `providers[].circuit_breaker.failure_threshold`.
 ///
 /// The threshold counts consecutive failures, so a document writing a larger one has not configured
@@ -64,7 +85,7 @@ const MAX_FAILURE_THRESHOLD: u32 = 1000;
 /// operator expresses by disabling the breaker, not by waiting an hour between probes.
 const MAX_COOLDOWN_MS: u32 = 600_000;
 /// Upper bound for a route id, an upstream name or a provider name.
-const MAX_NAME_BYTES: usize = 63;
+pub(super) const MAX_NAME_BYTES: usize = 63;
 /// Upper bound for `routes[].path_prefix`.
 const MAX_PATH_PREFIX_BYTES: usize = 256;
 /// Upper bound for `routes[].protocol`.
@@ -91,7 +112,8 @@ const REJECTION_STATUS: std::ops::RangeInclusive<u16> = 400..=499;
 /// - [`DocumentError::LimitOutOfRange`] for a timeout outside `1..=600_000`, an output ceiling of
 ///   zero, a route body bound above `request.max_body_bytes`, a route response bound above
 ///   `request.max_response_bytes`, a retry budget outside `1..=4`, a breaker threshold above its
-///   ceiling, or a breaker cooldown outside `1..=600_000`.
+///   ceiling, a breaker cooldown outside `1..=600_000`, an upstream `max_fails` above its ceiling or
+///   an upstream `fail_timeout_ms` outside `1..=600_000`.
 /// - [`DocumentError::DuplicateId`] when two routes share the same `(host, path_prefix)` pair.
 pub(super) fn validate(
     routes: &[Route],
@@ -104,7 +126,7 @@ pub(super) fn validate(
         validate_provider(provider)?;
     }
     for upstream in upstreams {
-        validate_upstream(upstream)?;
+        upstreams::validate(upstream)?;
     }
     plugins::validate(plugins)?;
     validate_routes(routes, request)
@@ -195,18 +217,6 @@ fn validate_model_map(map: &BTreeMap<String, String>) -> Result<(), DocumentErro
                 ));
             }
         }
-    }
-    Ok(())
-}
-
-/// Checks one upstream: name, host and port.
-///
-/// The scheme needs no check here: [`Scheme`](super::Scheme) can only hold a known value.
-fn validate_upstream(upstream: &Upstream) -> Result<(), DocumentError> {
-    validate_name("upstreams[].name", upstream.name())?;
-    validate_host("upstreams[].host", upstream.host())?;
-    if upstream.port() == 0 {
-        return Err(invalid("upstreams[].port", "must be in 1..=65535"));
     }
     Ok(())
 }
@@ -442,6 +452,7 @@ fn invalid(field: &'static str, reason: impl Into<Cow<'static, str>>) -> Documen
 }
 
 mod plugins;
+mod upstreams;
 
 #[cfg(test)]
 mod tests;

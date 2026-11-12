@@ -128,21 +128,36 @@ pub(crate) fn write_bootstrap_trusting(directory: &Path, port: u16, ca: &Path) -
 
 /// Writes the same bootstrap as [`write_bootstrap`] **plus** a `metrics` section on `metrics_port`.
 ///
-/// A separate function rather than an extra parameter: the two-argument form is called from every
-/// HTTP scenario file, and the self-reporting surface is a property only the ops scenarios need. A
-/// missing `metrics` section is what makes the surface default-off, so the absence has its own
+/// A separate function rather than an extra parameter: the three-argument form is called from every
+/// scenario that reads the surface, and the self-reporting surface is a property only some of them
+/// need. A missing `metrics` section is what makes the surface default-off, so the absence has its own
 /// helper ([`write_bootstrap`]) and stays the common case.
 pub(crate) fn write_bootstrap_with_metrics(
     directory: &Path,
     port: u16,
     metrics_port: u16,
 ) -> BootstrapConfig {
+    write_bootstrap_with_metrics_and_grace(directory, port, metrics_port, 5000, 30000)
+}
+
+/// Writes the metrics bootstrap with an explicit drain window.
+///
+/// The drain is Pingora's `grace_period_seconds`, so a scenario that has nothing to assert about it
+/// pays the whole window in wall-clock time on every run. The suite runs this on every push, so the
+/// one scenario that reads metrics *and* starts many requests says how long it wants to wait.
+pub(crate) fn write_bootstrap_with_metrics_and_grace(
+    directory: &Path,
+    port: u16,
+    metrics_port: u16,
+    grace_period_ms: u64,
+    graceful_shutdown_ms: u64,
+) -> BootstrapConfig {
     write(
         directory,
         port,
         false,
-        5000,
-        30000,
+        grace_period_ms,
+        graceful_shutdown_ms,
         Some(&fixture_ca()),
         Some(metrics_port),
     )

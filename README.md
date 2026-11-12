@@ -10,12 +10,14 @@
 ## 特性
 
 - **普通流量代理**：按 `host` / `path_prefix` 路由到普通 HTTP 上游。
+- **上游多实例**：一个 upstream 可写一组成员，按权重 / 活跃连接 / 调用方地址选择，失败成员被动剔除、
+  冷却后单探针回归；`Host` 与 SNI 始终取逻辑 host。
 - **LLM 协议转换**：在 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages、Gemini
   `generateContent` 之间转换 —— 客户端说一种协议，后端说另一种。
 - **内置策略插件**：HS256 JWT 认证、静态 API Key、令牌桶限流。
 - **热重载**：监听配置文件变化，debounce 后原子发布；配置错误不会打断服务，上一份可用配置继续
   生效，并写入 last-known-good 缓存。
-- **弹性**：路由级重试预算、显式 fallback 链、provider 熔断器。
+- **弹性**：路由级重试预算、显式 fallback 链、provider 熔断器、上游成员剔除。
 - **单一错误出口**：所有失败映射为稳定的 HTTP 状态码 + `x-nico-error-code`，响应体不泄露内部细节。
 - **可选的运维面**：默认关闭的独立监听，提供 liveness / readiness 与 Prometheus 指标；关闭时不装
   recorder，请求路径上不产生额外开销。
@@ -112,6 +114,7 @@ schema_bounds:           # 可选，省略的字段取默认值
   max_upstreams: 256
   max_providers: 64
   max_plugins: 256
+  max_endpoints: 64      # 单个 upstream 的成员数上限
   max_nodes: 100000
   max_depth: 32
 
@@ -196,6 +199,69 @@ routes:
 
 `path_prefix` 按字节比较：`/api/` 不匹配 `/api`，而 `/api` 匹配 `/apix`。路由选择**只读请求头**，
 不读请求体。
+
+## 上游（`upstreams`）
+
+一个 upstream 是**一个逻辑身份 + 一组成员（endpoint）**。`scheme` / `host` / `port` 永远描述身份：
+`host` 是写进 `Host` 头与 TLS SNI 的名字，`scheme` 与 `port` 是成员的默认值。
+
+```yaml
+upstreams:
+  # 单实例写法：不写 endpoints 等于一个成员，行为与以前完全一致
+  - name: api-backend
+    scheme: http
+    host: 127.0.0.1
+    port: 8080
+
+  # 一组成员：address 是连接目标，host 仍是身份
+  - name: api-fleet
+    scheme: https
+    host: api.example.com      # 证书签的是这个名字，不是下面任何一台
+    port: 443
+    strategy: round_robin      # 可选；默认 round_robin
+    max_fails: 3               # 可选；默认 3，0 表示永不剔除
+    fail_timeout_ms: 30000     # 可选；默认 30000，1..=600000
+    endpoints:
+      - name: a               # 名字在所属 upstream 内唯一，是日志与指标里的唯一标识
+                              # （同一 upstream 内 address:port 也不得重复）
+        address: 10.0.0.7     # 可选；缺省 = upstream 的 host
+        port: 8443            # 可选；缺省 = upstream 的 port
+        weight: 3             # 可选；默认 1，1..=1000
+      - name: b
+        address: 10.0.0.8
+        weight: 1
+```
+
+| 事实 | 说明 |
+|---|---|
+| 连接目标 vs 身份 | 连接去 `address:port`，`Host` 与 SNI 用 `host`。同一 vhost 背后多台机器、或同 host 多端口，都能通过证书校验 |
+| endpoint 不带 `scheme` | 一个 upstream 只有一种传输方式；混协议是两台不同的服务，写两条 upstream |
+| `weight: 0` 被拒绝 | 流量层没有“只兜底”的语义，0 权重等于永不选中但它看起来像个权重 |
+| 成员数上限 | `schema_bounds.max_endpoints`（默认 64），只约束单个 upstream |
+
+**策略**（`strategy`）：
+
+| 值 | 语义 |
+|---|---|
+| `round_robin` | 按文档顺序轮转（默认） |
+| `weighted_round_robin` | 按 `weight` 比例的平滑加权轮转（`3:1` 交错成 `a,b,a,a`，不是先发三次再发一次） |
+| `least_conn` | 当前活跃请求数最少者，平票按轮转；计数由数据面在“选中 → 请求结束”之间自己维护 |
+| `ip_hash` | 调用方**地址**哈希（会合哈希），同一调用方稳定落在同一成员；成员增删只迁移约 1/n 的键 |
+
+**失败与剔除**（被动，不做主动探测）：
+
+- 只计三类失败：连接/握手失败、连接超时（含 TLS 握手超时）、上游 5xx。4xx 不计（调用方的问题），
+  但它和任何其他应答一样清零连续失败数：链路是通的。
+- 连续失败达 `max_fails` 即剔除，冷却 `fail_timeout_ms`。冷却结束后只放**一个**试探请求：
+  成功则清零并完整回归，失败则重新计时。
+- 冷却不是硬锁：剔除前已被放行的请求如果随后返回应答（含 4xx），成员立即完整回归——证据优先于
+  计时器。只有“没有任何新证据”时才等冷却期满。
+- **全部被剔时直接拒绝**：整组没有可用成员时回答 `502 upstream_unreachable`，不会从刚被判定
+  失败的成员里再挑一个。
+- 剔除状态是进程级运行态，与 generation 无关：reload 只换文档。成员身份（upstream 名 +
+  endpoint 名 + `address` + `port`）相同的成员继承历史，其余归零。
+- 剔除是第三层，与既有两层正交：`retry_budget` 是同一目标的重试，`fallback` 是跨 provider 的链；
+  一次请求选定成员后就留在它上面（traffic 路由只有一次尝试），只有 `fallback` 换 provider 时才重新选择。
 
 ## 插件
 
@@ -318,6 +384,17 @@ routes:
     max_response_bytes: 4194304   # 只能收紧 request.max_response_bytes
     # retry_budget: 2              # 可选，默认 1（不重试），上限 4
     # fallback: [openai-secondary] # 可选，按顺序尝试，最多 3 个
+
+  # 池形态：一条路由分发到多家 provider，与单个 `provider` 互斥。
+  - id: llm-chat-pool
+    path_prefix: /v1/chat/
+    protocol: openai.chat
+    strategy: weighted_random     # weighted_random（默认）| round_robin
+    providers:
+      - name: openai-primary
+        weight: 3                 # 可选，默认 1，0..=1000；0 = 不参与分发，只在兜底显式指名时使用
+      - name: openai-secondary
+    fallback: [anthropic-primary] # 池耗尽后按顺序尝试
 ```
 
 ### 客户端协议（`protocol`）
@@ -345,6 +422,30 @@ routes:
 - `fallback`：当前目标预算耗尽后按顺序尝试的 provider，最多 3 个；每个成员必须可服务，否则整份
   文档被拒绝。
 - 二者只对 `convert` 路由有效（passthrough 没有规范值，也没有失败分类）。
+
+### provider 池
+
+`providers` 让一条路由在多条 provider 之间分发，与 `provider` 互斥（都写或都不写都被拒绝）。
+
+| 策略 | 行为 |
+|---|---|
+| `weighted_random`（默认） | 按 `weight` 比例抽取；成员增减不漂移 |
+| `round_robin` | 按池内顺序轮转 |
+
+失败按类别处置，**分类先于任何计数**：
+
+| 失败 | 消耗 `retry_budget` | 成员处置 |
+|---|---|---|
+| 429 | 否 | 立刻换成员；短冷却 10s |
+| 401 / 403 | 否 | 立刻换成员；长冷却 300s |
+| 5xx / 连接失败 | 是 | 换成员；熔断器照常计数 |
+| 400 / 404 / 422 | — | **不换成员**，直接作答（调用方的错） |
+
+- **同一请求内不重复选中**：失败过的成员从该请求的候选集里移除。
+- **排除表与熔断器并列不合并**：429/401 只影响"这个成员此刻该不该分流量"，不报告熔断器——否则
+  一次限流会打开 300s 的熔断。
+- 池上限由 `schema_bounds.max_pool_members` 约束（默认 8），它同时是尝试上界
+  `MAX_ATTEMPTS_PER_ROUTE` 的一个因子。
 - **硬限制**：请求体超过 64 KiB（Pingora 的重放缓冲区）时，已派发的请求无法重试，这类失败直接
   应答；连接阶段的失败不受此限。
 
@@ -371,7 +472,7 @@ message。响应头是封闭集合：`content-type`、`content-length`、`x-nico
 | 401 | `auth_invalid` | 凭证不被接受 |
 | 408 | `request_timeout` | 客户端未在预算内发完请求 |
 | 504 | `upstream_timeout` | 整个请求预算耗尽 |
-| 502 | `upstream_unreachable` | 上游不可达 |
+| 502 | `upstream_unreachable` | 上游不可达，或该 upstream 没有可用成员（全部被剔除） |
 | 502 | `upstream_response_too_large` | 缓冲响应超出上限 |
 | 502 | `provider_unavailable` | 路由指向 provider 但没有可用前端 |
 | 500 | `internal_error` | 数据平面内部故障 |
@@ -447,7 +548,7 @@ last-known-good 启动时也是 `true`，拿它做探针会把一个正在服务
 
 ### 指标
 
-`/metrics` 输出八个指标族：
+`/metrics` 输出十个指标族：
 
 | 指标 | 类型 | 标签 |
 |---|---|---|
@@ -459,6 +560,12 @@ last-known-good 启动时也是 `true`，拿它做探针会把一个正在服务
 | `config_degraded` | gauge | — |
 | `gateway_http_requests_total` | counter | `route_id`, `status_class`, `error_category` |
 | `gateway_http_request_seconds` | histogram | `route_id` |
+| `gateway_upstream_selected_total` | counter | `upstream`, `endpoint` |
+| `gateway_upstream_ejected_total` | counter | `upstream`, `endpoint` |
+
+两个 `gateway_upstream_*` 的标签取配置里的名字（upstream 名与 endpoint 名），所以基数随文档而定，
+不随请求增长。`gateway_upstream_ejected_total` 计的是**剔除事件**，不是状态：冷却后试探失败的成员
+不会被再计一次（它从没回来过）。
 
 `config_compile_seconds` 只包含编译阶段（插件链 + LLM 前端），**不含** last-known-good 缓存写入
 —— 后者是磁盘 I/O，把慢盘混进一个叫 `compile` 的数字会把排查引向错误的地方。
@@ -483,6 +590,7 @@ RUST_LOG=nico_http=debug cargo run -p nico-server -- --bootstrap config/bootstra
 |---|---|
 | `trace_id` | 关联 id；优先回显调用方的 `x-request-id`（短且可打印时），否则用进程内序号 |
 | `route_id` / `upstream` | 命中的路由与目标 |
+| `upstream.endpoint` | 选中的成员名（仅当该 upstream 有多个成员；单成员部署的日志形状不变） |
 | `config.generation` | 当前配置的 generation |
 | `http.method` / `http.status` | 请求方法与状态（取消记为 `499`，仅日志） |
 | `body_bytes` / `elapsed_ms` | 请求体字节数与耗时 |
@@ -493,6 +601,10 @@ RUST_LOG=nico_http=debug cargo run -p nico-server -- --bootstrap config/bootstra
 
 日志级别语义：正常请求 `debug`，调用方可以修正的拒绝 `warn`，需要运维介入的失败 `error`，取消
 `debug`。请求路径禁止 `info`。
+
+剔除与回归各一条：成员被剔除时 `warn`（字段 `upstream`、`upstream.endpoint`、`reason` =
+`connect` / `timeout` / `5xx`），回归时 `info`。冷却到期但试探仍失败时再记一条 `warn`（同一个成员、
+新的失败原因），因为运维刚修好一台机器时最需要看到的就是“试探没通过”。
 
 ## 开发与测试
 
@@ -515,7 +627,8 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 crates/nico-core/    文档模型、revision、快照、错误分类
 crates/nico-config/  ConfigSource 契约、本地文件源、LKG 缓存
 crates/nico-http/    Pingora 数据平面：路由、插件链、转发、错误映射
-crates/nico-llm/     LLM 协议编解码、provider 适配器、重试/fallback 链
+crates/nico-lb/      成员选择契约：Picker trait 与四种策略（不依赖任何传输层）
+crates/nico-llm/     LLM 协议编解码、provider 适配器、重试/fallback 链、provider 池
 crates/nico-metrics/ 自报面能力层：recorder、Prometheus 渲染、就绪投影（无 socket、无框架）
 crates/nico-plugins/ 内置策略：jwt、api_key、rate_limit
 crates/nico-server/  启动、reload 管道、进程装配、CLI（二进制 nico）

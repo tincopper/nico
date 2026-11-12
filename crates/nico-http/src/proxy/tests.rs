@@ -17,6 +17,7 @@ use nico_core::{
 use pingora::{Error, ErrorSource, ErrorType, http::RequestHeader};
 
 mod llm;
+mod member;
 
 use super::{
     failure::{classify, is_downstream_gone},
@@ -25,8 +26,8 @@ use super::{
 use crate::{
     context::HttpContext,
     error::HttpError,
-    test_support::{request_to, snapshot},
-    upstream::{self, Destination},
+    test_support::{document_with, request_to, snapshot},
+    upstream::{self, Destination, pools::UpstreamPools},
 };
 
 const ROUTE: &str = concat!(
@@ -63,6 +64,9 @@ fn started(snapshot: Arc<RuntimeSnapshot>, path: &str) -> (HttpContext, Instant)
     let now = Instant::now();
     let mut ctx = HttpContext::default();
     ctx.begin(&snapshot, &request_to("example.test", path), now);
+    // The publication a request reads also carries the members its upstreams select from; a test
+    // context built from a snapshot alone gets the one-member list that document describes.
+    ctx.set_selection(UpstreamPools::default().publish(snapshot.document()));
     ctx.bind_route(route);
     (ctx, now)
 }
@@ -100,9 +104,9 @@ fn provider_snapshot() -> Arc<RuntimeSnapshot> {
 
 #[test]
 fn a_document_upstream_becomes_the_destination_the_route_names() {
-    let (ctx, _now) = begin(ROUTE, "/api/items");
+    let (mut ctx, _now) = begin(ROUTE, "/api/items");
 
-    let destination = destination(&ctx).expect("the fixture upstream exists");
+    let destination = destination(&mut ctx).expect("the fixture upstream exists");
 
     assert_eq!(destination.host(), "127.0.0.1");
     assert_eq!(destination.port(), 8080);
@@ -117,7 +121,7 @@ fn a_destination_recorded_by_a_filter_wins_over_the_document() {
     ctx.set_destination(chosen.clone());
 
     assert_eq!(
-        destination(&ctx).expect("a recorded destination is used"),
+        destination(&mut ctx).expect("a recorded destination is used"),
         chosen,
         "a policy decision must not be replaced by the fallback it exists to replace"
     );
@@ -126,9 +130,9 @@ fn a_destination_recorded_by_a_filter_wins_over_the_document() {
 
 #[test]
 fn a_provider_target_no_filter_resolved_is_refused_rather_than_guessed() {
-    let (ctx, _now) = started(provider_snapshot(), "/v1/chat/completions");
+    let (mut ctx, _now) = started(provider_snapshot(), "/v1/chat/completions");
 
-    let error = destination(&ctx).expect_err("this crate does not know provider semantics");
+    let error = destination(&mut ctx).expect_err("this crate does not know provider semantics");
 
     assert!(
         matches!(&error, HttpError::ProviderNotConfigured { name } if name == "openai-primary"),
@@ -141,16 +145,35 @@ fn a_provider_target_no_filter_resolved_is_refused_rather_than_guessed() {
 }
 
 #[test]
+fn an_upstream_with_no_published_member_is_refused_rather_than_guessed() {
+    let (mut ctx, _now) = begin(ROUTE, "/api/items");
+    // A generation that published no member for the upstream the route names. Unreachable through a
+    // document — an empty `endpoints` list is refused — and the answer is still the refusal, not an
+    // attempt against an address nothing named.
+    ctx.set_selection(UpstreamPools::default().publish(&document_with("  []", "  []")));
+
+    let error = destination(&mut ctx).expect_err("nothing is available to select");
+
+    assert!(
+        matches!(error, HttpError::UpstreamFailed { .. }),
+        "expected UpstreamFailed, got {error:?}"
+    );
+    let respond = error.respond().expect("the refusal is renderable");
+    assert_eq!(respond.status().as_u16(), 502);
+    assert_eq!(respond.code(), "upstream_unreachable");
+}
+
+#[test]
 fn a_context_that_never_began_has_no_destination() {
-    let error = destination(&HttpContext::default()).expect_err("nothing is routable");
+    let error = destination(&mut HttpContext::default()).expect_err("nothing is routable");
 
     assert!(matches!(error, HttpError::NotReady));
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_matched_upstream_becomes_a_peer_with_the_remaining_budget() {
-    let (ctx, now) = begin(ROUTE, "/api/items");
-    let destination = destination(&ctx).expect("the fixture upstream exists");
+    let (mut ctx, now) = begin(ROUTE, "/api/items");
+    let destination = destination(&mut ctx).expect("the fixture upstream exists");
     let budget = ctx.remaining(now).expect("the request has a budget");
 
     let peer = upstream::peer(&destination, budget)

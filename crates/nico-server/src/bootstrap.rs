@@ -267,6 +267,8 @@ struct RawSchemaBounds {
     max_upstreams: Option<usize>,
     max_providers: Option<usize>,
     max_plugins: Option<usize>,
+    max_endpoints: Option<usize>,
+    max_pool_members: Option<usize>,
     max_nodes: Option<usize>,
     max_depth: Option<usize>,
 }
@@ -280,6 +282,8 @@ impl RawSchemaBounds {
             (Bound::Upstreams, self.max_upstreams),
             (Bound::Providers, self.max_providers),
             (Bound::Plugins, self.max_plugins),
+            (Bound::Endpoints, self.max_endpoints),
+            (Bound::PoolMembers, self.max_pool_members),
             (Bound::Nodes, self.max_nodes),
             (Bound::Depth, self.max_depth),
         ] {
@@ -303,9 +307,12 @@ impl RawSchemaBounds {
 /// is exhaustive on purpose — a new bound must state its own limit instead of inheriting one.
 const fn maximum(bound: Bound) -> usize {
     match bound {
-        Bound::Routes | Bound::Upstreams | Bound::Providers | Bound::Plugins => {
-            MAX_COLLECTION_BOUND
-        }
+        Bound::Routes
+        | Bound::Upstreams
+        | Bound::Providers
+        | Bound::Plugins
+        | Bound::Endpoints
+        | Bound::PoolMembers => MAX_COLLECTION_BOUND,
         Bound::Nodes => MAX_NODES_BOUND,
         Bound::Depth => MAX_DEPTH_BOUND,
     }

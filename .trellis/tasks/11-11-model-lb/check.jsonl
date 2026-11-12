@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "检查的分层入口"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "复查 429/401/403/5xx 的处置没有改变对外的状态与 code 语义"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "复查指标标签基数与 llm.* 字段的既有契约"}
+{"file": ".trellis/tasks/11-11-model-lb/prd.md", "reason": "逐条核对 M1 验收：分布、分类、模型过滤、熔丝乘积、观测"}
+{"file": ".trellis/tasks/11-11-model-lb/research/synthesis-bifrost-vs-aiway.md", "reason": "复查实现没有回退到 aiway 的仅传输错误 failover，也没有引入 token 分配"}
+{"file": ".trellis/tasks/11-11-model-lb/design.md", "reason": "逐条核对 I1-I7 与 §5 分类表"}

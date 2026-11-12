@@ -12,6 +12,13 @@ nico-core.workspace = true
 # The provider contract hands over a `Destination` and nothing else: TLS policy, budgets and framing
 # stay in the data plane, and `nico-http` never depends on this crate.
 nico-http.workspace = true
+# Member selection for a provider pool. The same crate the traffic layer uses: it knows names,
+# weights and in-flight counts, and nothing about HTTP or providers, which is exactly the seam a
+# second pool needs.
+nico-lb.workspace = true
+# A pool's selection and exclusion are per-attempt events an operator reads from the self-reporting
+# surface. The facade only: the recorder and the exporter stay in `nico-metrics`.
+metrics.workspace = true
 # The canonical values serialize for golden fixtures and diagnostics; a wire codec owns its own
 # parsing and does not go through these derives.
 serde.workspace = true
