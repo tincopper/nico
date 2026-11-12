@@ -92,7 +92,7 @@ pub(super) fn failure(status: u16) -> Reply {
     }
 }
 
-/// A document whose only route is a two-member pool over `members`.
+/// A document whose only route is a pool over `members`.
 pub(super) fn pooled_document(
     members: &[(&str, u16)],
     credential: &str,
@@ -100,15 +100,28 @@ pub(super) fn pooled_document(
     retry_budget: u8,
     bases: &[(&str, String)],
 ) -> String {
+    pooled_document_with_fallback(members, credential, strategy, retry_budget, bases, &[])
+}
+
+/// [`pooled_document`] with a fallback chain tried after the pool is exhausted.
+pub(super) fn pooled_document_with_fallback(
+    members: &[(&str, u16)],
+    credential: &str,
+    strategy: &'static str,
+    retry_budget: u8,
+    bases: &[(&str, String)],
+    fallback: &[&str],
+) -> String {
     let mut resources = Resources::new();
     for (name, base) in bases {
         resources = resources.provider_with_breaker(name, base, credential, 0, 30_000);
     }
-    resources
-        .route(
-            crate::support::http::resources::Route::provider("llm-chat", "/v1/chat/", members[0].0)
-                .pool(members, strategy)
-                .retry_budget(retry_budget),
-        )
-        .render()
+    let mut route =
+        crate::support::http::resources::Route::provider("llm-chat", "/v1/chat/", members[0].0)
+            .pool(members, strategy)
+            .retry_budget(retry_budget);
+    if !fallback.is_empty() {
+        route = route.fallback(fallback);
+    }
+    resources.route(route).render()
 }

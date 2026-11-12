@@ -40,7 +40,10 @@ use crate::{
     filter::required,
     protocol::RequestFacts,
     provider::{Endpoint, WireRequest},
-    route::{AttemptChain, TargetIdentity, disposition::Exclusion},
+    route::{
+        AttemptChain, TargetIdentity,
+        exclusion::{ExclusionTable, Reason as ExclusionReason},
+    },
     schema::{CanonicalError, ChatRequest, ModelRef},
 };
 
@@ -128,6 +131,11 @@ impl AttemptPlan {
 pub struct AttemptSequence {
     chain: Arc<AttemptChain>,
     breakers: Arc<BreakerTable>,
+    /// The process-level retirement table a rate limit or a bad credential writes.
+    ///
+    /// `None` for a sequence a test builds without one: the walk then retires a member only for the
+    /// request that discovered it, which is the behaviour a unit test can state without a table.
+    exclusions: Option<Arc<ExclusionTable>>,
     /// The canonical request, decoded once from the client's body; `None` until it has arrived.
     canonical: Option<ChatRequest>,
     /// Attempts one target may absorb, from the route's `retry_budget`.
@@ -160,7 +168,7 @@ pub struct AttemptSequence {
     /// A member excluded for a rate limit or a credential problem must not be drawn again by this
     /// request, so it is recorded here *and* pushed onto `tried`: the set the order is drawn from is
     /// what enforces it, and this record is what the request log reports.
-    excluded: Vec<(String, Exclusion)>,
+    excluded: Vec<(String, ExclusionReason)>,
     /// The pooled members in the order this request draws them.
     ///
     /// Built once, before the first attempt: the order is a property of the request's draw, not of each
@@ -177,6 +185,7 @@ impl AttemptSequence {
         Self {
             chain,
             breakers,
+            exclusions: None,
             canonical: None,
             budget,
             current: 0,
@@ -189,6 +198,16 @@ impl AttemptSequence {
             classified: false,
             pool_order: None,
         }
+    }
+
+    /// Attaches the process-level exclusion table this walk reads and writes.
+    ///
+    /// The table is what makes a rate limit outlive the request that met it: without one, the next
+    /// request draws the same spent member and discovers the same `429`.
+    #[must_use]
+    pub fn with_exclusions(mut self, exclusions: Arc<ExclusionTable>) -> Self {
+        self.exclusions = Some(exclusions);
+        self
     }
 
     /// Decodes the client's body once into the canonical request, and gates it against the chain's
@@ -362,7 +381,7 @@ impl AttemptSequence {
     /// Returns the members this request retired and why, in attempt order, and clears the record.
     ///
     /// The data plane logs each one; the sequence only records what its own classification decided.
-    pub fn take_excluded(&mut self) -> Vec<(String, Exclusion)> {
+    pub fn take_excluded(&mut self) -> Vec<(String, ExclusionReason)> {
         std::mem::take(&mut self.excluded)
     }
 
@@ -406,7 +425,7 @@ impl AttemptSequence {
     /// comes next: the strategy's for the pool, `index + 1` after it.
     fn select_from(&mut self, first: usize, now: Instant) -> Result<(), SelectionRefused> {
         self.skipped.clear();
-        for index in self.walk_order(first) {
+        for index in self.walk_order(first, now) {
             let member = &self.chain.members()[index];
             match self.breakers.admit(member.identity(), now) {
                 Admission::Admit => {

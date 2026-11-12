@@ -39,7 +39,7 @@
 - [x] `chain::compile_pool`：逐成员复用现有物化（`base_url`/凭证/`model_map`/能力），任一失败
       → 整份文档被拒、保 LKG（复用 `LlmBuildError`）。
 - [x] 单成员池短路：不构造选择器，走今天的单目标路径（与流量层单成员短路同一做法）。
-- [ ] 池成员的排除表状态跨发布按 provider 名继承；文档删除成员即遗忘。（**未做**：排除表是请求内的，见下方说明）
+- [x] 池成员的排除表状态跨发布按 provider 名继承；文档删除成员即遗忘：`ExclusionTable` 归 `SharedServices`，键是 `(route, provider)`，发布时 `sweep` 掉过期条目。
 - [x] 发布期拒 `traffic` 角色下的池配置（该角色不含 `nico-llm`）：池路由的 `Target` 是 `Provider`，`NoLlmCompiler` 已拒绝。
 
 **检查点 C**：`cargo test -p nico-server --lib` 绿；单 `provider` 路由的既有 e2e 零改动通过。
@@ -53,7 +53,7 @@
       "消耗预算 / 换成员 / 记入排除表 / 报告熔断器"。
 - [x] 429 / 401 / 403 不消耗 `retry_budget`；400 / 404 / 422 不换成员并直接作答。
 - [x] 429 / 401 / 403 不向熔断器报告（表隔离，design §6）。
-- [ ] `fallback` 仅在池耗尽后按既有顺序继续。（**未做 e2e 覆盖**，逻辑已有）
+- [x] `fallback` 仅在池耗尽后按既有顺序继续：`a_fallback_is_asked_only_after_the_pool_is_exhausted` 断言两个池成员都被试过、fallback 恰好一次。
 
 **检查点 D**：`cargo test -p nico-server --test llm_*` 绿；五类失败的断言齐全。
 
@@ -61,7 +61,7 @@
 
 - [x] 指标 `gateway_llm_pool_selected_total` / `gateway_llm_pool_excluded_total`；日志
       `llm.pool` 与 `llm.excluded`。
-- [x] e2e：两成员池一个被 429 排除仍全程 200（`llm_pool.rs`）；400 不换成员；排除日志字段。
+- [x] e2e：两成员池一个被 429 排除仍全程 200；429 跨请求只发现一次；400 不换成员；fallback 仅在池耗尽后；排除日志字段。
       模型过滤；熔丝上界。
 - [x] 回归：全树 71 个套件绿、`cargo tree -d` 无新增、文件均 ≤500 行。
 
@@ -76,11 +76,3 @@ cargo fmt --all --check
 cargo tree -d
 python3 ./.trellis/scripts/task.py validate 11-11-model-lb
 ```
-
-## 未落地的两项及其理由
-
-- **跨发布的排除表继承**：现在的排除表是 *请求内* 的（`tried` 集合），因为 M1 的验收只要求"同一请求
-  不重复选中"。跨请求的共享冷却表需要一个进程级 store 和按 provider 名寻址的继承规则；它与熔断器
-  的表隔离语义要一起定，属于 M2 的范围。当前实现里 429 后**跨请求**仍会重新抽到该成员。
-- **fallback 顺序的 e2e**：逻辑已通（`walk_order` 在池之后按 `pooled.max(first)..` 追加），但没有
-  专门的端到端断言；单元测试 `pool::*` 覆盖了顺序生成。

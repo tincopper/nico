@@ -18,7 +18,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use super::AttemptSequence;
-use crate::route::disposition::Exclusion;
+use crate::route::exclusion::{Entry as ExclusionEntry, Reason as ExclusionReason};
 
 impl AttemptSequence {
     /// Retires the current member for `cooldown` without reporting it to the breaker.
@@ -27,7 +27,12 @@ impl AttemptSequence {
     /// which is a routing decision for the next few seconds, while the breaker counts "this target
     /// cannot serve at all". Reporting one as the other would let a rate limit open a breaker for the
     /// cooldown a real outage earns.
-    pub(super) fn exclude_current(&mut self, reason: Exclusion, cooldown: Duration, _now: Instant) {
+    pub(super) fn exclude_current(
+        &mut self,
+        reason: ExclusionReason,
+        cooldown: Duration,
+        now: Instant,
+    ) {
         let name = self.chain.members()[self.current]
             .identity()
             .provider()
@@ -46,6 +51,17 @@ impl AttemptSequence {
             "reason" => reason.as_str(),
         )
         .increment(1);
+        if let Some(exclusions) = self.exclusions.as_ref() {
+            let entry = ExclusionEntry::new(self.route_id(), name.as_str());
+            let until = exclusions.exclude(entry, reason, now);
+            tracing::info!(
+                llm.pool = %self.route_id(),
+                llm.target = %name,
+                llm.excluded = reason.as_str(),
+                until_ms = until.saturating_duration_since(now).as_millis(),
+                "provider member retired across requests"
+            );
+        }
         self.note_tried(self.current);
         self.excluded.push((name, reason));
     }
@@ -60,7 +76,7 @@ impl AttemptSequence {
     /// chain index: a pool member is "next" because the request has not used it, not because its
     /// index is larger than the one just left. Applying `first` to the pool would skip the members
     /// after the current index and end the walk after the first failure.
-    pub(super) fn walk_order(&mut self, first: usize) -> Vec<usize> {
+    pub(super) fn walk_order(&mut self, first: usize, now: Instant) -> Vec<usize> {
         let Some(pool) = self.chain.pool() else {
             return (first..self.chain.members().len()).collect();
         };
@@ -80,7 +96,8 @@ impl AttemptSequence {
                 ordered
                     .iter()
                     .copied()
-                    .filter(|index| !self.tried.contains(index)),
+                    .filter(|&index| !self.tried.contains(&index))
+                    .filter(|&index| self.admits_now(index, now)),
             );
         }
         // The fallback chain keeps document order, and `first` still advances it: a fallback member
@@ -106,6 +123,19 @@ impl AttemptSequence {
         };
         let untried_pooled = (0..pool.len()).any(|index| !self.tried.contains(&index));
         untried_pooled || pool.len() < self.chain.members().len()
+    }
+
+    /// Reports whether the process-level table lets a pooled member take traffic at `now`.
+    ///
+    /// A member the *previous* request retired is not drawn by this one: that is the whole point of
+    /// keeping the table across requests. A sequence without a table (a unit test) answers "yes", which
+    /// is the behaviour before the table existed.
+    fn admits_now(&self, index: usize, now: Instant) -> bool {
+        let Some(exclusions) = self.exclusions.as_ref() else {
+            return true;
+        };
+        let entry = ExclusionEntry::new(self.route_id(), self.pool_name(index));
+        exclusions.admits(&entry, now)
     }
 
     /// Records that this request attempted `index`, so a later walk does not draw it again.

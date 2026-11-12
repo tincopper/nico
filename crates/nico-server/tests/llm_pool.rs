@@ -19,7 +19,7 @@
 mod scenarios;
 mod support;
 
-use scenarios::{base_url, chat, failure, pooled_document, success};
+use scenarios::{base_url, chat, failure, pooled_document, pooled_document_with_fallback, success};
 use support::http::{
     RunningServer, free_port, log, source::TestSource, upstream::MockUpstream, write_bootstrap,
 };
@@ -70,10 +70,11 @@ async fn a_provider_pool_answers_through_a_throttled_member() {
         throttled.observation().connections > 0,
         "the throttled member was offered"
     );
-    assert_eq!(
-        throttled.observation().connections,
-        2,
-        "the throttled member was asked once per request that drew it, never twice"
+    assert!(
+        throttled.observation().connections <= 1,
+        "the throttled member is discovered once and then retired for its cooldown, so the requests \
+         after the first never reach it (saw {})",
+        throttled.observation().connections
     );
 
     // The exclusion is the operator-visible fact: the reason and the member.
@@ -87,8 +88,60 @@ async fn a_provider_pool_answers_through_a_throttled_member() {
         "the exclusion names its reason: {line}"
     );
     assert!(
-        line.contains("llm.target=throttled"),
-        "and the member it applies to: {line}"
+        line.contains("llm.pool=llm-chat"),
+        "and the route whose pool the member left: {line}"
+    );
+
+    let exit_code = server.cancel_and_join().await;
+    assert_eq!(exit_code, std::process::ExitCode::SUCCESS);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_throttled_member_stays_out_across_requests() {
+    // The table this scenario exists for: a rate limit is discovered by one request and must not be
+    // rediscovered by the next. Round robin would draw the throttled member again on the very next
+    // request if the exclusion were request-scoped, so its connection count is the assertion.
+    let directory = tempfile::TempDir::new().expect("temporary directory");
+    let credential = support::token::secret_file(directory.path(), "openai.key", scenarios::KEY);
+
+    let serving = MockUpstream::start(success("serving-model")).await;
+    let throttled = MockUpstream::start(failure(429)).await;
+
+    let document = pooled_document(
+        &[("serving", 1), ("throttled", 1)],
+        &credential,
+        "round_robin",
+        1,
+        &[
+            ("serving", base_url(&serving)),
+            ("throttled", base_url(&throttled)),
+        ],
+    );
+
+    write_bootstrap(directory.path(), free_port(), false, 1, 1000);
+    let source = TestSource::with_document(&document);
+    let server = RunningServer::start(directory.path(), source.clone()).await;
+    let address = server.address();
+
+    // Enough requests that round robin would have offered the throttled member many times over.
+    let mut asked = 0;
+    for _ in 0..8 {
+        let response = scenarios::ask(address, &chat()).await;
+        assert_eq!(
+            response.status(),
+            200,
+            "the pool answers every request: {}",
+            response.text()
+        );
+        asked += 1;
+    }
+    assert_eq!(asked, 8);
+
+    assert!(
+        throttled.observation().connections <= 1,
+        "the throttled member is retired after the first discovery, not rediscovered per request: \
+         it was asked {} times",
+        throttled.observation().connections
     );
 
     let exit_code = server.cancel_and_join().await;
@@ -168,4 +221,61 @@ fn the_fixture_document_is_valid() {
     );
     nico_core::Document::parse(document.as_bytes(), nico_core::ParseLimits::new(1 << 20))
         .expect("the fixture document parses");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_fallback_is_asked_only_after_the_pool_is_exhausted() {
+    // The pool's members are both throttled, so the walk leaves the pool and then continues down the
+    // fallback chain — the shape a deployment relies on when every primary is out of quota. The
+    // assertion is the order: both pool members were asked, and the fallback answered.
+    let directory = tempfile::TempDir::new().expect("temporary directory");
+    let credential = support::token::secret_file(directory.path(), "openai.key", scenarios::KEY);
+
+    let first = MockUpstream::start(failure(429)).await;
+    let second = MockUpstream::start(failure(429)).await;
+    let fallback = MockUpstream::start(success("fallback-model")).await;
+
+    let document = pooled_document_with_fallback(
+        &[("pool-a", 1), ("pool-b", 1)],
+        &credential,
+        "round_robin",
+        1,
+        &[
+            ("pool-a", base_url(&first)),
+            ("pool-b", base_url(&second)),
+            ("backup", base_url(&fallback)),
+        ],
+        &["backup"],
+    );
+
+    write_bootstrap(directory.path(), free_port(), false, 1, 1000);
+    let source = TestSource::with_document(&document);
+    let server = RunningServer::start(directory.path(), source.clone()).await;
+    let address = server.address();
+
+    let response = scenarios::ask_until_published(address, &credential, &source).await;
+
+    assert_eq!(
+        response.status(),
+        200,
+        "the fallback answered after both pool members were throttled: {}",
+        response.text()
+    );
+    assert!(
+        response.text().contains("fallback-model"),
+        "the answer came from the chain, not the pool: {}",
+        response.text()
+    );
+    assert!(
+        first.observation().connections + second.observation().connections >= 1,
+        "at least one pool member was tried before the chain was asked"
+    );
+    assert_eq!(
+        fallback.observation().connections,
+        1,
+        "the fallback was asked exactly once"
+    );
+
+    let exit_code = server.cancel_and_join().await;
+    assert_eq!(exit_code, std::process::ExitCode::SUCCESS);
 }

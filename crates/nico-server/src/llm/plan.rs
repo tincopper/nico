@@ -54,11 +54,11 @@ use nico_http::{
     llm::{LlmRoute, LlmRoutes},
 };
 use nico_llm::{
-    BreakerTable, ConvertRoute, Credential, ExchangeMode, PassthroughRoute, ProtocolRegistry,
-    ProviderRegistry, TargetIdentity,
+    BreakerTable, ConvertRoute, Credential, ExchangeMode, ExclusionTable, PassthroughRoute,
+    ProtocolRegistry, ProviderRegistry, TargetIdentity,
 };
 
-use super::{CredentialResolver, LlmBuildError};
+use super::{CredentialResolver, LlmBuildError, shared::SharedServices};
 
 mod chain;
 mod facts;
@@ -130,8 +130,14 @@ impl LlmPlan {
         providers: &ProviderRegistry,
         chains: &PublishedChains,
         credentials: &dyn CredentialResolver,
-        breakers: &Arc<BreakerTable>,
+        shared: &Arc<SharedServices>,
     ) -> Result<Self, LlmBuildError> {
+        let breakers = shared.breakers();
+        let exclusions = shared.exclusions();
+        let state = ProcessState {
+            breakers,
+            exclusions,
+        };
         let routes: Vec<&Route> = document
             .routes()
             .iter()
@@ -159,7 +165,7 @@ impl LlmPlan {
                 providers,
                 credentials,
                 &mut materialized,
-                breakers,
+                &state,
                 route,
             )?;
             compiled.insert(route.id().to_owned(), planned);
@@ -169,6 +175,10 @@ impl LlmPlan {
         // target the document no longer serves has no future attempts to skip, and its state would
         // otherwise remember failures for an endpoint that no longer exists.
         breakers.retain(|identity| live.contains(identity));
+        // The exclusion table is swept rather than pruned: its entries expire on their own, and the
+        // read path drops them too. Sweeping here just keeps a long-running process's table from
+        // holding members whose cooldown passed while no request asked about them.
+        exclusions.sweep(tokio::time::Instant::now());
         Ok(Self { routes: compiled })
     }
 
@@ -232,6 +242,16 @@ impl fmt::Debug for LlmPlan {
     }
 }
 
+/// The two process-level tables a compiled route reads and writes.
+///
+/// Bundled rather than passed as two arguments because they are one decision: both are state a
+/// generation inherits and neither is a property of one route. A third table arrives as a field here,
+/// not as another parameter on every compile step.
+struct ProcessState<'a> {
+    breakers: &'a Arc<BreakerTable>,
+    exclusions: &'a Arc<ExclusionTable>,
+}
+
 /// Builds one route's front-end, failing as a publication error.
 fn compile_route(
     document: &Document,
@@ -239,7 +259,7 @@ fn compile_route(
     providers: &ProviderRegistry,
     credentials: &dyn CredentialResolver,
     materialized: &mut BTreeMap<String, Credential>,
-    breakers: &Arc<BreakerTable>,
+    state: &ProcessState<'_>,
     route: &Route,
 ) -> Result<(PlannedRoute, Vec<TargetIdentity>), LlmBuildError> {
     let route_id = route.id();
@@ -295,11 +315,14 @@ fn compile_route(
         ExchangeMode::Convert => {
             let compiled =
                 chain::compile_chain(document, providers, credentials, materialized, route, codec)?;
-            front_end = Arc::new(ConvertRoute::new(
-                Arc::clone(&compiled),
-                Arc::clone(breakers),
-                route.retry_budget(),
-            ));
+            front_end = Arc::new(
+                ConvertRoute::new(
+                    Arc::clone(&compiled),
+                    Arc::clone(state.breakers),
+                    route.retry_budget(),
+                )
+                .with_exclusions(Arc::clone(state.exclusions)),
+            );
             targets = compiled.members().len();
             identities.extend(
                 compiled

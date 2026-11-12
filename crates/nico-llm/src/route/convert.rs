@@ -28,7 +28,10 @@ use nico_http::{
 };
 
 use super::{attempt_adapter::ConvertAttempt, transform::ConvertTransform};
-use crate::{AttemptChain, AttemptSequence, BreakerTable, ExchangeError, protocol::RequestFacts};
+use crate::{
+    AttemptChain, AttemptSequence, BreakerTable, ExchangeError, protocol::RequestFacts,
+    route::ExclusionTable,
+};
 
 /// A route that decodes the client body into the canonical request and encodes the provider's answer
 /// back.
@@ -39,6 +42,11 @@ use crate::{AttemptChain, AttemptSequence, BreakerTable, ExchangeError, protocol
 pub struct ConvertRoute {
     chain: Arc<AttemptChain>,
     breakers: Arc<BreakerTable>,
+    /// The process-level retirement table, when the deployment has one.
+    ///
+    /// Absent in a test that builds a front-end directly: the walk then retires a member only for the
+    /// request that discovered it.
+    exclusions: Option<Arc<ExclusionTable>>,
     budget: u8,
 }
 
@@ -54,8 +62,19 @@ impl ConvertRoute {
         Self {
             chain,
             breakers,
+            exclusions: None,
             budget,
         }
+    }
+
+    /// Attaches the process-level exclusion table every request's walk reads and writes.
+    ///
+    /// Publication passes the one `SharedServices` owns, so a rate limit one request met is not
+    /// discovered again by the next.
+    #[must_use]
+    pub fn with_exclusions(mut self, exclusions: Arc<ExclusionTable>) -> Self {
+        self.exclusions = Some(exclusions);
+        self
     }
 
     /// Turns a failed exchange into the client protocol's error answer.
@@ -105,11 +124,14 @@ impl ConvertingRoute for ConvertRoute {
     fn begin(&self) -> Box<dyn nico_http::llm::LlmAttempt> {
         // The walk starts undecoded and unselected: the data plane asks for a target before the
         // client's body ends, and for the encoded body once it has.
-        let sequence = AttemptSequence::new(
+        let mut sequence = AttemptSequence::new(
             Arc::clone(&self.chain),
             Arc::clone(&self.breakers),
             self.budget,
         );
+        if let Some(exclusions) = self.exclusions.as_ref() {
+            sequence = sequence.with_exclusions(Arc::clone(exclusions));
+        }
         Box::new(ConvertAttempt::new(Arc::clone(&self.chain), sequence))
     }
 

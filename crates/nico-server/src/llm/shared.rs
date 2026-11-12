@@ -11,11 +11,18 @@
 
 use std::sync::Arc;
 
-use nico_llm::BreakerTable;
+use nico_llm::{BreakerTable, route::ExclusionTable};
 
 /// The process-level state that outlives every configuration generation.
 pub struct SharedServices {
     breakers: Arc<BreakerTable>,
+    /// Members a pool retired for a category-chosen cooldown.
+    ///
+    /// The second piece of learned state, and it lives beside the breaker for the same reason: it is
+    /// earned by attempts, so a reload must not reset it. It is a *separate* table on purpose — a
+    /// `429` retires a member for ten seconds, while the breaker counts service failures and opens for
+    /// the document's cooldown. Merging them would let one rate limit look like an outage.
+    exclusions: Arc<ExclusionTable>,
 }
 
 impl SharedServices {
@@ -27,6 +34,7 @@ impl SharedServices {
     pub fn new() -> Self {
         Self {
             breakers: Arc::new(BreakerTable::new()),
+            exclusions: Arc::new(ExclusionTable::new()),
         }
     }
 
@@ -37,6 +45,15 @@ impl SharedServices {
     #[must_use]
     pub fn breakers(&self) -> &Arc<BreakerTable> {
         &self.breakers
+    }
+
+    /// Returns the exclusion table every generation shares.
+    ///
+    /// Same contract as [`SharedServices::breakers`]: publication compiles against it, the request
+    /// path reads and writes it, and a reload never replaces it.
+    #[must_use]
+    pub fn exclusions(&self) -> &Arc<ExclusionTable> {
+        &self.exclusions
     }
 }
 
@@ -53,6 +70,7 @@ impl std::fmt::Debug for SharedServices {
         formatter
             .debug_struct("SharedServices")
             .field("breakers", &self.breakers)
+            .field("exclusions", &self.exclusions)
             .finish()
     }
 }

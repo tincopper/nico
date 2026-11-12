@@ -105,7 +105,7 @@ impl LlmRuntime {
             &self.providers,
             chains,
             self.credentials.as_ref(),
-            &Arc::clone(self.shared.breakers()),
+            &Arc::clone(&self.shared),
         )?;
         Ok(Arc::new(plan))
     }

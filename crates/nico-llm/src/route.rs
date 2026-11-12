@@ -43,6 +43,7 @@ mod attempt_adapter;
 mod chain;
 mod convert;
 mod disposition;
+mod exclusion;
 mod passthrough;
 mod pool;
 mod transform;
@@ -50,7 +51,8 @@ mod transform;
 pub use attempt::{AttemptPlan, AttemptSequence, SelectionRefused, Verdict};
 pub use chain::{AttemptChain, BreakerParams, ChainBuildError, ChainMember, TargetIdentity};
 pub use convert::ConvertRoute;
-pub use disposition::{Disposition, Exclusion, classify};
+pub use disposition::{Disposition, classify};
+pub use exclusion::{Entry as ExclusionEntry, ExclusionTable, Reason as ExclusionReason};
 pub use passthrough::PassthroughRoute;
 pub use pool::PoolOrder;
 

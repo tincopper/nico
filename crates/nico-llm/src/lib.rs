@@ -75,7 +75,8 @@ pub use provider::{
 };
 pub use route::{
     AttemptChain, AttemptPlan, AttemptSequence, BreakerParams, ChainBuildError, ChainMember,
-    ConvertRoute, PassthroughRoute, PoolOrder, SelectionRefused, TargetIdentity, Verdict,
+    ConvertRoute, ExclusionTable, PassthroughRoute, PoolOrder, SelectionRefused, TargetIdentity,
+    Verdict,
 };
 pub use schema::{
     AssistantTurn, CanonicalError, ChatRequest, ChatResponse, Choice, ContentPart, Extensions,

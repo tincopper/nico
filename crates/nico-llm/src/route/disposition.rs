@@ -24,7 +24,7 @@
 
 use std::time::Duration;
 
-use crate::schema::CanonicalError;
+use crate::{route::exclusion::Reason, schema::CanonicalError};
 
 /// What one failed attempt means.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,50 +37,13 @@ pub enum Disposition {
     /// deployment: a throttled member is worth retrying in seconds, a bad credential in minutes.
     Exclude {
         /// Why, for the log and the metric label.
-        reason: Exclusion,
+        reason: Reason,
         /// How long the member stays out.
         cooldown: Duration,
     },
     /// The member failed to serve a request it was asked to serve: the retry budget applies, and the
     /// breaker counts it.
     Failed,
-}
-
-/// Why a member was taken out of this route's distribution for a while.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Exclusion {
-    /// The provider answered `429`: its rate limit is spent for now.
-    RateLimited,
-    /// The provider answered `401` or `403`: the credential is wrong, expired or out of quota.
-    Credential,
-}
-
-impl Exclusion {
-    /// Returns the `llm.excluded` value this reason is logged and counted under.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::RateLimited => "rate_limited",
-            Self::Credential => "credential",
-        }
-    }
-
-    /// Returns how long a member excluded for this reason stays out of distribution.
-    ///
-    /// Constants rather than document fields on purpose: they describe how fast a *category* recovers,
-    /// not how this deployment is tuned. An operator who wants a slower reaction to real outages tunes
-    /// the provider's `circuit_breaker.cooldown_ms`, which is the deployment knob.
-    #[must_use]
-    pub const fn cooldown(self) -> Duration {
-        match self {
-            // A rate-limit window is usually seconds to a minute; re-offering the member too late is
-            // just lost capacity, too early is another 429.
-            Self::RateLimited => Duration::from_secs(10),
-            // A broken credential does not heal on its own; the margin is for an operator rotating a
-            // key, not for the provider recovering.
-            Self::Credential => Duration::from_secs(300),
-        }
-    }
 }
 
 /// Classifies one provider answer against the member that gave it.
@@ -95,12 +58,12 @@ pub fn classify(status: u16, error: &CanonicalError) -> Disposition {
         400 | 404 | 422 => Disposition::Final,
         // This member's quota or credential, not this request: another member may serve it.
         429 => Disposition::Exclude {
-            reason: Exclusion::RateLimited,
-            cooldown: Exclusion::RateLimited.cooldown(),
+            reason: Reason::RateLimited,
+            cooldown: Reason::RateLimited.cooldown(),
         },
         401 | 403 => Disposition::Exclude {
-            reason: Exclusion::Credential,
-            cooldown: Exclusion::Credential.cooldown(),
+            reason: Reason::Credential,
+            cooldown: Reason::Credential.cooldown(),
         },
         // A member that answered but failed to serve. Whether the route tries it again is the budget's
         // question, asked by the caller.
@@ -117,7 +80,7 @@ mod tests {
     use nico_core::ErrorCategory;
 
     use super::*;
-    use crate::schema::CanonicalError;
+    use crate::{route::exclusion::Reason, schema::CanonicalError};
 
     /// A canonical error with the given status and retryability.
     fn error(status: u16, retryable: bool) -> CanonicalError {
@@ -143,7 +106,7 @@ mod tests {
         assert_eq!(
             disposition,
             Disposition::Exclude {
-                reason: Exclusion::RateLimited,
+                reason: Reason::RateLimited,
                 cooldown: Duration::from_secs(10),
             }
         );
@@ -156,7 +119,7 @@ mod tests {
             assert_eq!(
                 disposition,
                 Disposition::Exclude {
-                    reason: Exclusion::Credential,
+                    reason: Reason::Credential,
                     cooldown: Duration::from_secs(300),
                 },
                 "{status} is about the member's credential"

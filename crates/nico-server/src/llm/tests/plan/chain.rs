@@ -10,7 +10,6 @@ use std::sync::Arc;
 
 use nico_core::{Document, ErrorCategory};
 use nico_http::PublishedChains;
-use nico_llm::BreakerTable;
 
 use super::super::{
     CONVERT, MapCredentials, PASSTHROUGH, PROVIDER, compile, document, registries, with_provider,
@@ -50,7 +49,7 @@ fn compile_chain(
         &providers,
         &PublishedChains::empty(),
         credentials.as_ref(),
-        &Arc::new(BreakerTable::new()),
+        &Arc::new(crate::llm::shared::SharedServices::new()),
     )
 }
 
