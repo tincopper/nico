@@ -223,6 +223,15 @@ impl ProviderRoute {
         Ok(self)
     }
 
+    /// Returns the physical model names this route may serve, in sorted order.
+    ///
+    /// Empty means no restriction. Published code compares two routes' allowlists to decide whether
+    /// a pool's members agree about which models they serve, so the value is exposed rather than only
+    /// queried through [`ProviderRoute::allows`].
+    pub fn allowlist(&self) -> impl Iterator<Item = &ModelId> {
+        self.model_allowlist.iter()
+    }
+
     /// Reports whether this route may serve the resolved model.
     ///
     /// Membership, not a ranking: an empty list allows everything, so a route that declares nothing

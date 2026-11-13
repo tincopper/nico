@@ -33,6 +33,8 @@ struct ProviderEntry {
     base_url: String,
     credential_ref: String,
     model_map: Vec<(String, String)>,
+    /// Physical model names this provider may serve; empty means no restriction.
+    model_allowlist: Vec<String>,
     /// The endpoint's failure budget, written when a scenario tunes it; `None` leaves the document
     /// defaults (threshold 5, cooldown 30s).
     circuit_breaker: Option<(u32, u32)>,
@@ -92,6 +94,7 @@ impl Resources {
             base_url: base_url.to_owned(),
             credential_ref: credential_ref.to_owned(),
             model_map: Vec::new(),
+            model_allowlist: Vec::new(),
             circuit_breaker: None,
         });
         self
@@ -114,6 +117,30 @@ impl Resources {
                 .iter()
                 .map(|(logical, physical)| ((*logical).to_owned(), (*physical).to_owned()))
                 .collect(),
+            model_allowlist: Vec::new(),
+            circuit_breaker: None,
+        });
+        self
+    }
+
+    /// Adds a provider restricted to `allowed` physical model names.
+    ///
+    /// A pool scenario uses this to make two members serve disjoint model sets, so a request's model
+    /// decides which member may be selected before the strategy runs.
+    pub(crate) fn provider_with_allowlist(
+        mut self,
+        name: &str,
+        base_url: &str,
+        credential_ref: &str,
+        allowed: &[&str],
+    ) -> Self {
+        self.providers.push(ProviderEntry {
+            name: name.to_owned(),
+            kind: "openai",
+            base_url: base_url.to_owned(),
+            credential_ref: credential_ref.to_owned(),
+            model_map: Vec::new(),
+            model_allowlist: allowed.iter().map(|name| (*name).to_owned()).collect(),
             circuit_breaker: None,
         });
         self
@@ -141,6 +168,7 @@ impl Resources {
                 .iter()
                 .map(|(logical, physical)| ((*logical).to_owned(), (*physical).to_owned()))
                 .collect(),
+            model_allowlist: Vec::new(),
             circuit_breaker: None,
         });
         self
@@ -165,6 +193,7 @@ impl Resources {
             base_url: base_url.to_owned(),
             credential_ref: credential_ref.to_owned(),
             model_map: Vec::new(),
+            model_allowlist: Vec::new(),
             circuit_breaker: Some((threshold, cooldown_ms)),
         });
         self
@@ -330,6 +359,12 @@ request:
                     for (logical, physical) in &provider.model_map {
                         yaml.push_str(&format!("      {logical}: {physical}\n"));
                     }
+                }
+                if !provider.model_allowlist.is_empty() {
+                    yaml.push_str(&format!(
+                        "    model_allowlist: [{}]\n",
+                        provider.model_allowlist.join(", ")
+                    ));
                 }
                 if let Some((threshold, cooldown_ms)) = provider.circuit_breaker {
                     yaml.push_str("    circuit_breaker:\n");

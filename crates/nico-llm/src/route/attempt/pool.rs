@@ -76,20 +76,37 @@ impl AttemptSequence {
     /// chain index: a pool member is "next" because the request has not used it, not because its
     /// index is larger than the one just left. Applying `first` to the pool would skip the members
     /// after the current index and end the walk after the first failure.
-    pub(super) fn walk_order(&mut self, first: usize, now: Instant) -> Vec<usize> {
+    pub(super) fn walk_order(&mut self, first: usize, now: Instant) -> (Vec<usize>, bool) {
         let Some(pool) = self.chain.pool() else {
-            return (first..self.chain.members().len()).collect();
+            return ((first..self.chain.members().len()).collect(), false);
         };
         let pooled = pool.len();
+        // Model filtering is a property of the request, not of a walk step: each pooled member
+        // resolves the logical name through its OWN `model_map` and checks its OWN allowlist before
+        // the strategy sees the member. A member that would answer `403 model_not_allowed` is not a
+        // candidate, so the strategy cannot waste an attempt on it.
+        let servable: Vec<usize> = (0..pooled)
+            .filter(|&index| self.serves_requested_model(index))
+            .collect();
+        let model_empty = servable.is_empty();
         let mut order = Vec::with_capacity(self.chain.members().len());
         // The pool's order is drawn once per request, so a random strategy does not produce a
         // different first choice every time the walk restarts mid-request. The draw covers every
-        // pooled member; what the walk may still try is decided per call from `tried`, so a member
-        // the request already gave up on is skipped rather than redrawn.
-        if self.pool_order.is_none() {
-            let all: Vec<usize> = (0..pooled).collect();
-            let names: Vec<&str> = (0..pooled).map(|index| self.pool_name(index)).collect();
-            self.pool_order = Some(pool.order(&all, &names));
+        // model-servable pooled member; what the walk may still try is decided per call from `tried`,
+        // so a member the request already gave up on is skipped rather than redrawn.
+        // The order is drawn once per request so a random strategy cannot produce a different first
+        // choice mid-request — but the candidate SET it was drawn from can change: the first round
+        // selects before the client's body arrives (no model to filter on), so a later round must
+        // redraw if the filter has since become meaningful. `frozen_for_model` records which of the
+        // two worlds the draw belongs to.
+        let filter_is_active = self.requested_model().is_some();
+        if self.pool_order.is_none() || self.pool_order_model != Some(filter_is_active) {
+            let names: Vec<&str> = servable
+                .iter()
+                .map(|&index| self.pool_name(index))
+                .collect();
+            self.pool_order = Some(pool.order(&servable, &names));
+            self.pool_order_model = Some(filter_is_active);
         }
         if let Some(ordered) = self.pool_order.as_ref() {
             order.extend(
@@ -101,9 +118,25 @@ impl AttemptSequence {
             );
         }
         // The fallback chain keeps document order, and `first` still advances it: a fallback member
-        // that was left is not asked again by a later round.
-        order.extend(pooled.max(first)..self.chain.members().len());
-        order
+        // that was left is not asked again by a later round. A route that serves no member for this
+        // model does NOT reach here — `select_from` answers before appending the chain.
+        if !model_empty {
+            order.extend(pooled.max(first)..self.chain.members().len());
+        }
+        (order, model_empty)
+    }
+
+    /// Reports whether one pooled member can serve the model this request asked for.
+    ///
+    /// `None` as the requested model means the body has not been decoded yet; the filter is a no-op
+    /// then, which keeps the pre-body selection behaviour exactly as it was.
+    fn serves_requested_model(&self, index: usize) -> bool {
+        let Some(logical) = self.requested_model() else {
+            return true;
+        };
+        let route = self.chain.members()[index].exchange().route();
+        let physical = route.model(logical).physical().clone();
+        route.allows(&physical)
     }
 
     /// Returns the name a pooled member is keyed by.

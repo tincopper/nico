@@ -99,6 +99,12 @@ impl LlmAttempt for ConvertAttempt {
                 .decode(&facts, request.body())
                 .map_err(|error| self.reject(&error))?;
         }
+        // The body is now decoded, so the model this request names is known. When no pool member can
+        // serve it, the client is told so instead of being sent to a provider that would refuse:
+        // this is the one place the mismatch can be detected before any attempt is encoded.
+        if let Err(refusal) = self.sequence.refuse_unservable_model() {
+            return Err(self.reject_canonical(refusal.error().clone(), None));
+        }
         self.sequence
             .encode_current()
             .map_err(|error| self.reject(&error))?;

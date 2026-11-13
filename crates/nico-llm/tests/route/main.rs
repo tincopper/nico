@@ -14,6 +14,7 @@ mod attempt;
 mod chain;
 mod convert;
 mod disposition;
+mod model_filter;
 mod passthrough;
 mod pool;
 mod support;

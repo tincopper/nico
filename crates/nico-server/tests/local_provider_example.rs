@@ -12,7 +12,9 @@ use nico_core::{Document, ParseLimits, RouteTarget};
 
 fn example() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../.trellis/tasks/11-13-heterogeneous-provider-research/research/local-provider-example.yaml")
+        .join(
+            "../../.trellis/tasks/archive/2026-11/11-13-heterogeneous-provider-research/research/local-provider-example.yaml",
+        )
 }
 
 #[test]

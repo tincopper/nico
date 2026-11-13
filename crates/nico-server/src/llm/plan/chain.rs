@@ -15,7 +15,10 @@
 //! generations. The identity is compiled here because this is the one place that holds both the
 //! document's provider entry and the adapter that will actually serve it.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use nico_core::{Document, PoolStrategy, Provider, Route};
 use nico_llm::{
@@ -91,6 +94,15 @@ pub(super) fn compile_chain(
                     name,
                 )?);
             }
+            // Every pooled member must serve the same model set.
+            //
+            // Pingora chooses the target before the client's body arrives, so the model a request
+            // names cannot narrow the member list before one is picked. If two members allowed
+            // different sets, the first round could pick a member that must refuse the request while
+            // another member would have served it — a `403` for a request the route can serve, and
+            // no way to correct it (the upstream head is already written by then). Refusing the
+            // document keeps that shape from reaching production.
+            ensure_uniform_allowlist(route, &members)?;
             Some(PoolOrder::new(build_pool_picker(pool.strategy()), weights))
         }
     };
@@ -100,6 +112,43 @@ pub(super) fn compile_chain(
         }
     })?;
     Ok(Arc::new(chain))
+}
+
+/// Rejects a pool whose members disagree about which models they serve.
+///
+/// Two members with different `model_allowlist` values make "which member serves this model" a
+/// request-time question, and the data plane cannot answer it before it has chosen a target. A pool
+/// whose members agree keeps model filtering a plain check inside one member, which is what the
+/// encoding path already does.
+fn ensure_uniform_allowlist(route: &Route, members: &[ChainMember]) -> Result<(), LlmBuildError> {
+    let Some(pool) = route.pool() else {
+        return Ok(());
+    };
+    let allowlist = |member: &ChainMember| -> BTreeSet<String> {
+        member
+            .exchange()
+            .route()
+            .allowlist()
+            .map(ToString::to_string)
+            .collect()
+    };
+    let Some(first) = members.first().map(allowlist) else {
+        return Ok(());
+    };
+    for (index, member) in members
+        .iter()
+        .take(pool.members().len())
+        .enumerate()
+        .skip(1)
+    {
+        if allowlist(member) != first {
+            return Err(LlmBuildError::PoolAllowlistMismatch {
+                route: route.id().to_owned(),
+                provider: pool.members()[index].name().to_owned(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Builds the picker a document's pool strategy names.

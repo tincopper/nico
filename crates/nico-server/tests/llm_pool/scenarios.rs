@@ -85,6 +85,16 @@ pub(super) fn chat() -> Request {
         .body(chat_request(), usize::MAX)
 }
 
+/// The fixture request naming `model` instead of the default `"fast"`.
+pub(super) fn chat_with_model(model: &str) -> Request {
+    let body = format!(
+        r#"{{"model":"{model}","messages":[{{"role":"user","content":"pool-scenario"}}]}}"#
+    );
+    Request::post("/v1/chat/completions", "llm.test")
+        .header("content-type", "application/json")
+        .body(body.into_bytes(), usize::MAX)
+}
+
 /// Sends the fixture request to `address` and returns the answer.
 pub(super) async fn ask(address: SocketAddr, request: &Request) -> Response {
     exchange(address, request).await

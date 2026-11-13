@@ -183,6 +183,20 @@ pub enum LlmBuildError {
         #[source]
         source: Box<ExchangeBuildError>,
     },
+    /// A provider pool whose members disagree about the models they serve.
+    ///
+    /// The target is chosen before the client's body arrives, so the model a request names cannot
+    /// narrow the member list first. Members that agree keep model filtering a check inside one
+    /// member; members that disagree would produce a `403` for a request the route could serve.
+    #[error(
+        "route `{route}` pools providers that serve different models: `{provider}` disagrees with the pool's first member"
+    )]
+    PoolAllowlistMismatch {
+        /// The route whose pool is inconsistent.
+        route: String,
+        /// The first member whose allowlist differs.
+        provider: String,
+    },
     /// A route's compiled attempt chain held no members.
     ///
     /// The chain compiler always compiles the route's primary target first, so reaching this means
@@ -218,7 +232,8 @@ impl LlmBuildError {
             | Self::PassthroughAttempts { .. }
             | Self::GlobalPluginPhase { .. }
             | Self::RoutePluginPhase { .. }
-            | Self::BufferedRoute { .. } => ErrorCategory::Client,
+            | Self::BufferedRoute { .. }
+            | Self::PoolAllowlistMismatch { .. } => ErrorCategory::Client,
         }
     }
 }

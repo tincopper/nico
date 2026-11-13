@@ -39,89 +39,20 @@ use crate::{
     breaker::{Admission, AttemptOutcome, BreakerTable},
     filter::required,
     protocol::RequestFacts,
-    provider::{Endpoint, WireRequest},
+    provider::Endpoint,
     route::{
         AttemptChain, TargetIdentity,
         exclusion::{ExclusionTable, Reason as ExclusionReason},
     },
-    schema::{CanonicalError, ChatRequest, ModelRef},
+    schema::{CanonicalError, ChatRequest, ModelId},
 };
 
 mod failure;
+mod model;
+mod plan;
 mod pool;
 
-/// What follows one attempt's response head.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Verdict {
-    /// The current response is the client's answer: a final (non-retryable) failure the data plane
-    /// translates exactly as it does today.
-    Answer,
-    /// The chain ran out: the current response — the last target's failure — is the client's answer,
-    /// translated exactly as [`Verdict::Answer`].
-    Exhausted,
-    /// Another attempt is prepared: the sequence now holds its plan, and the data plane sends it.
-    Retry,
-}
-
-/// Why a request's chain could serve nothing.
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
-#[error("every target of the chain was skipped")]
-pub struct SelectionRefused(pub(crate) Box<CanonicalError>);
-
-impl SelectionRefused {
-    /// Returns the canonical error the failures left behind, which the client is answered with.
-    #[must_use]
-    pub fn error(&self) -> &CanonicalError {
-        &self.0
-    }
-}
-
-/// One attempt's byte-level facts: where it goes and what it carries.
-///
-/// Everything here is what the data plane needs to send one request and nothing more — no breaker,
-/// no chain, no canonical value. The endpoint is the member's own, so a fallback's destination,
-/// path and headers are the ones its provider entry compiled.
-#[derive(Debug)]
-pub struct AttemptPlan {
-    /// The member this attempt targets, as the chain orders them.
-    member: usize,
-    wire: WireRequest,
-    streaming: bool,
-    model: ModelRef,
-}
-
-impl AttemptPlan {
-    /// Returns the chain member this attempt targets.
-    #[must_use]
-    pub const fn member(&self) -> usize {
-        self.member
-    }
-
-    /// Returns the endpoint the attempt is sent to.
-    #[must_use]
-    pub const fn wire(&self) -> &WireRequest {
-        &self.wire
-    }
-
-    /// Consumes the plan into the wire request to send.
-    #[must_use]
-    pub fn into_wire(self) -> WireRequest {
-        self.wire
-    }
-
-    /// Returns whether the client asked for a stream.
-    #[must_use]
-    pub const fn streaming(&self) -> bool {
-        self.streaming
-    }
-
-    /// Returns the logical and physical model names, for the request record.
-    #[must_use]
-    pub const fn model(&self) -> &ModelRef {
-        &self.model
-    }
-}
+pub use plan::{AttemptPlan, SelectionRefused, Verdict};
 
 /// One request's walk over its chain.
 ///
@@ -138,6 +69,12 @@ pub struct AttemptSequence {
     exclusions: Option<Arc<ExclusionTable>>,
     /// The canonical request, decoded once from the client's body; `None` until it has arrived.
     canonical: Option<ChatRequest>,
+    /// The logical model the client asked for, kept beside the canonical value.
+    ///
+    /// The pool's model filter needs the name before the body is encoded for any member: each member
+    /// resolves it through its own `model_map`. Reading it once from the decoded request is cheaper
+    /// and less error-prone than re-deriving it during every walk.
+    requested_model: Option<ModelId>,
     /// Attempts one target may absorb, from the route's `retry_budget`.
     budget: u8,
     /// How long a streamed attempt may wait for its first byte, from the route's `ttft_timeout_ms`.
@@ -178,6 +115,12 @@ pub struct AttemptSequence {
     /// different first choice for the same request. The members the request has already tried are
     /// filtered out of it on every walk, which is what keeps one request from repeating a member.
     pool_order: Option<Vec<usize>>,
+    /// Whether the draw above was made with the model filter active.
+    ///
+    /// The first round selects before the body arrives, so its draw covers every member; a later
+    /// round, once the model is known, must redraw from the filtered set instead of reusing an order
+    /// that predates the filter.
+    pool_order_model: Option<bool>,
 }
 
 impl AttemptSequence {
@@ -189,6 +132,7 @@ impl AttemptSequence {
             breakers,
             exclusions: None,
             canonical: None,
+            requested_model: None,
             budget,
             ttft: None,
             current: 0,
@@ -200,6 +144,7 @@ impl AttemptSequence {
             excluded: Vec::new(),
             classified: false,
             pool_order: None,
+            pool_order_model: None,
         }
     }
 
@@ -251,6 +196,7 @@ impl AttemptSequence {
         {
             return Err(ExchangeError::Unsupported { capability });
         }
+        self.requested_model = Some(canonical.model().clone());
         self.canonical = Some(canonical);
         Ok(())
     }
@@ -292,12 +238,12 @@ impl AttemptSequence {
         let model = prepared.model().clone();
         self.attempts += 1;
         self.classified = false;
-        self.plan = Some(AttemptPlan {
-            member: self.current,
-            wire: prepared.into_wire(),
+        self.plan = Some(AttemptPlan::new(
+            self.current,
+            prepared.into_wire(),
             streaming,
             model,
-        });
+        ));
         Ok(())
     }
 
@@ -369,7 +315,7 @@ impl AttemptSequence {
     /// again, and finds the same encoding.
     #[must_use]
     pub fn plan_body(&self) -> Option<&[u8]> {
-        self.plan.as_ref().map(|plan| plan.wire.body())
+        self.plan.as_ref().map(|plan| plan.wire().body())
     }
 
     /// Returns the member index the sequence is on.
@@ -453,7 +399,14 @@ impl AttemptSequence {
     /// comes next: the strategy's for the pool, `index + 1` after it.
     fn select_from(&mut self, first: usize, now: Instant) -> Result<(), SelectionRefused> {
         self.skipped.clear();
-        for index in self.walk_order(first, now) {
+        let (order, model_empty) = self.walk_order(first, now);
+        if model_empty {
+            // No member serves this model. That is a mismatch between the request and the route's
+            // configuration, not a member failure, so the client is told so and the fallback chain
+            // stays out of it.
+            return Err(SelectionRefused(Box::new(Self::model_refusal())));
+        }
+        for index in order {
             let member = &self.chain.members()[index];
             match self.breakers.admit(member.identity(), now) {
                 Admission::Admit => {
