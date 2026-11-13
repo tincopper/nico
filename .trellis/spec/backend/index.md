@@ -7,27 +7,24 @@
 ## Overview
 
 The backend is a Rust Cargo Workspace: a small protocol-agnostic kernel (`nico-core`), one HTTP
-data plane on Pingora (`nico-http`), one LLM data plane (`nico-llm`), config sources
-(`nico-config*`), built-in policies (`nico-plugins`), and a single binary (`nico`, built by `nico-server`)
-that wires them together.
+data plane on Pingora (`nico-http`), one LLM data plane (`nico-llm`), a dependency-free member
+selection crate (`nico-lb`), config sources (`nico-config*`), built-in policies (`nico-plugins`),
+and a single binary (`nico`, built by `nico-server`) that wires them together.
 
 These specs encode **Rust best practices** applied to that architecture: ownership over cloning,
 typed errors over `anyhow`, explicit bounds and deadlines, snapshots over locks, and a toolchain
 that enforces what review would otherwise have to.
 
-> **Status**: `nico-core`, `nico-config`, `nico-http`, `nico-plugins`, `nico-metrics` and
-> `nico-server` exist with a green baseline. `nico-metrics` is the self-reporting capability layer:
-> recorder installation, Prometheus rendering and readiness projection, with no socket and no
-> framework in its dependency tree. `nico-llm` is built up to its canonical model, the two contracts, the exchange, the
-> OpenAI Chat Completions client codec and the OpenAI provider adapter, registered in
-> `builtin_registry()` and published as a plan per generation (`nico-server::llm`). `nico-http`
-> carries the byte-level seam a front-end implements (`llm.rs`: destination, prepared body,
-> per-response transform), the AI-route hold-back and the `request.max_response_bytes` ceiling. These files are the binding
-> conventions for new code.
+> **Status**: the workspace has a green baseline. `nico-core` owns the document model;
+> `nico-http` carries routing, plugins, the upstream member pool and the byte-level LLM seam;
+> `nico-llm` owns the canonical model, four client codecs and four provider adapters, the provider
+> pool, the attempt chain and the token meter; `nico-lb` holds the selection contract both pools
+> reuse; `nico-metrics` owns the self-reporting surface (recorder, rendering, readiness) without a
+> socket or a framework; `nico-plugins` carries the built-in policies; `nico-server` wires it all
+> and publishes one plan per generation. These files are the binding conventions for new code.
 > Architecture rationale is in `.trellis/tasks/11-03-unified-gateway-analysis/design.md`;
 > the empirically verified Pingora behaviour that constrains `nico-http` is in
 > `.trellis/tasks/archive/2026-11/11-03-phase0-tech-verification/research/phase0-capability-report.md` §6.
-
 ---
 
 ## Pre-Development Checklist

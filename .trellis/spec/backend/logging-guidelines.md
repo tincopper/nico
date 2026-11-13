@@ -365,9 +365,9 @@ volume — but it does mean a series lives for the process lifetime.
   not — so nobody has to guess why a scrape fails.
 - Per-request access logging is deliberately absent: a probe every few seconds would be a self-
   inflicted flood. Only a failure is logged.
-
-- LLM usage metrics must distinguish gateway-measured values from provider-reported token usage —
-  never present an estimate as a bill.
+- LLM usage metrics count only **provider-reported** token buckets, never a gateway estimate: the
+  gateway has no tokenizer, and a self-counted number would never agree with the bill. A kind the
+  provider did not report produces no sample, because a zero is a different fact from no answer.
 - Circuit-breaker and rate-limit-table metrics are **not** part of this surface yet: exposing them
   needs `SharedServices` lifted to the assembly point and a read-only enumeration on `BreakerTable`,
   which is its own increment.

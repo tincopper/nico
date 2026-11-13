@@ -199,8 +199,9 @@ An upstream may name several members (`endpoints[]`). **Selection happens in exa
 `proxy/forward.rs::destination`, where an upstream becomes a `Destination` — and nowhere else:
 
 - `upstream/pools.rs::UpstreamState::select` asks `MemberState::available` once per attempt to build
-  the candidate list, then asks the [`Picker`](https://docs.rs) (`nico-lb`) for one candidate. A rule
-  may only answer with an index it was handed, so a strategy cannot override a health verdict.
+  the candidate list, then asks the `Picker` from the workspace's own `nico-lb` crate for one
+  candidate. A rule may only answer with an index it was handed, so a strategy cannot override a
+  health verdict.
 - The candidate filter and the probe admission are separate: filtering is a question, `admit` is the
   claim. A member a strategy skipped did not spend its half-open probe.
 - `Destination::new(scheme, address, port).with_authority(host)` is the one construction that splits
@@ -210,6 +211,10 @@ An upstream may name several members (`endpoints[]`). **Selection happens in exa
 Pingora owns the retry loop and the connection pool; it does **not** own member selection. That is why
 the state lives in `UpstreamPools` (process-level, survives a reload by member identity) and the
 per-generation table travels inside the published value.
+
+A provider pool (`routes[].providers`) is a different selection surface: it is walked inside
+`nico-llm`'s `AttemptSequence`, not through `forward.rs::destination`. Both reuse the same
+`nico-lb::Picker`, which is the reason the contract lives in its own crate.
 
 ### An AI route (`RouteTarget::Provider`)
 
