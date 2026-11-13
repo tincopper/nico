@@ -35,6 +35,32 @@ fn chat_request() -> Vec<u8> {
     br#"{"model":"fast","messages":[{"role":"user","content":"pool-scenario"}]}"#.to_vec()
 }
 
+/// The streamed fixture request: the same conversation, asked as an event stream.
+pub(super) fn chat_stream() -> Request {
+    const BODY: &[u8] =
+        br#"{"model":"fast","messages":[{"role":"user","content":"stream me"}],"stream":true}"#;
+    Request::post("/v1/chat/completions", "llm.test")
+        .header("content-type", "application/json")
+        .body(BODY.to_vec(), usize::MAX)
+}
+
+/// A streamed success: two SSE deltas naming `model`, the shape a streaming provider speaks.
+pub(super) fn streamed_success(model: &str) -> Reply {
+    let chunk = |delta: &str, finish: &str| {
+        format!(
+            r#"{{"id":"chatcmpl-{model}","object":"chat.completion.chunk","created":0,"model":"{model}","choices":[{{"index":0,"delta":{{"content":"{delta}"}},"finish_reason":{finish}}}]}}"#
+        )
+    };
+    Reply::StreamWithHeaders {
+        headers: vec![("content-type".to_owned(), "text/event-stream".to_owned())],
+        events: vec![
+            format!("data: {}\n\n", chunk("from ", "null")).into_bytes(),
+            format!("data: {}\n\ndata: [DONE]\n\n", chunk(model, "\"stop\"")).into_bytes(),
+        ],
+        gap: Duration::from_millis(5),
+    }
+}
+
 /// The fixture request: a complete-answer POST to `/v1/chat/completions`.
 pub(super) fn chat() -> Request {
     Request::post("/v1/chat/completions", "llm.test")
@@ -124,4 +150,27 @@ pub(super) fn pooled_document_with_fallback(
         route = route.fallback(fallback);
     }
     resources.route(route).render()
+}
+
+/// [`pooled_document`] with a first-byte budget on the route.
+pub(super) fn pooled_document_with_ttft(
+    members: &[(&str, u16)],
+    credential: &str,
+    strategy: &'static str,
+    retry_budget: u8,
+    bases: &[(&str, String)],
+    ttft_timeout_ms: u32,
+) -> String {
+    let mut resources = Resources::new();
+    for (name, base) in bases {
+        resources = resources.provider_with_breaker(name, base, credential, 0, 30_000);
+    }
+    resources
+        .route(
+            crate::support::http::resources::Route::provider("llm-chat", "/v1/chat/", members[0].0)
+                .pool(members, strategy)
+                .retry_budget(retry_budget)
+                .ttft_timeout_ms(ttft_timeout_ms),
+        )
+        .render()
 }

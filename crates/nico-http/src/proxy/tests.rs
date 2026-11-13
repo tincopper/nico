@@ -176,7 +176,7 @@ async fn a_matched_upstream_becomes_a_peer_with_the_remaining_budget() {
     let destination = destination(&mut ctx).expect("the fixture upstream exists");
     let budget = ctx.remaining(now).expect("the request has a budget");
 
-    let peer = upstream::peer(&destination, budget)
+    let peer = upstream::peer(&destination, budget, budget)
         .await
         .expect("127.0.0.1 resolves");
 

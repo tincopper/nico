@@ -30,7 +30,7 @@
 //! is *sent* before the client's body has finished arriving — target selection needs only the
 //! breaker and the clock, while the encode needs the decoded body.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use tokio::time::Instant;
 
@@ -140,6 +140,8 @@ pub struct AttemptSequence {
     canonical: Option<ChatRequest>,
     /// Attempts one target may absorb, from the route's `retry_budget`.
     budget: u8,
+    /// How long a streamed attempt may wait for its first byte, from the route's `ttft_timeout_ms`.
+    ttft: Option<Duration>,
     /// The member in flight, as the chain orders it.
     current: usize,
     /// Attempts the current member has left, including the one in flight.
@@ -188,6 +190,7 @@ impl AttemptSequence {
             exclusions: None,
             canonical: None,
             budget,
+            ttft: None,
             current: 0,
             remaining: budget,
             plan: None,
@@ -198,6 +201,23 @@ impl AttemptSequence {
             classified: false,
             pool_order: None,
         }
+    }
+
+    /// Attaches the route's first-byte budget for a streamed answer.
+    ///
+    /// The budget bounds one attempt's wait for the first byte, which is why it travels with the walk
+    /// rather than with the peer: a walk that moved to another member builds another peer and the same
+    /// budget applies to it.
+    #[must_use]
+    pub const fn with_ttft(mut self, ttft: Option<Duration>) -> Self {
+        self.ttft = ttft;
+        self
+    }
+
+    /// Returns the first-byte budget, when the route states one.
+    #[must_use]
+    pub const fn ttft(&self) -> Option<Duration> {
+        self.ttft
     }
 
     /// Attaches the process-level exclusion table this walk reads and writes.

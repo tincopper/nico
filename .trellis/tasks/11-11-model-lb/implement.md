@@ -76,3 +76,18 @@ cargo fmt --all --check
 cargo tree -d
 python3 ./.trellis/scripts/task.py validate 11-11-model-lb
 ```
+
+## 第 6 步：首字节预算（M2）
+
+- [x] `nico-core`：`RawRoute`/`Route` 加 `ttft_timeout_ms`，范围 `1..=300_000`（整请求上限的一半），
+      upstream 路由拒绝该字段，`strategy` 无池同理。
+- [x] 预算沿 `Route → ConvertRoute → AttemptSequence → AttemptTarget → upstream::peer` 传递。
+- [x] `upstream::peer` 收 `read_budget`，`read_timeout` 取 `min(read_budget, budget)`；连接超时不变。
+- [x] 读超时重新归类：有首字节预算的尝试，`ReadTimedout` 是**成员失败**而不是请求超时
+      （`attempt_has_first_byte_budget`），否则静默成员永远不会被换掉。
+- [x] 单测：peer 的两个预算各自生效、首字节预算不超过请求预算；配置面的范围与字段归属。
+- [x] e2e：静默成员在预算后被打掉、下一个成员作答；预算内作答的缓冲请求不受影响。
+
+**语义边界（已写入 PRD R8 与 design §7.1）**：Pingora 的 `read_timeout` 作用于每一次读，且
+`upstream_peer` 早于 body 解码，所以该字段无法只在"首字节前"生效。它的实际语义是"这个路由的一次读
+最多等多久"，流式与非流式同样适用。这是实现约束，不是设计选择；一个比预算更慢的缓冲请求会被截断。

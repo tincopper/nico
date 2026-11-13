@@ -16,7 +16,7 @@
 //! Restoring last is deliberate: every early exit above is a rejection or a synthesised response, and
 //! doing the restore in one place after the verdict is what keeps an early exit from skipping it.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use pingora::{Error, http::RequestHeader, proxy::Session, upstreams::peer::HttpPeer};
 use tokio::time::Instant as TokioInstant;
@@ -198,7 +198,8 @@ pub(super) async fn upstream_peer(
     // Every round resolves its own peer: a recorded destination belongs to the attempt that
     // recorded it, and a round that moved to another target must not reuse it.
     let chosen = destination(ctx).map_err(|error| abort(ctx, error))?;
-    let peer = match upstream::peer(&chosen, budget).await {
+    let read_budget = attempt_read_budget(ctx, budget);
+    let peer = match upstream::peer(&chosen, budget, read_budget).await {
         Ok(peer) => peer,
         Err(error) => {
             // The name did not resolve, so this member never accepted a connection: the failure is
@@ -211,6 +212,26 @@ pub(super) async fn upstream_peer(
     };
     ctx.set_destination(chosen);
     Ok(peer)
+}
+
+/// Returns how long one read may take, before the member is worth replacing.
+///
+/// A route that states `ttft_timeout_ms` and asked for a stream gets that budget instead of the
+/// request's remaining time: the wait for an answer is the thing an operator wants bounded, and the
+/// whole-request budget is the ceiling that still applies. Everything else keeps the request budget,
+/// which is what every route had before the field existed.
+fn attempt_read_budget(ctx: &HttpContext, budget: Duration) -> Duration {
+    let Some(llm) = ctx.llm() else {
+        return budget;
+    };
+    // The budget applies whenever the route states one, not only once the body has been decoded: this
+    // hook runs *before* the client's body arrives, so the streaming flag is not known yet, and gating
+    // on it would leave the one attempt that most needs the bound — the first, meeting a member that
+    // never answers — unbounded. The consequence is stated in the field's documentation: on a route
+    // that states it, the bound is what one read may take, streamed or buffered.
+    llm.target()
+        .and_then(|target| target.ttft())
+        .map_or(budget, |ttft| ttft.min(budget))
 }
 
 /// Classifies a target whose address failed before a connection existed.

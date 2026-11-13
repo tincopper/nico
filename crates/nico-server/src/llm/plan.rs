@@ -46,6 +46,7 @@ use std::{
     collections::{BTreeMap, HashSet},
     fmt,
     sync::Arc,
+    time::Duration,
 };
 
 use nico_core::{Document, Route, RouteMode, RouteTarget};
@@ -321,7 +322,12 @@ fn compile_route(
                     Arc::clone(state.breakers),
                     route.retry_budget(),
                 )
-                .with_exclusions(Arc::clone(state.exclusions)),
+                .with_exclusions(Arc::clone(state.exclusions))
+                .with_ttft(
+                    route
+                        .ttft_timeout_ms()
+                        .map(|ms| Duration::from_millis(u64::from(ms))),
+                ),
             );
             targets = compiled.members().len();
             identities.extend(

@@ -408,6 +408,9 @@ request:
                         yaml.push_str(&format!("      - {name}\n"));
                     }
                 }
+                if let Some(ttft_timeout_ms) = route.ttft_timeout_ms {
+                    yaml.push_str(&format!("    ttft_timeout_ms: {ttft_timeout_ms}\n"));
+                }
                 if let Some(retry_budget) = route.retry_budget {
                     yaml.push_str(&format!("    retry_budget: {retry_budget}\n"));
                 }

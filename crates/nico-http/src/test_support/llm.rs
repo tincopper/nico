@@ -429,6 +429,14 @@ impl LlmAttempt for FakeAttempt {
         self.target.name()
     }
 
+    fn ttft(&self) -> Option<std::time::Duration> {
+        self.target.ttft()
+    }
+
+    fn streaming(&self) -> Option<bool> {
+        Some(self.streaming)
+    }
+
     fn attempt_number(&self) -> u32 {
         1
     }

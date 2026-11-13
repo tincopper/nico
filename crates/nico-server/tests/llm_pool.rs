@@ -19,9 +19,15 @@
 mod scenarios;
 mod support;
 
-use scenarios::{base_url, chat, failure, pooled_document, pooled_document_with_fallback, success};
+use scenarios::{
+    base_url, chat, chat_stream, failure, pooled_document, pooled_document_with_fallback,
+    pooled_document_with_ttft, streamed_success, success,
+};
 use support::http::{
-    RunningServer, free_port, log, source::TestSource, upstream::MockUpstream, write_bootstrap,
+    RunningServer, free_port, log,
+    source::TestSource,
+    upstream::{MockUpstream, Reply},
+    write_bootstrap,
 };
 
 #[tokio::test(flavor = "current_thread")]
@@ -274,6 +280,89 @@ async fn a_fallback_is_asked_only_after_the_pool_is_exhausted() {
         fallback.observation().connections,
         1,
         "the fallback was asked exactly once"
+    );
+
+    let exit_code = server.cancel_and_join().await;
+    assert_eq!(exit_code, std::process::ExitCode::SUCCESS);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_silent_member_is_replaced_after_its_first_byte_budget() {
+    // The member accepts the connection and never answers. Without a first-byte budget the request
+    // would wait for its whole deadline; with one, the walk leaves the member and the next one
+    // answers. That is the field's entire purpose, so the assertion is the answer, not the timing.
+    let directory = tempfile::TempDir::new().expect("temporary directory");
+    let credential = support::token::secret_file(directory.path(), "openai.key", scenarios::KEY);
+
+    let silent = MockUpstream::start(Reply::StallBeforeHead).await;
+    let serving = MockUpstream::start(streamed_success("serving-model")).await;
+
+    let document = pooled_document_with_ttft(
+        &[("silent", 1), ("serving", 1)],
+        &credential,
+        "round_robin",
+        1,
+        &[
+            ("silent", base_url(&silent)),
+            ("serving", base_url(&serving)),
+        ],
+        200,
+    );
+
+    write_bootstrap(directory.path(), free_port(), false, 1, 1000);
+    let source = TestSource::with_document(&document);
+    let server = RunningServer::start(directory.path(), source.clone()).await;
+    let address = server.address();
+
+    let response = scenarios::ask(address, &chat_stream()).await;
+
+    assert_eq!(
+        response.status(),
+        200,
+        "the next member answered after the silent one's budget expired: {}",
+        response.text()
+    );
+    assert!(
+        response.text().contains("serving-model"),
+        "the answer came from the member that responded: {}",
+        response.text()
+    );
+
+    let exit_code = server.cancel_and_join().await;
+    assert_eq!(exit_code, std::process::ExitCode::SUCCESS);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_first_byte_budget_still_serves_a_buffered_answer() {
+    // The budget bounds one read, so a buffered exchange is held to it too — a provider that answers
+    // within the budget is unaffected, which is the case this asserts. A buffered answer that *takes*
+    // longer than the budget is bounded by it by design; the field's documentation states that.
+    let directory = tempfile::TempDir::new().expect("temporary directory");
+    let credential = support::token::secret_file(directory.path(), "openai.key", scenarios::KEY);
+
+    let serving = MockUpstream::start(success("serving-model")).await;
+
+    let document = pooled_document_with_ttft(
+        &[("serving", 1)],
+        &credential,
+        "round_robin",
+        1,
+        &[("serving", base_url(&serving))],
+        200,
+    );
+
+    write_bootstrap(directory.path(), free_port(), false, 1, 1000);
+    let source = TestSource::with_document(&document);
+    let server = RunningServer::start(directory.path(), source.clone()).await;
+    let address = server.address();
+
+    let response = scenarios::ask(address, &chat()).await;
+
+    assert_eq!(
+        response.status(),
+        200,
+        "a buffered answer that arrives within the budget is served: {}",
+        response.text()
     );
 
     let exit_code = server.cancel_and_join().await;

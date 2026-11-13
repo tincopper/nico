@@ -60,7 +60,7 @@ fn a_destination_names_its_connection_target_until_it_is_given_an_authority() {
 
 #[test]
 fn a_cleartext_destination_builds_a_peer_without_tls() {
-    let peer = build(&cleartext(), address(8080), BUDGET);
+    let peer = build(&cleartext(), address(8080), BUDGET, BUDGET);
 
     assert!(!peer.is_tls(), "scheme http must not enable TLS");
     assert_eq!(peer.sni, "127.0.0.1");
@@ -74,7 +74,7 @@ fn a_cleartext_destination_builds_a_peer_without_tls() {
 fn an_https_destination_builds_a_peer_that_speaks_tls() {
     // The backend is compiled in, so the scheme decides only *whether* to hand the connection to
     // the TLS connector. Which roots it is verified against is a service-built fact (`tls`).
-    let peer = build(&secure(), address(443), BUDGET);
+    let peer = build(&secure(), address(443), BUDGET, BUDGET);
 
     assert!(peer.is_tls(), "scheme https must enable TLS");
     assert_eq!(
@@ -85,7 +85,7 @@ fn an_https_destination_builds_a_peer_that_speaks_tls() {
 
 #[test]
 fn a_member_presents_its_authority_as_the_server_name() {
-    let peer = build(&member(), address(8443), BUDGET);
+    let peer = build(&member(), address(8443), BUDGET, BUDGET);
 
     assert_eq!(
         peer.sni, "api.example.test",
@@ -101,15 +101,53 @@ fn a_member_presents_its_authority_as_the_server_name() {
 fn the_request_budget_bounds_both_connecting_and_reading() {
     let budget = Duration::from_millis(1500);
 
-    let peer = build(&cleartext(), address(8080), budget);
+    let peer = build(&cleartext(), address(8080), budget, budget);
 
     assert_eq!(peer.options.connection_timeout, Some(budget));
     assert_eq!(peer.options.read_timeout, Some(budget));
 }
 
 #[test]
+fn a_first_byte_budget_bounds_the_read_without_bounding_the_connect() {
+    // The two budgets answer different questions: connecting is how long the socket may take to open,
+    // reading is how long one read may wait. A route that states a first-byte budget narrows only the
+    // second — a peer that cannot be reached in the request budget is still a connect failure.
+    let budget = Duration::from_secs(30);
+    let ttft = Duration::from_secs(2);
+
+    let peer = build(&cleartext(), address(8080), budget, ttft);
+
+    assert_eq!(
+        peer.options.connection_timeout,
+        Some(budget),
+        "the first-byte budget does not shorten the connect"
+    );
+    assert_eq!(
+        peer.options.read_timeout,
+        Some(ttft),
+        "and it is what one read waits for"
+    );
+}
+
+#[test]
+fn a_first_byte_budget_cannot_exceed_the_request_budget() {
+    // The request's own deadline is the ceiling: a route cannot ask a read to outlive the request it
+    // belongs to.
+    let budget = Duration::from_secs(3);
+    let ttft = Duration::from_secs(30);
+
+    let peer = build(&cleartext(), address(8080), budget, ttft);
+
+    assert_eq!(
+        peer.options.read_timeout,
+        Some(budget),
+        "the smaller of the two is what a read may wait"
+    );
+}
+
+#[test]
 fn the_default_alpn_stays_http1() {
-    let peer = build(&cleartext(), address(8080), BUDGET);
+    let peer = build(&cleartext(), address(8080), BUDGET, BUDGET);
 
     assert_eq!(
         peer.options.alpn,
@@ -120,7 +158,7 @@ fn the_default_alpn_stays_http1() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_peer_resolves_an_address_literal_without_a_lookup() {
-    let peer = peer(&cleartext(), BUDGET)
+    let peer = peer(&cleartext(), BUDGET, BUDGET)
         .await
         .expect("127.0.0.1 is an address, not a name");
 
@@ -137,7 +175,7 @@ async fn a_member_resolves_its_address_and_presents_its_authority() {
     let member =
         Destination::new(Scheme::Http, "127.0.0.1", 8080).with_authority("api.example.test");
 
-    let peer = peer(&member, BUDGET)
+    let peer = peer(&member, BUDGET, BUDGET)
         .await
         .expect("127.0.0.1 is an address, not a name");
 

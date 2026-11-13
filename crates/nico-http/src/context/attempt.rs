@@ -71,6 +71,19 @@ impl HttpContext {
                 .is_some_and(|attempt| attempt.can_retry())
     }
 
+    /// Reports whether the attempt in flight carried a first-byte budget of its own.
+    ///
+    /// It decides what a read timeout means: with a budget the bound was the route's opinion about this
+    /// member, so the member failed and another may answer; without one the bound was the request's own
+    /// deadline, and replacing the attempt would only spend another member's time on a request that is
+    /// out of time anyway.
+    pub(crate) fn attempt_has_first_byte_budget(&self) -> bool {
+        self.llm()
+            .and_then(|llm| llm.target())
+            .and_then(|target| target.ttft())
+            .is_some()
+    }
+
     /// Replaces an `AttemptRetry` signal with the failure the walk's history holds.
     ///
     /// A retry signal is not a client-visible failure: it exists so the loop takes another round. When

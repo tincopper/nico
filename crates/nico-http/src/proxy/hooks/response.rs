@@ -175,14 +175,17 @@ pub(super) fn error_while_proxy(
     // - one nothing recorded, which is the framework's own upstream interaction — a reset or a broken
     //   read while the head was still on its way. The walk classifies it exactly like a connect
     //   failure. A timeout is excluded: it is the request's own budget, not the target's fault, and it
-    //   is answered as the deadline failure the record expects.
+    //   is answered as the deadline failure the record expects — **unless** the attempt carried a
+    //   first-byte budget, in which case the read bound was the route's opinion about this member and
+    //   the member is what failed.
     //
     // Anything else is final: a downstream disconnect, that timeout, a refusal a plugin recorded. The
     // response was never committed in those cases, so `fail_to_proxy` still writes the one response.
+    let member_timed_out = is_upstream_timeout(&error) && ctx.attempt_has_first_byte_budget();
     let replaceable = matches!(ctx.error(), Some(HttpError::AttemptRetry))
         || (ctx.error().is_none()
             && *error.esource() == ErrorSource::Upstream
-            && !is_upstream_timeout(&error));
+            && (!is_upstream_timeout(&error) || member_timed_out));
     // The body may already have been dispatched for either kind: a provider can refuse a request head
     // before it has read the body, so both stages are `AfterDispatch` here.
     let retry = replaceable

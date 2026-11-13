@@ -145,6 +145,14 @@ impl LlmAttempt for ConvertAttempt {
         self.sequence.current_identity().provider()
     }
 
+    fn streaming(&self) -> Option<bool> {
+        self.sequence.streaming()
+    }
+
+    fn ttft(&self) -> Option<std::time::Duration> {
+        self.sequence.ttft()
+    }
+
     fn attempt_number(&self) -> u32 {
         self.sequence.attempt_number()
     }
@@ -157,6 +165,7 @@ impl LlmAttempt for ConvertAttempt {
             endpoint.headers().to_vec(),
             self.sequence.current_identity().provider().to_owned(),
         );
+        let target = target.with_ttft(self.sequence.ttft());
         match self.sequence.plan_model_label() {
             Some(label) => target.with_model(label),
             None => target,

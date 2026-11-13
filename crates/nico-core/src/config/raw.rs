@@ -154,6 +154,13 @@ pub(super) struct RawRoute {
     /// would make a typo look like configuration.
     pub(super) strategy: Option<super::PoolStrategy>,
     pub(super) timeout_ms: Option<u32>,
+    /// How long a **streaming** attempt may wait for its first response byte before the route moves to
+    /// another target.
+    ///
+    /// Absent means no separate budget: the attempt is bounded by the route's whole-request timeout
+    /// like any other. Only a converting route has a stream to cut, so a written value on an upstream
+    /// route is refused rather than ignored.
+    pub(super) ttft_timeout_ms: Option<u32>,
     pub(super) max_body_bytes: Option<u32>,
     /// The client protocol a provider route converts, kept as written: whether a codec exists for it
     /// is a publication decision of the crate that owns the registry, not a document rule.

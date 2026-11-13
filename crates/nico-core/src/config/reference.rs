@@ -149,6 +149,7 @@ fn resolve(
         providers: raw_pool,
         strategy,
         timeout_ms,
+        ttft_timeout_ms,
         max_body_bytes,
         protocol,
         mode,
@@ -204,6 +205,7 @@ fn resolve(
         max_response_bytes,
         retry_budget.is_some(),
         raw_fallback.is_some(),
+        ttft_timeout_ms.is_some(),
     )?;
 
     let plugins = raw_plugins.unwrap_or_default();
@@ -242,6 +244,7 @@ fn resolve(
         path_prefix,
         target,
         timeout_ms,
+        ttft_timeout_ms,
         max_body_bytes,
         protocol,
         mode: mode.unwrap_or_default(),
@@ -306,6 +309,7 @@ fn check_target_fields(
     max_response_bytes: Option<u32>,
     retry_budget: bool,
     fallback: bool,
+    ttft_timeout: bool,
 ) -> Result<(), DocumentError> {
     match target {
         RouteTarget::Upstream(_) => {
@@ -315,6 +319,7 @@ fn check_target_fields(
                 ("routes[].max_response_bytes", max_response_bytes.is_some()),
                 ("routes[].retry_budget", retry_budget),
                 ("routes[].fallback", fallback),
+                ("routes[].ttft_timeout_ms", ttft_timeout),
             ];
             for (field, present) in written {
                 if present {

@@ -151,6 +151,8 @@ pub struct Route {
     pub(super) path_prefix: String,
     pub(super) target: RouteTarget,
     pub(super) timeout_ms: Option<u32>,
+    /// How long a streaming attempt may wait for its first response byte.
+    pub(super) ttft_timeout_ms: Option<u32>,
     pub(super) max_body_bytes: Option<u32>,
     pub(super) protocol: Option<String>,
     pub(super) mode: RouteMode,
@@ -194,6 +196,17 @@ impl Route {
     #[must_use]
     pub const fn timeout_ms(&self) -> Option<u32> {
         self.timeout_ms
+    }
+
+    /// Returns how long a streaming attempt may wait for its first response byte.
+    ///
+    /// A budget of its own rather than a share of [`Route::timeout_ms`], because the two bound
+    /// different things: the route timeout bounds the whole exchange, while this one bounds the wait
+    /// before the first byte — which is the moment a slow provider is worth replacing rather than
+    /// waiting out.
+    #[must_use]
+    pub const fn ttft_timeout_ms(&self) -> Option<u32> {
+        self.ttft_timeout_ms
     }
 
     /// Returns the route-level request body bound in bytes, when the document sets one.

@@ -19,7 +19,7 @@
 //! `500`: the failure must not be silently reduced to the generic envelope either, because that
 //! would report a refusal whose reason nobody can see.
 
-use std::{fmt, sync::Arc};
+use std::{fmt, sync::Arc, time::Duration};
 
 use nico_http::{
     Destination,
@@ -48,6 +48,8 @@ pub struct ConvertRoute {
     /// request that discovered it.
     exclusions: Option<Arc<ExclusionTable>>,
     budget: u8,
+    /// How long a streamed attempt may wait for its first byte, when the route states one.
+    ttft: Option<Duration>,
 }
 
 impl ConvertRoute {
@@ -64,7 +66,15 @@ impl ConvertRoute {
             breakers,
             exclusions: None,
             budget,
+            ttft: None,
         }
+    }
+
+    /// Sets the route's first-byte budget for a streamed answer.
+    #[must_use]
+    pub const fn with_ttft(mut self, ttft: Option<Duration>) -> Self {
+        self.ttft = ttft;
+        self
     }
 
     /// Attaches the process-level exclusion table every request's walk reads and writes.
@@ -128,7 +138,8 @@ impl ConvertingRoute for ConvertRoute {
             Arc::clone(&self.chain),
             Arc::clone(&self.breakers),
             self.budget,
-        );
+        )
+        .with_ttft(self.ttft);
         if let Some(exclusions) = self.exclusions.as_ref() {
             sequence = sequence.with_exclusions(Arc::clone(exclusions));
         }

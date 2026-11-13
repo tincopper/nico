@@ -147,9 +147,10 @@ impl Destination {
 pub(crate) async fn peer(
     destination: &Destination,
     budget: Duration,
+    read_budget: Duration,
 ) -> Result<Box<HttpPeer>, HttpError> {
     let address = resolve(destination).await?;
-    Ok(build(destination, address, budget))
+    Ok(build(destination, address, budget, read_budget))
 }
 
 /// Returns the `Host` header value to send upstream: the authority, plus the port when it is not the
@@ -186,14 +187,25 @@ async fn resolve(destination: &Destination) -> Result<SocketAddr, HttpError> {
 /// the service, and a member's address is a machine. A cleartext peer carries it too — `Host`
 /// rewriting and TLS verification both read it — so a later upgrade of the same route to `https`
 /// verifies against the name the operator wrote.
-fn build(destination: &Destination, address: SocketAddr, budget: Duration) -> Box<HttpPeer> {
+fn build(
+    destination: &Destination,
+    address: SocketAddr,
+    budget: Duration,
+    read_budget: Duration,
+) -> Box<HttpPeer> {
     let mut peer = HttpPeer::new(
         address,
         destination.scheme() == Scheme::Https,
         destination.authority().to_owned(),
     );
     peer.options.connection_timeout = Some(budget);
-    peer.options.read_timeout = Some(budget);
+    // The read budget is the route's first-byte budget when it states one, and the request's own
+    // remaining time otherwise. It is a *per-read* bound — pingora sets it once on the session and
+    // applies it to every read, header and body alike — so a streamed answer's budget also bounds the
+    // gap between two chunks. That is stated in the route's documentation rather than hidden: a
+    // gateway that silently treated "first byte" and "any byte" as the same thing would be lying
+    // about the field it accepted.
+    peer.options.read_timeout = Some(read_budget.min(budget));
     Box::new(peer)
 }
 

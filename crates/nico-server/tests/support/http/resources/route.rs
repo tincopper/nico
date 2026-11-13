@@ -33,6 +33,8 @@ pub(crate) struct Route {
     pub(super) fallback: Option<Vec<String>>,
     /// The provider pool, when the route distributes instead of naming one target.
     pub(super) pool: Option<(Vec<(String, u16)>, &'static str)>,
+    /// How long a streamed attempt may wait for its first byte.
+    pub(super) ttft_timeout_ms: Option<u32>,
 }
 
 impl Route {
@@ -52,6 +54,7 @@ impl Route {
             retry_budget: None,
             fallback: None,
             pool: None,
+            ttft_timeout_ms: None,
         }
     }
 
@@ -71,6 +74,7 @@ impl Route {
             retry_budget: None,
             fallback: None,
             pool: None,
+            ttft_timeout_ms: None,
         }
     }
 
@@ -119,6 +123,12 @@ impl Route {
     /// Sets the route's retry budget: total attempts one target may absorb, including the first.
     pub(crate) fn retry_budget(mut self, retry_budget: u8) -> Self {
         self.retry_budget = Some(retry_budget);
+        self
+    }
+
+    /// Sets the first-byte budget a streamed attempt gets.
+    pub(crate) fn ttft_timeout_ms(mut self, ttft_timeout_ms: u32) -> Self {
+        self.ttft_timeout_ms = Some(ttft_timeout_ms);
         self
     }
 

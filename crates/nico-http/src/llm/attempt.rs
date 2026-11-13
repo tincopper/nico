@@ -23,6 +23,8 @@
 //! letting a retry through — it is this crate's fact about its own runtime, not a question the
 //! front-end could answer.
 
+use std::time::Duration;
+
 use crate::{error::HttpError, upstream::Destination};
 
 /// The largest request body Pingora can replay on a retry.
@@ -56,6 +58,11 @@ pub struct AttemptTarget {
     name: String,
     /// The logical → physical model label, for the request record.
     model: Option<String>,
+    /// How long a streamed attempt may wait for its first byte, when the route states one.
+    ///
+    /// Travels with the target rather than with the peer because the peer is built per attempt: a
+    /// route that moved to another member builds another peer, and the budget belongs to the attempt.
+    ttft: Option<Duration>,
 }
 
 impl AttemptTarget {
@@ -73,7 +80,21 @@ impl AttemptTarget {
             headers,
             name: name.into(),
             model: None,
+            ttft: None,
         }
+    }
+
+    /// Attaches the route's first-byte budget for a streamed answer.
+    #[must_use]
+    pub const fn with_ttft(mut self, ttft: Option<Duration>) -> Self {
+        self.ttft = ttft;
+        self
+    }
+
+    /// Returns the first-byte budget, when the route states one.
+    #[must_use]
+    pub const fn ttft(&self) -> Option<Duration> {
+        self.ttft
     }
 
     /// Attaches the model label the request record reports.
@@ -192,6 +213,15 @@ pub trait LlmAttempt: Send {
 
     /// Returns the name of the target the current attempt addresses.
     fn current_target(&self) -> &str;
+
+    /// Returns the route's first-byte budget, when it states one.
+    fn ttft(&self) -> Option<Duration>;
+
+    /// Returns whether the caller asked for a streamed answer, once its body was decoded.
+    ///
+    /// `None` before the body arrives — the peer is built before the decode, so a route that has not
+    /// read its body yet cannot say. A route that is not converting answers `None` for its whole life.
+    fn streaming(&self) -> Option<bool>;
 
     /// Returns the 1-based number of the attempt in flight, for the attempt log.
     fn attempt_number(&self) -> u32;
