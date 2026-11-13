@@ -348,6 +348,14 @@ impl AttemptSequence {
         })
     }
 
+    /// Returns the physical model name of the current attempt, once it was encoded.
+    #[must_use]
+    pub fn plan_physical_model(&self) -> Option<String> {
+        self.plan
+            .as_ref()
+            .map(|plan| plan.model().physical().to_string())
+    }
+
     /// Returns the plan of the current attempt, once the canonical was encoded for it.
     #[must_use]
     pub fn plan(&self) -> Option<&AttemptPlan> {

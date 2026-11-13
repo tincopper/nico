@@ -58,6 +58,11 @@ pub struct AttemptTarget {
     name: String,
     /// The logical → physical model label, for the request record.
     model: Option<String>,
+    /// The physical model name alone, for a metric label.
+    ///
+    /// Separate from the label above on purpose: a metric tag reads this, and parsing the arrow out of
+    /// a human-readable string is a second parser for a fact this type can hold directly.
+    physical_model: Option<String>,
     /// How long a streamed attempt may wait for its first byte, when the route states one.
     ///
     /// Travels with the target rather than with the peer because the peer is built per attempt: a
@@ -80,6 +85,7 @@ impl AttemptTarget {
             headers,
             name: name.into(),
             model: None,
+            physical_model: None,
             ttft: None,
         }
     }
@@ -102,6 +108,22 @@ impl AttemptTarget {
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = Some(model.into());
         self
+    }
+
+    /// Attaches the physical model name on its own, for the token metric's label.
+    #[must_use]
+    pub fn with_physical_model(mut self, model: impl Into<String>) -> Self {
+        self.physical_model = Some(model.into());
+        self
+    }
+
+    /// Returns the model the provider actually ran, for a metric label.
+    ///
+    /// The physical name, never the caller's logical one: a bill is against what the provider served,
+    /// and the label's cardinality is the document's `model_map` values.
+    #[must_use]
+    pub fn physical_model(&self) -> Option<&str> {
+        self.physical_model.as_deref()
     }
 
     /// Returns the peer this attempt is sent to.
@@ -216,6 +238,13 @@ pub trait LlmAttempt: Send {
 
     /// Returns the route's first-byte budget, when it states one.
     fn ttft(&self) -> Option<Duration>;
+
+    /// Returns the physical model the current attempt asked the provider for, once encoded.
+    ///
+    /// Answered from the attempt rather than the cached target view: the view is built when the peer
+    /// is chosen, before the body is encoded, so it cannot know which model the provider will be
+    /// asked for. The request record reads this after the response ended, when it can.
+    fn physical_model(&self) -> Option<String>;
 
     /// Returns whether the caller asked for a streamed answer, once its body was decoded.
     ///

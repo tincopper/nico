@@ -22,11 +22,12 @@ use std::sync::Arc;
 
 use nico_http::{
     error::HttpError,
-    llm::{LlmResponseHead, ResponseTransform},
+    llm::{LlmResponseHead, ResponseTransform, TokenUsage},
 };
 
 use crate::{
     Exchange, ExchangeError, StreamEncoder, protocol::ResponseFacts, provider::ProviderError,
+    schema::Usage,
 };
 
 /// The content type of a complete client answer.
@@ -54,6 +55,11 @@ pub(super) struct ConvertTransform {
     buffer: Vec<u8>,
     /// The per-response stream driver, present only for a translated event stream.
     stream: Option<StreamEncoder>,
+    /// What the exchange reported, once the body was complete.
+    ///
+    /// Set by `finish` from the answer the exchange produced — the buffered reply's usage, or the last
+    /// usage event the stream carried. `None` before that and for a provider that reported nothing.
+    usage: Option<TokenUsage>,
 }
 
 impl ConvertTransform {
@@ -67,6 +73,7 @@ impl ConvertTransform {
             head_status: None,
             buffer: Vec::new(),
             stream: None,
+            usage: None,
         }
     }
 
@@ -152,7 +159,11 @@ impl ResponseTransform for ConvertTransform {
 
     fn finish(&mut self) -> Result<Vec<u8>, HttpError> {
         if let Some(stream) = self.stream.as_mut() {
-            return stream.finish().map_err(failure);
+            let bytes = stream.finish().map_err(failure)?;
+            // The stream's last usage event is the answer: a provider that streams running totals
+            // sends them this way, so anything earlier is superseded.
+            self.usage = stream.usage().and_then(reported);
+            return Ok(bytes);
         }
         let (Some(facts), Some(expected)) = (self.facts.as_ref(), self.head_status) else {
             return Err(HttpError::internal(
@@ -172,8 +183,31 @@ impl ResponseTransform for ConvertTransform {
                 reply.status()
             )));
         }
+        self.usage = reply.usage().and_then(reported);
         Ok(reply.into_body())
     }
+
+    fn usage(&self) -> Option<&TokenUsage> {
+        self.usage.as_ref()
+    }
+}
+
+/// Returns the reported counts a canonical usage carries, when it carries any.
+///
+/// The measured bucket is dropped on purpose: only the provider's own number is a bill, and this
+/// accessor exists so the request record can count tokens. A `Usage` with no reported bucket yields
+/// `None` — "no number here" is the honest answer, not a set of zeros.
+fn reported(usage: &Usage) -> Option<TokenUsage> {
+    usage
+        .reported_counts()
+        .filter(|counts| !counts.is_empty())
+        .map(|counts| {
+            let mut tokens = TokenUsage::new();
+            for (kind, count) in counts.reported_pairs() {
+                tokens.set(kind, count);
+            }
+            tokens
+        })
 }
 
 /// Maps a failed exchange into the data plane's failure, after the head may already be written.

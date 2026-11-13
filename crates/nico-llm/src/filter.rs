@@ -248,7 +248,10 @@ impl Exchange {
         response
             .validate()
             .map_err(|source| ExchangeError::InvalidCanonical { source })?;
-        Ok(self.codec.encode_response(&response)?)
+        // The usage travels beside the encoded bytes: the exchange already holds the canonical value,
+        // and the request record needs the provider's own number without re-parsing the client document.
+        let usage = response.usage().clone();
+        Ok(self.codec.encode_response(&response)?.with_usage(usage))
     }
 
     /// Renders a failed exchange as the client protocol's error envelope.

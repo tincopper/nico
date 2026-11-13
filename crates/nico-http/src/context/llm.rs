@@ -189,6 +189,28 @@ impl LlmExchange {
         self.transform = Some(Mutex::new(transform));
     }
 
+    /// Returns the physical model the attempt in flight asked the provider for, if any.
+    ///
+    /// Answered by value for the same reason [`LlmExchange::transform_usage`] is: the attempt lives
+    /// behind a lock, and the caller wants one string, not a guard held across its own work.
+    pub(crate) fn physical_model(&self) -> Option<String> {
+        let slot = self.attempt.as_ref()?;
+        let attempt = slot.lock().unwrap_or_else(PoisonError::into_inner);
+        attempt.physical_model()
+    }
+
+    /// Returns the token usage the installed transform reported, if any.
+    ///
+    /// Answers by value because the transform lives behind a lock and the counts are `Copy`: a caller
+    /// that only needs the numbers should not hold the guard across its own work. `None` covers both
+    /// "no transform" and "nothing reported", which is the distinction the caller does not need — it
+    /// emits nothing either way.
+    pub(crate) fn transform_usage(&self) -> Option<crate::llm::TokenUsage> {
+        let slot = self.transform.as_ref()?;
+        let transform = slot.lock().unwrap_or_else(PoisonError::into_inner);
+        transform.usage().copied()
+    }
+
     /// Returns the response transform, once the response head installed one.
     pub(crate) fn transform_mut(&mut self) -> Option<&mut (dyn ResponseTransform + 'static)> {
         let slot = self.transform.as_mut()?;

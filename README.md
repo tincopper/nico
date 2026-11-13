@@ -454,6 +454,17 @@ routes:
 - **硬限制**：请求体超过 64 KiB（Pingora 的重放缓冲区）时，已派发的请求无法重试，这类失败直接
   应答；连接阶段的失败不受此限。
 
+### token 用量
+
+成功转换的请求会记录 provider **自报**的 token 数，按 `(route_id, provider, model, kind)` 暴露为
+`gateway_llm_tokens_total`，`kind` ∈ `input` / `output` / `cache_read` / `cache_write` / `reasoning`。
+
+- 只记 provider 报的数。网关没有 tokenizer，也不自己数——自建计数与账单口径必然不同。
+- provider 没报的 kind **不产生样本**（不是发 0）：零样本与零值是不同的两件事。
+- 失败的响应没有 usage，不记录。
+- `model` 标签是 **provider 实际收到的物理名**（`model_map` 的值）。**注意基数**：provider 没有
+  `model_map` 时，调用方写的模型名会成为标签，这是唯一一个基数可能随流量增长的地方。
+
 ### 熔断
 
 `circuit_breaker` 是端点策略：连续失败达到 `failure_threshold` 打开熔断，`cooldown_ms` 后放一个探针。

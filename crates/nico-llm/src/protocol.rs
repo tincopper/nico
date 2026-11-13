@@ -229,6 +229,12 @@ pub trait ClientStreamEncoder: Send {
 pub struct ClientReply {
     status: u16,
     body: Vec<u8>,
+    /// The canonical usage the response carried, when the codec was given one.
+    ///
+    /// Carried beside the bytes rather than recovered from them: the client document is the codec's
+    /// own shape, and re-decoding it to read a number the exchange already had would be a second
+    /// parser for a fact this type can hold directly. The request record is the only reader.
+    usage: Option<crate::schema::Usage>,
 }
 
 impl fmt::Debug for ClientReply {
@@ -249,7 +255,24 @@ impl ClientReply {
     /// the exchange passes [`CanonicalError::http_status`] for a failure.
     #[must_use]
     pub fn new(status: u16, body: Vec<u8>) -> Self {
-        Self { status, body }
+        Self {
+            status,
+            body,
+            usage: None,
+        }
+    }
+
+    /// Attaches the canonical usage the response reported.
+    #[must_use]
+    pub fn with_usage(mut self, usage: crate::schema::Usage) -> Self {
+        self.usage = Some(usage);
+        self
+    }
+
+    /// Returns the canonical usage the response reported, when it reported any.
+    #[must_use]
+    pub fn usage(&self) -> Option<&crate::schema::Usage> {
+        self.usage.as_ref()
     }
 
     /// Returns the HTTP status to answer with.

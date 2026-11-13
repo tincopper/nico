@@ -151,6 +151,15 @@ pub(crate) fn completion(text: &str) -> Vec<u8> {
     .into_bytes()
 }
 
+/// A provider completion document that reports token usage.
+pub(crate) fn completion_with_usage(text: &str, prompt: u64, completion: u64) -> Vec<u8> {
+    format!(
+        r#"{{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"chat-small-2026-01-01","choices":[{{"index":0,"message":{{"role":"assistant","content":"{text}"}},"finish_reason":"stop"}}],"usage":{{"prompt_tokens":{prompt},"completion_tokens":{completion},"total_tokens":{total}}}}}"#,
+        total = prompt + completion
+    )
+    .into_bytes()
+}
+
 /// Wraps one provider event in an SSE frame.
 pub(crate) fn frame(data: &str) -> String {
     format!("data: {data}\n\n")

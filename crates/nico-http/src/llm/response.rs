@@ -6,6 +6,7 @@ use std::fmt;
 use super::is_data_plane_owned;
 use crate::{
     error::HttpError,
+    llm::usage::TokenUsage,
     plugin::header::{is_header_name, is_header_value},
 };
 
@@ -144,4 +145,11 @@ pub trait ResponseTransform: Send {
     /// # Errors
     /// Returns the failure that ends the stream.
     fn finish(&mut self) -> Result<Vec<u8>, HttpError>;
+
+    /// Returns the token usage the exchange reported, once the body is complete.
+    ///
+    /// `None` has two meanings and the caller must not tell them apart: the body has not ended yet, or
+    /// the provider reported nothing. Both say "there is no number here", and a consumer that wrote a
+    /// zero for either would pollute every average computed downstream.
+    fn usage(&self) -> Option<&TokenUsage>;
 }

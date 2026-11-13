@@ -368,3 +368,6 @@ async fn a_first_byte_budget_still_serves_a_buffered_answer() {
     let exit_code = server.cancel_and_join().await;
     assert_eq!(exit_code, std::process::ExitCode::SUCCESS);
 }
+
+#[path = "llm_pool/tokens.rs"]
+mod tokens;

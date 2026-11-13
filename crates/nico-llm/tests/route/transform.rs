@@ -5,14 +5,14 @@ use std::sync::Arc;
 use nico_core::ErrorCategory;
 use nico_http::{
     error::HttpError,
-    llm::{ConvertingRoute, LlmRoute},
+    llm::{ConvertingRoute, LlmRoute, TokenKind},
 };
 use nico_llm::{protocol::openai_chat::OpenAiChatCodec, route::ConvertRoute};
 use serde_json::Value;
 
 use crate::support::{
-    LIMIT, SuccessOnFailure, buffered, chain_of, completion, convert_route, exchange_with, frame,
-    owned, provider_stream, streamed, success_document,
+    LIMIT, SuccessOnFailure, buffered, chain_of, completion, completion_with_usage, convert_route,
+    exchange_with, frame, owned, provider_stream, streamed, success_document,
 };
 
 /// The provider headers most fixture answers arrive with.
@@ -405,4 +405,51 @@ fn the_route_hands_out_a_fresh_transform_per_response() {
         route.converting().is_some(),
         "a converting route reports its exchange"
     );
+}
+
+#[test]
+fn a_buffered_answer_reports_the_providers_token_counts() {
+    let mut transform = convert_route()
+        .transform(false, LIMIT)
+        .expect("a transform is built");
+    transform
+        .head(200, &owned(JSON_HEADERS))
+        .expect("the head converts");
+
+    assert!(
+        transform.usage().is_none(),
+        "nothing is known before the body ends"
+    );
+
+    transform
+        .push(&completion_with_usage("hello", 11, 7))
+        .expect("the bytes are buffered");
+    transform.finish().expect("the body completes");
+
+    let usage = transform.usage().expect("the provider reported usage");
+    assert_eq!(usage.get(TokenKind::Input), Some(11));
+    assert_eq!(usage.get(TokenKind::Output), Some(7));
+    assert_eq!(
+        usage.get(TokenKind::CacheRead),
+        None,
+        "a kind the provider did not report has no count"
+    );
+}
+
+#[test]
+fn an_answer_without_usage_reports_none_rather_than_zeros() {
+    // The distinction the request record depends on: a provider that said nothing produces no sample,
+    // and writing a zero instead would pollute every average computed downstream.
+    let mut transform = convert_route()
+        .transform(false, LIMIT)
+        .expect("a transform is built");
+    transform
+        .head(200, &owned(JSON_HEADERS))
+        .expect("the head converts");
+    transform
+        .push(&completion("hello"))
+        .expect("the bytes are buffered");
+    transform.finish().expect("the body completes");
+
+    assert!(transform.usage().is_none());
 }

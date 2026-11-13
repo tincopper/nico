@@ -153,6 +153,10 @@ impl LlmAttempt for ConvertAttempt {
         self.sequence.ttft()
     }
 
+    fn physical_model(&self) -> Option<String> {
+        self.sequence.plan_physical_model()
+    }
+
     fn attempt_number(&self) -> u32 {
         self.sequence.attempt_number()
     }

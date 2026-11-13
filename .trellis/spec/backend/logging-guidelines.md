@@ -91,7 +91,26 @@ Rules:
 | `llm.attempt` | u32 | 1-based number of the attempt in a route's sequence, across its targets |
 | `llm.outcome` | string | `failed` or `skipped` — what became of an attempt the request did not end on |
 | `llm.circuit` | string | `closed`, `open` or `half_open` — the phase a target's breaker moved to |
+| `llm.excluded` | string | `rate_limited` or `credential` — why a pool member left distribution |
+| `llm.tokens.kind` | string | One `TokenKind` name: `input`, `output`, `cache_read`, `cache_write` or `reasoning` |
+| `llm.tokens.count` | u64 | What the provider reported for that kind. One line per reported kind; **no line for a kind it did not report** |
 | `error.stage` | string | Which publication stage refused a document: `document`, `plugin` or `llm` |
+
+### Token usage
+
+`llm.tokens.*` carries the **provider's own numbers**, the ones a bill is made of. The gateway never
+counts tokens itself: it has no tokenizer, and a self-counted number would never agree with the bill.
+
+Two rules keep the field honest:
+
+- **Reported is not measured.** These lines are not a gateway observation; the byte counts elsewhere
+  in the record are. Do not mix them in one query.
+- **Absent is not zero.** A provider that reported nothing produces no lines and no metric samples. A
+  consumer that wrote zeros for those would pollute every average downstream.
+
+The `model` label on the metric is the **physical** name the provider was asked for, taken from the
+route's `model_map` value. When a provider declares no `model_map`, the caller's own model name becomes
+the label — that is the one place cardinality can follow traffic, and the README says so.
 
 ### LLM request fields
 
@@ -310,6 +329,15 @@ or route on.
 | `config_degraded` | gauge | — | scrape time |
 | `gateway_http_requests_total` | counter | `route_id`, `status_class`, `error_category` | `record::emit`, once per request |
 | `gateway_http_request_seconds` | histogram | `route_id` | the same point |
+| `gateway_upstream_selected_total` | counter | `upstream`, `endpoint` | the one emission point of the traffic-layer selection (`upstream/pools.rs::selected`) |
+| `gateway_upstream_ejected_total` | counter | `upstream`, `endpoint` | the ejection transition (`upstream/pools/member.rs::record`) |
+| `gateway_llm_pool_selected_total` | counter | `route_id`, `provider` | a pooled member admitted for an attempt |
+| `gateway_llm_pool_excluded_total` | counter | `route_id`, `provider`, `reason` | a pool member retired by `429`/`401`/`403` |
+| `gateway_llm_tokens_total` | counter | `route_id`, `provider`, `model`, `kind` | `record::record_tokens`, one sample per **reported** kind; no sample for a kind the provider did not report |
+
+`gateway_llm_tokens_total`'s `model` is the **physical** name (`model_map`'s value); a provider with no
+`model_map` makes the caller's model name the label, which is the one family whose cardinality can
+follow traffic rather than configuration.
 
 `status_class` maps the log-only `499` (a cancelled request nobody answered) to `4xx`, and the
 nothing-written `0` to `none`.

@@ -4,6 +4,11 @@
 //! provider answer — so a reader comparing the two files sees one difference: how many providers the
 //! route names, and what the classification does about a failure.
 
+#![expect(
+    clippy::panic,
+    reason = "a helper that cannot find its own fixture in a scrape has nothing useful to return"
+)]
+
 use std::{net::SocketAddr, time::Duration};
 
 use crate::support::http::{
@@ -26,6 +31,18 @@ pub(super) fn base_url(upstream: &MockUpstream) -> String {
 pub(super) fn chat_response(model: &str) -> Vec<u8> {
     format!(
         r#"{{"id":"chatcmpl-{model}","object":"chat.completion","created":0,"model":"{model}","choices":[{{"index":0,"message":{{"role":"assistant","content":"from {model}"}},"finish_reason":"stop"}}]}}"#
+    )
+    .into_bytes()
+}
+
+/// A Chat Completions answer that reports token usage, naming `model`.
+///
+/// The shape is the provider's own (`usage.prompt_tokens` / `completion_tokens`); the counts are the
+/// numbers a test asserts the gateway recorded, so they are chosen to be unmistakable.
+pub(super) fn chat_response_with_usage(model: &str, prompt: u64, completion: u64) -> Vec<u8> {
+    format!(
+        r#"{{"id":"chatcmpl-{model}","object":"chat.completion","created":0,"model":"{model}","choices":[{{"index":0,"message":{{"role":"assistant","content":"from {model}"}},"finish_reason":"stop"}}],"usage":{{"prompt_tokens":{prompt},"completion_tokens":{completion},"total_tokens":{total}}}}}"#,
+        total = prompt + completion
     )
     .into_bytes()
 }
@@ -171,6 +188,41 @@ pub(super) fn pooled_document_with_ttft(
                 .pool(members, strategy)
                 .retry_budget(retry_budget)
                 .ttft_timeout_ms(ttft_timeout_ms),
+        )
+        .render()
+}
+
+/// Reads one endpoint from the self-reporting address.
+pub(super) async fn fetch(address: std::net::SocketAddr, path: &str) -> String {
+    let response = exchange(address, &Request::get(path, "metrics.test")).await;
+    String::from_utf8_lossy(response.body()).into_owned()
+}
+
+/// Returns the one sample of counter `name` whose labels contain every entry of `labels`.
+pub(super) fn counter_line<'a>(scrape: &'a str, name: &str, labels: &[&str]) -> &'a str {
+    scrape
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .find(|line| line.starts_with(name) && labels.iter().all(|label| line.contains(label)))
+        .unwrap_or_else(|| panic!("the scrape has no {name} carrying {labels:?}:\n{scrape}"))
+}
+
+/// [`pooled_document`] whose single member maps the caller's model to a physical one.
+pub(super) fn pooled_document_with_model_map(
+    members: &[(&str, u16)],
+    credential: &str,
+    bases: &[(&str, String)],
+    model_map: &[(&str, &str)],
+) -> String {
+    let mut resources = Resources::new();
+    for (name, base) in bases {
+        resources = resources.provider_with_model_map(name, base, credential, model_map);
+    }
+    resources
+        .route(
+            crate::support::http::resources::Route::provider("llm-chat", "/v1/chat/", members[0].0)
+                .pool(members, "round_robin")
+                .retry_budget(1),
         )
         .render()
 }

@@ -1,7 +1,11 @@
 //! One response stream driven end to end: provider bytes in, canonical events, client bytes out.
 
 use super::ExchangeError;
-use crate::{protocol::ClientStreamEncoder, provider::ProviderStream};
+use crate::{
+    protocol::ClientStreamEncoder,
+    provider::ProviderStream,
+    schema::{StreamEvent, Usage},
+};
 
 /// Drives one response stream: provider bytes in, canonical events, client bytes out.
 ///
@@ -12,6 +16,12 @@ use crate::{protocol::ClientStreamEncoder, provider::ProviderStream};
 pub struct StreamEncoder {
     client: Box<dyn ClientStreamEncoder>,
     decoder: Box<dyn ProviderStream>,
+    /// The last usage the provider reported.
+    ///
+    /// Later events supersede earlier ones — a provider that streams running totals sends them this
+    /// way — so the final value is the answer. `None` means it reported none, which is different from
+    /// reporting zeros.
+    usage: Option<Usage>,
 }
 
 impl StreamEncoder {
@@ -20,7 +30,11 @@ impl StreamEncoder {
         client: Box<dyn ClientStreamEncoder>,
         decoder: Box<dyn ProviderStream>,
     ) -> Self {
-        Self { client, decoder }
+        Self {
+            client,
+            decoder,
+            usage: None,
+        }
     }
 
     /// Feeds one arbitrary chunk of the provider body and returns the client bytes it completes.
@@ -34,6 +48,7 @@ impl StreamEncoder {
     /// [`ExchangeError::Codec`] when the client codec cannot encode a completed event.
     pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<u8>, ExchangeError> {
         let events = self.decoder.push(chunk)?;
+        self.remember(&events);
         let mut bytes = Vec::new();
         for event in &events {
             bytes.extend_from_slice(&self.client.push(event)?);
@@ -50,11 +65,27 @@ impl StreamEncoder {
     /// Returns the same failures as [`StreamEncoder::push`].
     pub fn finish(&mut self) -> Result<Vec<u8>, ExchangeError> {
         let events = self.decoder.finish()?;
+        self.remember(&events);
         let mut bytes = Vec::new();
         for event in &events {
             bytes.extend_from_slice(&self.client.push(event)?);
         }
         bytes.extend_from_slice(&self.client.finish()?);
         Ok(bytes)
+    }
+
+    /// Returns the last usage the provider reported, once the stream ended.
+    #[must_use]
+    pub const fn usage(&self) -> Option<&Usage> {
+        self.usage.as_ref()
+    }
+
+    /// Records the usage an event batch carried, if any.
+    fn remember(&mut self, events: &[StreamEvent]) {
+        for event in events {
+            if let StreamEvent::Usage(usage) = event {
+                self.usage = Some(usage.clone());
+            }
+        }
     }
 }

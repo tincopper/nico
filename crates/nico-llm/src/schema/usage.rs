@@ -7,73 +7,24 @@
 
 use std::collections::BTreeMap;
 
+/// The five token counts a provider can report and the gateway can carry.
+///
+/// The vocabulary lives in `nico_http::llm` because the request path emits a token counter without
+/// depending on this crate. Re-exported here so a provider adapter — which does depend on it — names
+/// the kinds through the crate that owns the canonical model.
+pub use nico_http::llm::TokenKind;
+pub(crate) use nico_http::llm::TokenUsage;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de, ser::SerializeMap};
 
-/// The five token counts a provider can report and the gateway can carry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum TokenKind {
-    /// Tokens sent to the provider.
-    Input,
-    /// Tokens produced by the model.
-    Output,
-    /// Input tokens served from the provider's prompt cache.
-    CacheRead,
-    /// Input tokens written to the provider's prompt cache.
-    CacheWrite,
-    /// Output tokens spent on hidden reasoning.
-    Reasoning,
-}
-
-/// Number of kinds in [`TokenKind::ALL`]; the storage width of [`UsageCounts`].
-const TOKEN_KIND_COUNT: usize = 5;
-
-impl TokenKind {
-    /// Every kind, in serialization order.
-    pub const ALL: [Self; TOKEN_KIND_COUNT] = [
-        Self::Input,
-        Self::Output,
-        Self::CacheRead,
-        Self::CacheWrite,
-        Self::Reasoning,
-    ];
-
-    /// Returns the kind's position in [`TokenKind::ALL`].
-    const fn index(self) -> usize {
-        match self {
-            Self::Input => 0,
-            Self::Output => 1,
-            Self::CacheRead => 2,
-            Self::CacheWrite => 3,
-            Self::Reasoning => 4,
-        }
-    }
-
-    /// Returns the field name used by the canonical JSON representation.
-    const fn name(self) -> &'static str {
-        match self {
-            Self::Input => "input",
-            Self::Output => "output",
-            Self::CacheRead => "cache_read",
-            Self::CacheWrite => "cache_write",
-            Self::Reasoning => "reasoning",
-        }
-    }
-
-    /// Returns the kind a canonical JSON field name denotes.
-    fn from_name(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|kind| kind.name() == name)
-    }
-}
-
-/// A set of token counts.
+/// A set of token counts, in the canonical model's serializable form.
 ///
-/// The counts are addressed through [`TokenKind`] rather than five accessors: the kinds are one
-/// table, and a new count is one variant plus one match arm with the compiler pointing at every
-/// consumer. Storage is fixed-size, so a count set is `Copy` and allocates nothing.
+/// The storage and the accessors are [`TokenUsage`]'s — the same shape the request path reads when it
+/// emits a counter — and this type adds the two things a *document* needs: a serde implementation that
+/// writes a map of names, and the `Copy`-friendly builder the adapters use. One set of counts, two
+/// views of it, no second definition to drift.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UsageCounts {
-    counts: [Option<u64>; TOKEN_KIND_COUNT],
+    counts: TokenUsage,
 }
 
 impl UsageCounts {
@@ -81,19 +32,19 @@ impl UsageCounts {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            counts: [None; TOKEN_KIND_COUNT],
+            counts: TokenUsage::new(),
         }
     }
 
     /// Returns the count for one kind.
     #[must_use]
     pub const fn get(&self, kind: TokenKind) -> Option<u64> {
-        self.counts[kind.index()]
+        self.counts.get(kind)
     }
 
     /// Sets the count for one kind.
     pub fn set(&mut self, kind: TokenKind, value: u64) {
-        self.counts[kind.index()] = Some(value);
+        self.counts.set(kind, value);
     }
 
     /// Returns a copy with one count set.
@@ -106,7 +57,25 @@ impl UsageCounts {
     /// Reports whether no count is set.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.counts.iter().all(Option::is_none)
+        self.counts.is_empty()
+    }
+
+    /// Returns the shared shape a consumer outside this crate reads.
+    #[must_use]
+    pub const fn as_usage(&self) -> &TokenUsage {
+        &self.counts
+    }
+
+    /// Returns every reported kind and its count, in [`TokenKind::ALL`] order.
+    #[must_use]
+    pub fn reported_pairs(&self) -> Vec<(TokenKind, u64)> {
+        self.counts.reported()
+    }
+}
+
+impl From<TokenUsage> for UsageCounts {
+    fn from(counts: TokenUsage) -> Self {
+        Self { counts }
     }
 }
 

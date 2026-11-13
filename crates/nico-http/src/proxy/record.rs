@@ -289,4 +289,53 @@ pub(super) fn emit(session: &Session, error: Option<&Error>, ctx: &HttpContext) 
         body_bytes = body_bytes,
         elapsed_ms = elapsed_ms,
     );
+
+    record_tokens(ctx, status);
+}
+
+/// Emits the token usage a successful converted exchange reported.
+///
+/// Nothing here is a gateway measurement: these are the provider's own numbers, the ones a bill is
+/// made of. A request that reported none produces no sample and no field — "no number" and "zero" are
+/// different facts, and a consumer averaging over them would be computing something nobody asked for.
+///
+/// The suppression rules, each with its own reason:
+///
+/// - **not 2xx**: a failure has no usage, and a 4xx never had one;
+/// - **no transform**: a passthrough route has no canonical value, so nothing to report;
+/// - **no selected target**: the request never reached a provider.
+fn record_tokens(ctx: &crate::HttpContext, status: u16) {
+    if !(200..300).contains(&status) {
+        return;
+    }
+    let Some(llm) = ctx.llm() else {
+        return;
+    };
+    let Some(usage) = llm.transform_usage() else {
+        return;
+    };
+    let route_id = ctx.route_id().unwrap_or_default().to_owned();
+    let provider = llm
+        .target()
+        .map_or_else(String::new, |target| target.name().to_owned());
+    let model = llm.physical_model().unwrap_or_default();
+    for (kind, count) in usage.reported() {
+        tracing::info!(
+            target: "nico_http::tokens",
+            route_id = %route_id,
+            llm.provider = %provider,
+            llm.model = %model,
+            llm.tokens.kind = kind.name(),
+            llm.tokens.count = count,
+            "LLM token usage"
+        );
+        ::metrics::counter!(
+            "gateway_llm_tokens_total",
+            "route_id" => route_id.clone(),
+            "provider" => provider.clone(),
+            "model" => model.clone(),
+            "kind" => kind.name(),
+        )
+        .increment(count);
+    }
 }

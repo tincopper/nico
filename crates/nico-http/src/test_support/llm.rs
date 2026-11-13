@@ -284,6 +284,10 @@ impl FakeTransform {
 }
 
 impl ResponseTransform for FakeTransform {
+    fn usage(&self) -> Option<&crate::llm::TokenUsage> {
+        None
+    }
+
     fn head(
         &mut self,
         status: u16,
@@ -431,6 +435,10 @@ impl LlmAttempt for FakeAttempt {
 
     fn ttft(&self) -> Option<std::time::Duration> {
         self.target.ttft()
+    }
+
+    fn physical_model(&self) -> Option<String> {
+        self.target.physical_model().map(str::to_owned)
     }
 
     fn streaming(&self) -> Option<bool> {

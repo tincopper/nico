@@ -52,6 +52,7 @@ mod attempt;
 mod request;
 mod response;
 mod routes;
+mod usage;
 
 pub use attempt::{
     AttemptTarget, AttemptVerdict, LlmAttempt, REPLAY_BODY_LIMIT, retry_after_dispatch_allowed,
@@ -59,6 +60,7 @@ pub use attempt::{
 pub use request::{LlmPrepared, LlmRequest};
 pub use response::{LlmResponseHead, ResponseTransform};
 pub use routes::{ConvertingRoute, LlmRoute, LlmRoutes, NoLlmRoutes};
+pub use usage::{TokenKind, TokenUsage};
 
 /// Reports whether the data plane owns `name` and will not let a front-end write it.
 ///
