@@ -61,6 +61,37 @@ nico --help               # 打印用法
 
 默认监听 `0.0.0.0:8080`（见 `config/bootstrap.yaml` 的 `http.listen`）。
 
+### 容器部署
+
+镜像按 **role** 在构建期决定：`llm`（默认，全功能）或 `traffic`（不编入 `nico-llm`）。
+role 是制品属性，不是运行时开关——`traffic` 镜像遇到声明 provider 路由的文档会在发布期拒绝，
+并保住上一个已知好的快照。
+
+```bash
+docker build --build-arg ROLE=llm     -t nico:llm .
+docker build --build-arg ROLE=traffic -t nico:traffic .
+docker compose up -d --build          # 本地清单，默认 ROLE=llm
+```
+
+镜像内自带一份可运行的样例：`deploy/bootstrap.yaml`（监听 8080、metrics 9090、
+LKG 缓存在 `/var/lib/nico/cache`）与 `deploy/resources.yaml`（只有 upstream 路由，两种 role
+都能发布）。不带任何卷 `docker run nico:llm` 也能起；compose 把 `./deploy` 只读挂到
+`/etc/nico/`，把缓存放进命名卷。
+
+| 端点 | 用途 |
+|---|---|
+| `http://localhost:8080/` | 数据面 |
+| `http://localhost:9090/health/live` | 进程可答即 200 |
+| `http://localhost:9090/health/ready` | 首次成功发布后 200 |
+| `http://localhost:9090/metrics` | 指标 |
+
+换自己的配置：改 `deploy/` 下两份文件后 `docker compose up -d --build` 会重建镜像，
+或直接改挂载路径。`credential_ref: env:...` 的值通过 compose 的 `environment` 注入，不要写进文档。
+`ROLE=traffic` 时 `resources.yaml` 不能出现 provider 路由。
+
+上游 TLS 用镜像内的平台根证书（runtime 装了 `ca-certificates`）；私有 CA 挂一个 bundle 并
+取消 `deploy/bootstrap.yaml` 里 `tls.ca_file` 的注释——改这个文件需要重启，reload 不重读它。
+
 ### 验证
 
 下面两条只是请求形状。示例配置里的 `api-backend` 指向 `127.0.0.1:8080`（也就是网关自己），

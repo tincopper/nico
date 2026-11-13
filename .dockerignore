@@ -1,0 +1,23 @@
+# A blacklist, not a whitelist: the build context must contain the whole workspace manifest graph,
+# and a `*` + exceptions form silently drops nested directories whose parent was not re-included.
+# Only the things that are large, private, or never read by a build are excluded here.
+
+.git
+.github
+.trellis
+.claude
+target
+**/target
+config
+node_modules
+
+# Never put local credentials, keys or trust bundles into the daemon context. A deployment that
+# needs one mounts it at runtime instead (see deploy/bootstrap.yaml's commented tls section).
+**/*.pem
+**/*.key
+**/.env
+**/.env.*
+
+# Build output and editor state are noise that invalidates the layer cache for no reason.
+**/*.log
+**/.DS_Store

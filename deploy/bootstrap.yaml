@@ -1,0 +1,41 @@
+# Local-only bootstrap for a container deployment.
+#
+# This is the shipped default: `docker run nico:llm` works with no volumes. Compose mounts this
+# directory read-only from ./deploy, so a deployment overrides the document without rebuilding the
+# image. Differences from the repository's development config/bootstrap.yaml:
+#   - absolute paths (a container has no stable working directory outside this one)
+#   - cache_dir points at a writable volume, not into the read-only config mount
+#   - watch is signal-only: inotify events do not reliably cross a bind mount
+#   - the metrics listener is on, so /health/ready can be probed
+config_source:
+  type: local
+  path: /etc/nico/resources.yaml
+  max_bytes: 1048576
+  watch: signal
+
+debounce_ms: 200
+max_wait_ms: 1000
+
+# Last-known-good cache. This directory is owned by uid 10001 and is a named volume in compose;
+# keeping it separate from /etc/nico is what lets the config mount be read-only.
+cache_dir: /var/lib/nico/cache
+allow_bootstrap_cache: false
+
+# Process-level HTTP settings. These belong to this process, not to a pushed document.
+http:
+  listen: 0.0.0.0:8080
+  h2c: false
+  grace_period_ms: 5000
+  graceful_shutdown_ms: 30000
+  threads: 1
+
+# Self-reporting surface. /health/live answers from the process, /health/ready answers 200 once a
+# snapshot reached service. Exposed on 9090 in the sample compose file.
+metrics:
+  listen: 0.0.0.0:9090
+
+# Upstream TLS uses the platform roots installed in the runtime image. A deployment with a private
+# CA mounts a bundle and uncomments this section; the file is read once at startup, so changing it
+# takes a restart, never a reload.
+# tls:
+#   ca_file: /etc/nico/roots.pem

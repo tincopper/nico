@@ -13,6 +13,7 @@ contract for structure, errors, logging, tests and the file budget.
 | nightly toolchain + rustfmt | `cargo +nightly fmt` (import grouping is nightly-only) | `rustup toolchain install nightly --profile minimal && rustup component add rustfmt --toolchain nightly` |
 | `cargo-deny` | license / advisory / source policy | `cargo install cargo-deny --locked` |
 | `lefthook` | git hook orchestration | macOS `brew install lefthook`; elsewhere `go install github.com/evilmartians/lefthook@latest` |
+| Docker + Compose | build and smoke-test the deployment image | only for the container path; the Rust baseline needs neither |
 
 ## First-time setup
 
@@ -29,6 +30,13 @@ lefthook install
 
 `lefthook install` writes `.git/hooks/pre-commit` and `.git/hooks/pre-push`. Do **not** set
 `core.hooksPath`: it silently disables the hooks lefthook just installed.
+
+## Deployment assets
+
+`Dockerfile`, `compose.yaml`, `deploy/` and `.github/workflows/ci.yml` are the deployment surface.
+The build takes `ROLE=llm|traffic`; see `README.md` §容器部署. A change to any of them is verified by
+`docker compose config` plus the CI matrix — the Rust baseline gate (`scripts/gates/pre-push.sh`)
+does not build an image, so a broken Dockerfile can pass locally by accident.
 
 Sanity check after setup:
 

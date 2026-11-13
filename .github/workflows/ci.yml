@@ -1,0 +1,98 @@
+# The remote gate: one full baseline, and one image per role.
+#
+# The baseline is NOT reimplemented here. `scripts/gates/pre-push.sh` is the single definition of
+# "green" for this repository — a second list of commands in a workflow would drift from it the
+# first time a lint is added. CI runs that script, then builds each role's artifact.
+#
+# Docker builds are matrixed by ROLE because the role is a compile-time property of the artifact:
+# an `llm` success cannot stand in for a `traffic` build, and a typo in the feature set must fail
+# on both branches.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    name: baseline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins 1.99.0. The nightly component is needed only for import grouping
+      # in `cargo +nightly fmt`; the script falls back to stable when nightly is absent, but CI
+      # installs it so formatting is checked exactly as it is locally.
+      - name: Install toolchains
+        run: |
+          rustup toolchain install nightly --profile minimal
+          rustup component add rustfmt --toolchain nightly
+
+      # `cargo install` is the same path CONTRIBUTING.md documents. Cached by the binary's version
+      # so a workflow re-run does not recompile cargo-deny from scratch.
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: Baseline gate
+        run: bash scripts/gates/pre-push.sh
+        env:
+          SKIP_NICO_HOOKS: "0"
+
+  image:
+    name: image (${{ matrix.role }})
+    runs-on: ubuntu-latest
+    needs: baseline
+    strategy:
+      fail-fast: false
+      matrix:
+        role: [llm, traffic]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.role }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: true
+          tags: nico:${{ matrix.role }}
+          build-args: |
+            ROLE=${{ matrix.role }}
+
+      # A role is an artifact property, not a label: assert the binary starts as the unprivileged
+      # user and that no toolchain leaked into the runtime stage.
+      - name: Inspect artifact
+        run: |
+          docker run --rm --entrypoint id nico:${{ matrix.role }}
+          if docker run --rm --entrypoint sh nico:${{ matrix.role }} \
+               -c 'test -e /usr/local/cargo || test -e /build'; then
+            echo "runtime image contains build tooling" >&2
+            exit 1
+          fi
+
+      # The shipped configuration must actually start and publish a snapshot with no volumes.
+      - name: Smoke test
+        run: |
+          CID=$(docker run -d -p 19090:9090 nico:${{ matrix.role }})
+          trap 'docker rm -f "$CID" >/dev/null 2>&1 || true' EXIT
+          for i in $(seq 1 30); do
+            if curl --fail --silent --show-error \
+                 http://127.0.0.1:19090/health/ready >/dev/null 2>&1; then
+              docker logs "$CID" 2>&1 | grep -q 'runtime snapshot published'
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "gateway did not become ready" >&2
+          docker logs "$CID" >&2 || true
+          exit 1

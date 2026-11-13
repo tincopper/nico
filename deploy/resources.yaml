@@ -1,0 +1,24 @@
+# A deployable resources document: one upstream, one route, no providers.
+#
+# It deliberately declares no provider route, so the same document is valid for both ROLE=llm and
+# ROLE=traffic images — the traffic image refuses provider routes at publication time, and a sample
+# that tripped that rule would look like a broken image instead of demonstrating the role boundary.
+#
+# The upstream points at an unreachable local port on purpose: the gateway must still start and
+# publish a snapshot. "The process is healthy" and "an upstream answers" are different facts, and a
+# deployment check that conflated them would refuse to start whenever a backend was momentarily down.
+apiVersion: gateway/v1
+request:
+  max_body_bytes: 1048576
+  timeout_ms: 30000
+plugins: []
+providers: []
+upstreams:
+  - name: example-backend
+    scheme: http
+    host: 127.0.0.1
+    port: 9
+routes:
+  - id: example
+    path_prefix: /
+    upstream: example-backend

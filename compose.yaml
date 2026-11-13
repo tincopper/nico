@@ -1,0 +1,48 @@
+# Local deployment: one gateway, its configuration mounted read-only, and a writable LKG cache.
+#
+#   docker compose up -d --build
+#   docker compose ps              # healthcheck should become "healthy"
+#   curl http://127.0.0.1:9090/health/ready
+#   curl http://127.0.0.1:8080/    # 502: the sample upstream is deliberately unreachable
+#
+# Change ROLE to `traffic` to build the image without nico-llm. The shipped resources document has
+# only upstream routes, so both roles publish it.
+
+services:
+  nico:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        ROLE: llm
+    image: nico:llm
+    # The image is ENTRYPOINT ["nico"]; no command override is needed.
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    volumes:
+      # Configuration is read-only: the process must never be able to rewrite its own bootstrap.
+      - ./deploy:/etc/nico:ro
+      # The last-known-good cache is written by the process and survives a container rebuild.
+      - nico-cache:/var/lib/nico/cache
+    environment:
+      # Example of how a credential reaches a provider entry without being written into a document.
+      # The shipped resources.yaml declares no provider, so this value is currently unused.
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-unset}
+    healthcheck:
+      # /health/ready is 200 only after a snapshot reached service, so "healthy" means the gateway
+      # is serving a configuration, not merely alive.
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:9090/health/ready"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+      start_period: 5s
+    # The bootstrap's graceful_shutdown_ms is 30000; leave room for grace_period_ms plus the
+    # container runtime's own bookkeeping so a streaming response is not cut off on stop.
+    stop_grace_period: 35s
+    # nico-server installs its own SIGTERM handler and drains; no init process is needed.
+    init: false
+    restart: unless-stopped
+
+volumes:
+  nico-cache:
