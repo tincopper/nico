@@ -86,8 +86,15 @@ impl PluginChain {
     pub async fn run_logging(&self, ctx: &mut HttpContext, response: Option<&ResponseHeader>);
 }
 
-// nico-http: the exported peer seam a plugin uses for a target this crate cannot resolve
-pub struct Destination { /* scheme, host, port */ }
+// nico-http: the exported peer seam a plugin uses for a target this crate cannot resolve.
+//
+// `host` is the connection target and `authority` is the name the peer is addressed by (the `Host`
+// header and the TLS server name). They are equal for a destination a policy builds by hand; they
+// differ once an upstream has several members, because one certificate names a service while the
+// service runs on many machines. `resolve` reads `host`; `host_header` and the peer's SNI read
+// `authority`. Writing the machine into `Host` would address a vhost nobody declared, and using it
+// for SNI would fail a certificate issued for the service.
+pub struct Destination { /* scheme, host, port, authority */ }
 impl HttpContext {
     pub fn set_destination(&mut self, destination: Destination);
     pub fn destination(&self) -> Option<&Destination>;
@@ -185,6 +192,24 @@ upstream request head to `transfer-encoding: chunked`. Both body hooks can also 
 zero-byte buffer while a chunked body's terminator or trailers are still being parsed; the driver
 then skips the stage instead of handing a plugin a buffer with no bytes, and keeps the request-side
 `Some(empty)` (there `None` means end-of-body, so dropping it would truncate the upload).
+
+### A multi-member upstream: where the selection happens
+
+An upstream may name several members (`endpoints[]`). **Selection happens in exactly one place** —
+`proxy/forward.rs::destination`, where an upstream becomes a `Destination` — and nowhere else:
+
+- `upstream/pools.rs::UpstreamState::select` asks `MemberState::available` once per attempt to build
+  the candidate list, then asks the [`Picker`](https://docs.rs) (`nico-lb`) for one candidate. A rule
+  may only answer with an index it was handed, so a strategy cannot override a health verdict.
+- The candidate filter and the probe admission are separate: filtering is a question, `admit` is the
+  claim. A member a strategy skipped did not spend its half-open probe.
+- `Destination::new(scheme, address, port).with_authority(host)` is the one construction that splits
+  "connect here" from "answer to this name". `host_header` and the peer's SNI read `authority`;
+  `resolve` reads `host`.
+
+Pingora owns the retry loop and the connection pool; it does **not** own member selection. That is why
+the state lives in `UpstreamPools` (process-level, survives a reload by member identity) and the
+per-generation table travels inside the published value.
 
 ### An AI route (`RouteTarget::Provider`)
 
