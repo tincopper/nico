@@ -428,6 +428,35 @@ routes:
     fallback: [anthropic-primary] # 池耗尽后按顺序尝试
 ```
 
+### 本地模型服务器
+
+本地推理服务器（Ollama、vLLM、llama.cpp server、TGI 等）**不需要新的 provider kind**：它们多数
+提供 OpenAI-compatible 的 `/v1/chat/completions`，用 `kind: openai` 指向本地地址即可。这是
+`11-13-heterogeneous-provider-research` 的结论——「异构 provider」里这一类其实只是配置。
+
+```yaml
+providers:
+  - name: local-llm
+    kind: openai
+    base_url: http://127.0.0.1:11434/v1   # base_url 可以带路径
+    credential_ref: env:NICO_LOCAL_UNUSED # 必填，但本地没有 key：用占位 env 引用
+    model_map:
+      fast: llama3.2:1b                   # 调用方的逻辑名 → 本地模型名
+routes:
+  - id: local-chat
+    path_prefix: /v1/chat/
+    provider: local-llm
+    protocol: openai.chat
+```
+
+两处说明：
+
+- `credential_ref` 在 schema 里是**必填**且必须通过 `env:` / `file:` 校验。本地服务器不需要密钥，
+  写一个占位引用即可（环境变量定义成空值也行）。删掉这个字段会导致整份文档被拒。
+- 上述服务器是否真的提供字节兼容的 OpenAI 流式 SSE，是**部署者需要自己核实的外部事实**；
+  网关只保证文档形状可发布。完整调研与三类「异构」的边界见
+  `.trellis/tasks/archive/2026-11/11-13-heterogeneous-provider-research/research/findings.md`。
+
 ### 客户端协议（`protocol`）
 
 | 值 | 方言 |

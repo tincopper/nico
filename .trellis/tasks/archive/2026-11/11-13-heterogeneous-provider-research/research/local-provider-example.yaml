@@ -1,0 +1,29 @@
+# A local inference server, using the existing OpenAI-compatible adapter.
+#
+# This is the §3.1 case of the research: a "heterogeneous" provider that is really just another
+# HTTP/JSON endpoint. No new kind, no new trait, no code — `kind: openai` + a base_url pointing at
+# a local server + a model_map that names the local model. The OpenAI-compatible surface is an
+# ASSUMPTION about the server (see research/findings.md §4); this file proves only that OUR document
+# model accepts the shape, not that a particular server speaks it.
+#
+# `credential_ref` is mandatory in the schema even though a local server needs no key. The value is
+# a placeholder env ref; the resolver reads it, so the environment must define the variable (an
+# empty value is fine). See semantic.rs:157 for the is_secret_ref check.
+apiVersion: gateway/v1
+request:
+  max_body_bytes: 1048576
+  timeout_ms: 120000
+plugins: []
+providers:
+  - name: local-llm
+    kind: openai
+    base_url: http://127.0.0.1:11434/v1
+    credential_ref: env:NICO_LOCAL_UNUSED
+    model_map:
+      fast: llama3.2:1b
+upstreams: []
+routes:
+  - id: local-chat
+    path_prefix: /v1/chat/
+    provider: local-llm
+    protocol: openai.chat

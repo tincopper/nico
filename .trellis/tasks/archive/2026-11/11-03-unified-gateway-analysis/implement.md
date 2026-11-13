@@ -69,15 +69,27 @@ reload 失败不影响旧流量；非 AI 路由不读 body；AI convert 路由�
       因此所有真实 provider 都不可达、LLM 转换只在明文 mock 上被验证过。已由 `11-11-upstream-tls`
       关闭：`pingora/rustls` 后端已编入、`tls.ca_file` 可控信任根、真 TLS 上游的成功／不受信／
       主机名不匹配三条路径均有 e2e。
-- [ ] 异构 Provider（非 HTTP/JSON 原生、或需要本地模型服务器语义的 kind）：语义待澄清。
-- [ ] usage 归一化与计费：`schema::usage` 只定义了形状（provider 报数与网关计数分桶保留），
-      provider 的 usage 按原样记录、不做归一化。
-- [ ] LLM token 限额：与请求级限流是两件事，需要 usage 先有归一口径。
-- [ ] 部署形态：role 只做到"可构建"，没有镜像、部署清单或远端 CI。
+- [x] 异构 Provider：语义已由 `11-13-heterogeneous-provider-research` 澄清，拆为三类：
+      - **方言异构**（本地推理服务器等）：现有 `kind: openai` + `base_url` + `model_map` 已覆盖，
+        样例与解析测试在 `research/local-provider-example.yaml`；**无需代码**。
+      - **协议异构**（gRPC / WebSocket / multipart 等同一 HTTP 传输、非 JSON wire）：扩展点是
+        `Endpoint` 的 framing 维度，按 spec 的 second-consumer 规则**待第二个真实消费者**。
+      - **传输异构**（`grpc://` / `unix://` / 进程内）：违反 Pingora 的 HTTP 代理边界，
+        按 §4「独立 crate/binary 和协议原生 trait」处理，**明确不在本项目范围**。
+- [x] usage 归一化与计量：由 `11-13-usage-normalization` 交付。五种 `TokenKind` 的 reported
+      值按 `(route, provider, model, kind)` 暴露为 `gateway_llm_tokens_total`；**计费与价格表仍不做**
+      （R5 明确排除），指标是账的原料而非账单。
+- [ ] LLM token 限额：**口径已建立**（上一项），限额本身仍未做。它属于 governance，
+      `11-11-model-lb` R10 已把「虚拟 key、租户预算、跨成员配额池」排除；需要独立的语义决策
+      （按谁扣、周期、超限处置、跨副本共享）。
+- [x] 部署形态：由 `11-13-deployment-shape` 交付（Dockerfile、ROLE 矩阵、compose、CI）。
 
 ## 4. 阶段 3：按真实需求扩展
 
-- [ ] 收取 §3 末的未交付项（上游 TLS、异构 Provider、usage 归一化与计费、token 限额、部署形态）。
+- [x] §3 的未交付项已收口：上游 TLS（`11-11-upstream-tls`）、异构 Provider 语义澄清
+      （`11-13-heterogeneous-provider-research`）、usage 计量（`11-13-usage-normalization`）、
+      部署形态（`11-13-deployment-shape`）均已交付。**只剩 LLM token 限额**——口径已建立，
+      但限额语义属 governance，需独立决策（见 §3）。
 - [ ] 新协议使用独立 crate/binary 和协议原生 trait，不穿透 HTTP Filter。
 - [ ] 出现第二个真实消费者后，才下沉公共 trait 或拆分新 crate。
 - [ ] 第三方动态插件若成为需求，独立评估 WASM/进程隔离、签名、权限、资源和背压。
