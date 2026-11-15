@@ -452,3 +452,7 @@ async fn the_client_is_asked_for_the_right_key_and_start() {
         "the subscription resumes one past the revision the load read, inclusive of 8"
     );
 }
+
+// The real client over the real wire, against the in-process etcd mock server.
+#[cfg(feature = "client")]
+mod e2e;

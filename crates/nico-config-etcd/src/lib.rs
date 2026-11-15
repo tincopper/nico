@@ -36,5 +36,7 @@ mod source;
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "client")]
+pub use client::real::GrpcEtcdClient;
 pub use client::{EtcdClient, EtcdError, KvEntry, WatchEvent, WatchOutcome, WatchStream};
 pub use source::EtcdConfigSource;

@@ -101,3 +101,10 @@ pub trait EtcdClient: Send + Sync {
     /// Returns [`EtcdError`] when the subscription cannot be established.
     async fn watch(&self, key: &str, start_revision: u64) -> Result<WatchStream, EtcdError>;
 }
+
+#[cfg(all(test, feature = "client"))]
+pub(crate) mod mock_server;
+#[cfg(feature = "client")]
+mod proto;
+#[cfg(feature = "client")]
+pub(crate) mod real;

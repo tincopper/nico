@@ -737,10 +737,12 @@ scripts/gates/       git hook 背后的检查
 
 ## 当前限制
 
-- **配置源**：当前只实现 `type: local`（本地文件）。etcd 源的 **adapter 语义已实现并测试**
-  （`crates/nico-config-etcd`：一个 key 一份完整文档、inclusive 起点、compaction/fragment 折叠
-  resync、auth 失败与 key 删除都是 Unavailable 而非空配置），但真实 gRPC client 尚未接入——
-  bootstrap 的 `type: etcd` 在 client 落地前不可用。见 `11-14-etcd-config-source` 的取证记录。
+- **配置源**：当前只实现 `type: local`（本地文件）。etcd 源的 **adapter 语义与真实 gRPC client
+  均已实现并测试**（`crates/nico-config-etcd`：一个 key 一份完整文档、inclusive 起点、
+  compaction/fragment 折叠 resync、auth 失败与 key 删除都是 Unavailable 而非空配置；真实 client
+  用 `etcd-client` crate 实现，在进程内 etcd v3 mock server（官方 rpc.proto 协议替身）上端到端
+  验证）。bootstrap 接线 `type: etcd` 仍未落地；tonic/hyper 栈由 `etcd` feature 门控，产品二进制
+  不链接。取证记录见任务 `11-14-etcd-config-source` 与 `11-15-etcd-real-client`。
 - **路由匹配**：线性扫描，无编译索引；`path_prefix` 是字节前缀，不做路径归一化。
 - **入站 TLS**：数据面的 `listen` 只服务明文 HTTP（可开 `h2c`）；需要在该端口终止 TLS 时，请在
   前面放一个代理。上游方向直接支持 `https`（见 `tls.ca_file`）。
