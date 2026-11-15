@@ -78,6 +78,10 @@ pub(super) async fn request_filter(
     // The member list travels with the snapshot: a request that selected from another generation's
     // list would connect to an address its own document does not name.
     ctx.set_selection(state.selection());
+    // The budget table travels with the request, so the check at peer time and the charge at record
+    // time read the same store the process assembled. It lives on the handle, not on the snapshot:
+    // a reload replaces the document without resetting what identities have spent.
+    ctx.set_budget_store(app.budget_store());
     if let Some(address) = client_ip {
         ctx.set_client_ip(address);
     }
@@ -180,6 +184,16 @@ pub(super) async fn upstream_peer(
     ctx: &mut HttpContext,
 ) -> pingora::Result<Box<HttpPeer>> {
     let now = Instant::now();
+    // The token budget is checked here because it is the last point before anything upstream
+    // happens: identity is already established by the auth plugins, and the route that declares the
+    // budget is matched. A request without an identity is not bounded — the record says so.
+    // The store is None only for a request that never reached service, which `upstream_peer` cannot
+    // be called for; the `if let` keeps the accessor honest without unwrapping.
+    if let Some(store) = ctx.budget_store()
+        && let Err(error) = crate::quota::check_request(store, ctx, TokioInstant::now())
+    {
+        return Err(abort(ctx, error));
+    }
     // An expired budget spends no resolver query and opens no socket: the answer is already known, and
     // it is the request's own clock that decided it.
     let budget = ctx.remaining(now).unwrap_or_default();

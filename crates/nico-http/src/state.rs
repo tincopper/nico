@@ -44,6 +44,7 @@ use crate::{
     error::HttpError,
     llm::{LlmRoute, LlmRoutes},
     plugin::PluginChain,
+    quota::{BudgetStore, InProcessBudgetStore},
     upstream::pools::{SelectionTable, UpstreamPools},
 };
 
@@ -145,7 +146,7 @@ impl fmt::Debug for HttpState {
 /// Reads are lock-free and return one `Arc` per request, so a reload cannot change the policies of a
 /// request that already started. Publication is a single atomic store: there is no window in which
 /// half of a generation is visible.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct HttpStateHandle {
     current: ArcSwapOption<HttpState>,
     /// The process-level selection state, written by publication and never republished.
@@ -154,13 +155,37 @@ pub struct HttpStateHandle {
     /// rotation position and in-flight count are facts about the process, not about one document.
     /// Publication reads it to build the next generation's member list and inherits by identity.
     pools: UpstreamPools,
+    /// The process-level token-budget table, written by the request path and never republished.
+    ///
+    /// Spend already recorded belongs to the identity, not to the document that happened to be
+    /// published when it was spent, so a reload retunes the budget's numbers without resetting the
+    /// count. The trait is the seam a multi-replica deployment replaces with shared storage.
+    budgets: Arc<dyn BudgetStore>,
 }
+
+impl Default for HttpStateHandle {
+    fn default() -> Self {
+        Self {
+            current: ArcSwapOption::empty(),
+            pools: UpstreamPools::default(),
+            budgets: Arc::new(InProcessBudgetStore::new(DEFAULT_BUDGET_KEYS)),
+        }
+    }
+}
+
+/// The bound on how many identities one process tracks budgets for.
+const DEFAULT_BUDGET_KEYS: usize = 10_000;
 
 impl HttpStateHandle {
     /// Creates an empty handle: nothing published, so `current()` returns `None`.
     #[must_use]
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// Returns the token-budget table every request and every reload share.
+    pub(crate) fn budgets(&self) -> Arc<dyn BudgetStore> {
+        Arc::clone(&self.budgets)
     }
 
     /// Returns the published state, or `None` before the first successful publication.

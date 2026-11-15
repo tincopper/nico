@@ -249,6 +249,7 @@ fn validate_routes(routes: &[Route], request: RequestBounds) -> Result<(), Docum
                 MAX_TTFT_TIMEOUT_MS,
             )?;
         }
+        budget::validate(route)?;
         if let Some(max_body_bytes) = route.max_body_bytes() {
             validate_body_bound(request, max_body_bytes)?;
         }
@@ -478,6 +479,7 @@ fn invalid(field: &'static str, reason: impl Into<Cow<'static, str>>) -> Documen
     }
 }
 
+mod budget;
 mod plugins;
 mod upstreams;
 

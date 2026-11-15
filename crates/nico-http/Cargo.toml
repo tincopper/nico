@@ -11,6 +11,9 @@ description = "Pingora HTTP data plane: routing, upstream selection and byte-str
 # The request path reads exactly one published value; `ArcSwapOption` is the same publication
 # primitive `nico-core` uses for a snapshot, so the swap is one atomic store.
 arc-swap.workspace = true
+# The token-budget table is bounded by `max_keys` and evicts least-recently-used identities; an
+# unbounded map would let one client grow process memory without limit.
+lru.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 nico-core.workspace = true

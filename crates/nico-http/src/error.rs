@@ -49,6 +49,17 @@ use crate::plugin::PluginError;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum HttpError {
+    /// The authenticated identity has spent its token budget for this route's window.
+    ///
+    /// `429` rather than a provider's rate-limit code: the limit is the gateway's policy about the
+    /// caller, and the caller can wait for the window to reset. The provider was never contacted.
+    #[error("the token budget is spent: {limit} tokens per {window_seconds}s window")]
+    TokenBudgetExceeded {
+        /// The limit the document set, so the answer names it.
+        limit: u64,
+        /// The window the limit applies to.
+        window_seconds: u32,
+    },
     /// No runtime snapshot has been published, or the pipeline is not ready to serve.
     #[error("no runtime snapshot is available to serve")]
     NotReady,
@@ -221,6 +232,11 @@ impl HttpError {
                 "invalid_request",
                 "the request is not valid",
             )),
+            Self::TokenBudgetExceeded { .. } => Some(Respond::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "token_budget_exceeded",
+                "the identity has spent its token budget for this route's window",
+            )),
             Self::BodyTooLarge { .. } => Some(Respond::new(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "body_too_large",
@@ -280,9 +296,10 @@ impl HttpError {
     #[must_use]
     pub fn category(&self) -> ErrorCategory {
         match self {
-            Self::RouteNotFound | Self::InvalidRequest { .. } | Self::RequestTimeout => {
-                ErrorCategory::Client
-            }
+            Self::RouteNotFound
+            | Self::InvalidRequest { .. }
+            | Self::RequestTimeout
+            | Self::TokenBudgetExceeded { .. } => ErrorCategory::Client,
             Self::BodyTooLarge { .. } | Self::UpstreamResponseTooLarge { .. } => {
                 ErrorCategory::Limit
             }

@@ -319,6 +319,15 @@ fn record_tokens(ctx: &crate::HttpContext, status: u16) {
         .target()
         .map_or_else(String::new, |target| target.name().to_owned());
     let model = llm.physical_model().unwrap_or_default();
+    // The budget is charged here, where the provider's own numbers are in hand: only the two
+    // full-price buckets count, and only on a request the provider actually served.
+    if let (Some(input), Some(output)) = (
+        usage.get(crate::llm::TokenKind::Input),
+        usage.get(crate::llm::TokenKind::Output),
+    ) && let Some(store) = ctx.budget_store()
+    {
+        crate::quota::charge_request(store, ctx, input, output, tokio::time::Instant::now());
+    }
     for (kind, count) in usage.reported() {
         tracing::info!(
             target: "nico_http::tokens",

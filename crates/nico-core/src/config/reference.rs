@@ -38,7 +38,7 @@ use super::{
     plugin::PluginSpec,
     provider::Provider,
     raw::{RawPoolMember, RawRoute},
-    route::{Pool, PoolMember, PoolStrategy, Route, RouteMode, RouteTarget},
+    route::{Pool, PoolMember, PoolStrategy, Route, RouteMode, RouteTarget, TokenBudget},
     upstream::Upstream,
 };
 
@@ -150,6 +150,8 @@ fn resolve(
         strategy,
         timeout_ms,
         ttft_timeout_ms,
+        token_budget: raw_token_budget,
+
         max_body_bytes,
         protocol,
         mode,
@@ -200,12 +202,15 @@ fn resolve(
 
     check_target_fields(
         &target,
-        protocol.as_deref(),
-        mode,
-        max_response_bytes,
-        retry_budget.is_some(),
-        raw_fallback.is_some(),
-        ttft_timeout_ms.is_some(),
+        WrittenFields {
+            protocol: protocol.as_deref(),
+            mode,
+            max_response_bytes,
+            retry_budget: retry_budget.is_some(),
+            fallback: raw_fallback.is_some(),
+            ttft_timeout: ttft_timeout_ms.is_some(),
+            token_budget: raw_token_budget.is_some(),
+        },
     )?;
 
     let plugins = raw_plugins.unwrap_or_default();
@@ -245,6 +250,7 @@ fn resolve(
         target,
         timeout_ms,
         ttft_timeout_ms,
+
         max_body_bytes,
         protocol,
         mode: mode.unwrap_or_default(),
@@ -252,6 +258,8 @@ fn resolve(
         plugins,
         retry_budget: retry_budget.unwrap_or(1),
         fallback,
+        token_budget: raw_token_budget
+            .map(|raw| TokenBudget::new(raw.limit_tokens, raw.window_seconds)),
         pool,
     })
 }
@@ -302,26 +310,36 @@ fn resolve_pool(
 /// without the name of the client protocol. The attempt fields — `retry_budget`, `fallback` — belong
 /// to the same converted exchange: they decide how a *classified* failure is retried, and an upstream
 /// route forwards bytes without ever classifying one.
-fn check_target_fields(
-    target: &RouteTarget,
-    protocol: Option<&str>,
+/// The convert-route fields a document may have written, gathered for the target check.
+struct WrittenFields<'a> {
+    protocol: Option<&'a str>,
     mode: Option<RouteMode>,
     max_response_bytes: Option<u32>,
     retry_budget: bool,
     fallback: bool,
     ttft_timeout: bool,
+    token_budget: bool,
+}
+
+fn check_target_fields(
+    target: &RouteTarget,
+    written: WrittenFields<'_>,
 ) -> Result<(), DocumentError> {
     match target {
         RouteTarget::Upstream(_) => {
-            let written = [
-                ("routes[].protocol", protocol.is_some()),
-                ("routes[].mode", mode.is_some()),
-                ("routes[].max_response_bytes", max_response_bytes.is_some()),
-                ("routes[].retry_budget", retry_budget),
-                ("routes[].fallback", fallback),
-                ("routes[].ttft_timeout_ms", ttft_timeout),
+            let declared = [
+                ("routes[].protocol", written.protocol.is_some()),
+                ("routes[].mode", written.mode.is_some()),
+                (
+                    "routes[].max_response_bytes",
+                    written.max_response_bytes.is_some(),
+                ),
+                ("routes[].retry_budget", written.retry_budget),
+                ("routes[].fallback", written.fallback),
+                ("routes[].ttft_timeout_ms", written.ttft_timeout),
+                ("routes[].token_budget", written.token_budget),
             ];
-            for (field, present) in written {
+            for (field, present) in declared {
                 if present {
                     return Err(DocumentError::InvalidField {
                         field,
@@ -331,7 +349,7 @@ fn check_target_fields(
             }
         }
         RouteTarget::Provider(_) => {
-            if protocol.is_none() {
+            if written.protocol.is_none() {
                 return Err(DocumentError::InvalidField {
                     field: "routes[].protocol",
                     reason: "is required on a provider route".into(),

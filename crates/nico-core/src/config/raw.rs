@@ -141,6 +141,8 @@ pub(super) struct RawRoute {
     /// [`RouteTarget`](super::RouteTarget) during validation so both mistakes get their own error.
     pub(super) upstream: Option<String>,
     pub(super) provider: Option<String>,
+    /// The token budget one authenticated identity may spend on this route.
+    pub(super) token_budget: Option<RawTokenBudget>,
     /// The provider pool, when the route distributes across several providers.
     ///
     /// Mutually exclusive with `provider`; absent means the single-target forms above. `Some([])` is
@@ -182,6 +184,14 @@ pub(super) struct RawRoute {
     /// `[]` mean the same thing — no fallback — so a single-target route does not have to spell an
     /// empty chain out. Whether a named member can be served is the publication's decision.
     pub(super) fallback: Option<Vec<String>>,
+}
+
+/// One `routes[].token_budget` section exactly as written.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawTokenBudget {
+    pub(super) limit_tokens: u64,
+    pub(super) window_seconds: u32,
 }
 
 /// One `routes[].providers[]` entry exactly as written.

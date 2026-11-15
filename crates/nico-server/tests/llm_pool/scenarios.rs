@@ -236,3 +236,14 @@ pub(super) fn pooled_document_with_model_map(
         )
         .render()
 }
+
+/// A request carrying an api-key credential, for the budget scenarios that need an identity.
+pub(super) fn chat_with_key(model: &str, key: &str) -> Request {
+    let body = format!(
+        r#"{{"model":"{model}","messages":[{{"role":"user","content":"pool-scenario"}}]}}"#
+    );
+    Request::post("/v1/chat/completions", "llm.test")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {key}"))
+        .body(body.into_bytes(), usize::MAX)
+}

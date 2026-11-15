@@ -346,3 +346,136 @@ fn the_attempt_ceiling_scales_with_the_pool_bound() {
         "raising the pool bound must widen the fuse, not keep the default one"
     );
 }
+
+#[test]
+fn a_token_budget_is_read_from_the_document() {
+    let rendered = with_pool(concat!(
+        "  - id: llm-chat\n",
+        "    path_prefix: /v1/chat/\n",
+        "    protocol: openai.chat\n",
+        "    token_budget:\n",
+        "      limit_tokens: 1000000\n",
+        "      window_seconds: 86400\n",
+        "    providers:\n",
+        "      - name: openai-primary\n",
+        "      - name: openai-secondary\n",
+    ));
+
+    let document = parse(&rendered).expect("the budget is valid");
+    let budget = route(&document)
+        .token_budget()
+        .expect("the route declares a budget");
+
+    assert_eq!(budget.limit_tokens(), 1_000_000);
+    assert_eq!(budget.window_seconds(), 86_400);
+}
+
+#[test]
+fn a_token_budget_on_an_upstream_route_is_refused() {
+    let rendered = document(
+        NO_ENTRIES,
+        crate::config::test_support::UPSTREAM,
+        concat!(
+            "  - id: api\n",
+            "    path_prefix: /api/\n",
+            "    upstream: api-backend\n",
+            "    token_budget:\n",
+            "      limit_tokens: 1000\n",
+            "      window_seconds: 60\n",
+        ),
+    );
+
+    let error = parse(&rendered).expect_err("an upstream route has no tokens to bound");
+
+    assert!(
+        matches!(
+            error,
+            DocumentError::InvalidField {
+                field: "routes[].token_budget",
+                ..
+            }
+        ),
+        "expected InvalidField, got {error:?}"
+    );
+}
+
+#[test]
+fn a_zero_token_budget_is_refused() {
+    let rendered = with_pool(concat!(
+        "  - id: llm-chat\n",
+        "    path_prefix: /v1/chat/\n",
+        "    protocol: openai.chat\n",
+        "    token_budget:\n",
+        "      limit_tokens: 0\n",
+        "      window_seconds: 60\n",
+        "    providers:\n",
+        "      - name: openai-primary\n",
+    ));
+
+    let error = parse(&rendered).expect_err("zero tokens would refuse every request");
+
+    assert!(
+        matches!(
+            error,
+            DocumentError::LimitOutOfRange {
+                field: "routes[].token_budget.limit_tokens",
+                value: 0
+            }
+        ),
+        "expected LimitOutOfRange, got {error:?}"
+    );
+}
+
+#[test]
+fn a_zero_window_is_refused() {
+    let rendered = with_pool(concat!(
+        "  - id: llm-chat\n",
+        "    path_prefix: /v1/chat/\n",
+        "    protocol: openai.chat\n",
+        "    token_budget:\n",
+        "      limit_tokens: 1000\n",
+        "      window_seconds: 0\n",
+        "    providers:\n",
+        "      - name: openai-primary\n",
+    ));
+
+    let error = parse(&rendered).expect_err("a zero window would never reset");
+
+    assert!(
+        matches!(
+            error,
+            DocumentError::LimitOutOfRange {
+                field: "routes[].token_budget.window_seconds",
+                value: 0
+            }
+        ),
+        "expected LimitOutOfRange, got {error:?}"
+    );
+}
+
+#[test]
+fn a_window_over_a_year_is_refused() {
+    let rendered = with_pool(concat!(
+        "  - id: llm-chat\n",
+        "    path_prefix: /v1/chat/\n",
+        "    protocol: openai.chat\n",
+        "    token_budget:\n",
+        "      limit_tokens: 1000\n",
+        "      window_seconds: 31536001\n",
+        "    providers:\n",
+        "      - name: openai-primary\n",
+    ));
+
+    let error = parse(&rendered).expect_err("a lifetime quota is not a window");
+
+    assert!(
+        matches!(
+            error,
+            DocumentError::LimitOutOfRange {
+                field: "routes[].token_budget.window_seconds",
+                value: 31_536_001
+            }
+        ),
+        "expected LimitOutOfRange, got {error:?}"
+    );
+}

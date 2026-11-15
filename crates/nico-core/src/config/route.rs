@@ -140,6 +140,35 @@ impl Pool {
     }
 }
 
+/// The token budget one route's converting requests are bounded by, per authenticated identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TokenBudget {
+    pub(super) limit_tokens: u64,
+    pub(super) window_seconds: u32,
+}
+
+impl TokenBudget {
+    /// Builds a budget from values the parser has already validated.
+    pub(super) const fn new(limit_tokens: u64, window_seconds: u32) -> Self {
+        Self {
+            limit_tokens,
+            window_seconds,
+        }
+    }
+
+    /// Returns the most tokens one identity may spend in one window.
+    #[must_use]
+    pub const fn limit_tokens(&self) -> u64 {
+        self.limit_tokens
+    }
+
+    /// Returns how long one budget window lasts, in seconds.
+    #[must_use]
+    pub const fn window_seconds(&self) -> u32 {
+        self.window_seconds
+    }
+}
+
 /// One routing rule.
 ///
 /// Fields are private and there is no public constructor: a `Route` only exists inside a
@@ -160,6 +189,8 @@ pub struct Route {
     pub(super) plugins: Vec<String>,
     pub(super) retry_budget: u8,
     pub(super) fallback: Vec<String>,
+    /// The token budget, when the route bounds what each identity may spend.
+    pub(super) token_budget: Option<TokenBudget>,
     /// The provider pool, when the document named several providers instead of one.
     ///
     /// `None` for a single-provider route and for every upstream route; the two forms are mutually
@@ -285,5 +316,15 @@ impl Route {
     #[must_use]
     pub const fn pool(&self) -> Option<&Pool> {
         self.pool.as_ref()
+    }
+
+    /// Returns the token budget this route enforces per identity, when it declares one.
+    ///
+    /// Only a converting route has tokens to bound, so the document refuses the field on an upstream
+    /// route. Requests without an authenticated identity are not bounded — a deployment that wants
+    /// full coverage puts an auth plugin on the route.
+    #[must_use]
+    pub const fn token_budget(&self) -> Option<&TokenBudget> {
+        self.token_budget.as_ref()
     }
 }

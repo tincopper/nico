@@ -1225,6 +1225,7 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "bytes",
+ "lru",
  "metrics",
  "nico-core",
  "nico-lb",

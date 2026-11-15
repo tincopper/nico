@@ -68,6 +68,11 @@ impl HttpApp {
         }
     }
 
+    /// Returns the token-budget table every request and every reload share.
+    pub(crate) fn budget_store(&self) -> Arc<dyn crate::quota::BudgetStore> {
+        self.state.budgets()
+    }
+
     /// Renders `error` and tells Pingora the response is already written.
     ///
     /// A failed write means the client is gone; the request's log line already carries the outcome,

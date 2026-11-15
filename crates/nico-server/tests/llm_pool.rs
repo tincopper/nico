@@ -372,5 +372,8 @@ async fn a_first_byte_budget_still_serves_a_buffered_answer() {
 #[path = "llm_pool/tokens.rs"]
 mod tokens;
 
+#[path = "llm_pool/budget.rs"]
+mod budget;
+
 #[path = "llm_pool/model_filter.rs"]
 mod model_filter;

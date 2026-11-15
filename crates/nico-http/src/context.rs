@@ -52,6 +52,7 @@ use crate::{
     budget,
     error::HttpError,
     plugin::PluginChain,
+    quota::BudgetStore,
     upstream::{
         Destination,
         pools::{ConnectionGuard, SelectionTable},
@@ -67,6 +68,10 @@ use crate::{
 pub struct HttpContext {
     snapshot: Option<Arc<RuntimeSnapshot>>,
     route_id: Option<Arc<str>>,
+    /// The route's per-identity token budget, when it declares one.
+    token_budget: Option<nico_core::TokenBudget>,
+    /// The process-level token-budget table, cloned from the state handle at `begin`.
+    budgets: Option<Arc<dyn BudgetStore>>,
     target: Option<RouteTarget>,
     method: Option<Method>,
     path: Option<String>,
@@ -137,6 +142,9 @@ impl HttpContext {
         };
         self.body_limit = Some(budget::body_limit(route, request));
         self.response_limit = Some(budget::response_limit(route, request));
+        // The budget is a route fact cached beside the other two: the check at peer time and the
+        // charge at record time read the context instead of reaching back into the snapshot.
+        self.token_budget = route.token_budget().cloned();
         if let Some(started) = self.started {
             self.deadline = Some(started + budget::request_budget(route, request));
         }
@@ -160,6 +168,25 @@ impl HttpContext {
     #[must_use]
     pub fn route_id(&self) -> Option<&str> {
         self.route_id.as_deref()
+    }
+
+    /// Records the process-level token-budget table this request checks and charges against.
+    pub(crate) fn set_budget_store(&mut self, store: Arc<dyn BudgetStore>) {
+        self.budgets = Some(store);
+    }
+
+    /// Returns the table this request charges, when the process has one.
+    pub(crate) fn budget_store(&self) -> Option<&dyn BudgetStore> {
+        self.budgets.as_deref()
+    }
+
+    /// Returns the route's per-identity token budget, when it declares one.
+    ///
+    /// The budget is a route fact cached at [`HttpContext::bind_route`], so the check at peer time
+    /// and the charge at record time read the context instead of reaching back into the snapshot.
+    #[must_use]
+    pub fn token_budget(&self) -> Option<&nico_core::TokenBudget> {
+        self.token_budget.as_ref()
     }
 
     /// Returns the matched route id as a handle, for a metric label that must not re-allocate it.

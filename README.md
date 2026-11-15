@@ -483,6 +483,29 @@ routes:
   文档被拒绝。
 - 二者只对 `convert` 路由有效（passthrough 没有规范值，也没有失败分类）。
 
+### token 限额
+
+convert 路由可以按**身份**限制 token 消耗：超限时**下一个**请求得到
+`429 token_budget_exceeded`，provider 不再被联系。
+
+```yaml
+routes:
+  - id: llm-chat
+    protocol: openai.chat
+    provider: openai-primary
+    token_budget:
+      limit_tokens: 1000000   # 1..=1_000_000_000
+      window_seconds: 86400   # 1..=31_536_000（一年）
+```
+
+- **键是身份**：auth 插件（jwt / api_key）建立的身份决定谁的窗口。没有身份的请求**不受限**——
+  要全覆盖就在路由上放一个 auth 插件。
+- **只计 input + output**：两个全价桶；cache 读写是折扣桶，reasoning 已含在 output 里。
+- **事后记账**：用量在响应后才知，一次请求可以越过预算（它的费用已实际发生），拒绝的是
+  下一个请求。所有 LLM 网关都这么做，精确预判需要 tokenizer。
+- 窗口是固定窗口：首次记账开窗，`window_seconds` 后重置。
+- 预算表是**进程内**的：多副本部署需要共享存储，接口（`BudgetStore`）已为此预留。
+
 ### provider 池
 
 `providers` 让一条路由在多条 provider 之间分发，与 `provider` 互斥（都写或都不写都被拒绝）。

@@ -96,6 +96,7 @@ pub mod error;
 pub mod llm;
 pub mod plugin;
 pub mod proxy;
+pub(crate) mod quota;
 pub mod route;
 pub mod service;
 pub mod settings;

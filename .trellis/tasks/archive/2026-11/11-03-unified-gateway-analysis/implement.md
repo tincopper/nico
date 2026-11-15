@@ -79,16 +79,17 @@ reload 失败不影响旧流量；非 AI 路由不读 body；AI convert 路由�
 - [x] usage 归一化与计量：由 `11-13-usage-normalization` 交付。五种 `TokenKind` 的 reported
       值按 `(route, provider, model, kind)` 暴露为 `gateway_llm_tokens_total`；**计费与价格表仍不做**
       （R5 明确排除），指标是账的原料而非账单。
-- [ ] LLM token 限额：**口径已建立**（上一项），限额本身仍未做。它属于 governance，
-      `11-11-model-lb` R10 已把「虚拟 key、租户预算、跨成员配额池」排除；需要独立的语义决策
-      （按谁扣、周期、超限处置、跨副本共享）。
+- [x] LLM token 限额：由 `11-15-token-budget` 交付——按身份的固定窗口预算
+      （`routes[].token_budget`），超限 429 `token_budget_exceeded`，成功后按 reported 的
+      input+output 记账。跨副本共享存储是后续任务，`BudgetStore` 接口已预留；governance 层
+      （虚拟 key、租户层级）仍不在范围（`11-11-model-lb` R10）。
 - [x] 部署形态：由 `11-13-deployment-shape` 交付（Dockerfile、ROLE 矩阵、compose、CI）。
 
 ## 4. 阶段 3：按真实需求扩展
 
 - [x] §3 的未交付项已收口：上游 TLS（`11-11-upstream-tls`）、异构 Provider 语义澄清
       （`11-13-heterogeneous-provider-research`）、usage 计量（`11-13-usage-normalization`）、
-      部署形态（`11-13-deployment-shape`）均已交付。**只剩 LLM token 限额**——口径已建立，
+      部署形态（`11-13-deployment-shape`）均已交付。LLM token 限额也由 `11-15-token-budget` 交付（见 §3），
       但限额语义属 governance，需独立决策（见 §3）。
 - [ ] 新协议使用独立 crate/binary 和协议原生 trait，不穿透 HTTP Filter。
 - [ ] 出现第二个真实消费者后，才下沉公共 trait 或拆分新 crate。
