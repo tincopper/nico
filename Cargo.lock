@@ -1192,6 +1192,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nico-config-etcd"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "futures-core",
+ "nico-config",
+ "nico-core",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "nico-core"
 version = "0.0.0"
 dependencies = [
@@ -1289,6 +1303,7 @@ dependencies = [
  "http",
  "metrics",
  "nico-config",
+ "nico-config-etcd",
  "nico-core",
  "nico-http",
  "nico-llm",

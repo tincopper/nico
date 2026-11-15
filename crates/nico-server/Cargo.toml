@@ -26,6 +26,10 @@ default = ["llm"]
 # The AI role: client protocol codecs and provider adapters are compiled in and published per
 # generation.
 llm = ["dep:nico-llm"]
+# The etcd configuration source. Off by default: the adapter is implemented against a client seam
+# and tested with a scripted client, so no etcd dependency is needed until a real environment
+# exists to wire one against.
+etcd = ["dep:nico-config-etcd"]
 # The traffic role: configuration, routing, plugins and the HTTP data plane, with no LLM crate at all.
 traffic = []
 
@@ -35,6 +39,7 @@ async-trait.workspace = true
 # does not re-export the `http` crate. This is the one adapter that names the type.
 http.workspace = true
 nico-config.workspace = true
+nico-config-etcd = { workspace = true, optional = true }
 nico-core.workspace = true
 nico-http.workspace = true
 # The binary is the one crate that assembles concrete implementations, and the LLM codecs and

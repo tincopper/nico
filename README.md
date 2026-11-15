@@ -714,7 +714,10 @@ scripts/gates/       git hook 背后的检查
 
 ## 当前限制
 
-- **配置源**：当前只实现 `type: local`（本地文件）。远端控制面尚未接入。
+- **配置源**：当前只实现 `type: local`（本地文件）。etcd 源的 **adapter 语义已实现并测试**
+  （`crates/nico-config-etcd`：一个 key 一份完整文档、inclusive 起点、compaction/fragment 折叠
+  resync、auth 失败与 key 删除都是 Unavailable 而非空配置），但真实 gRPC client 尚未接入——
+  bootstrap 的 `type: etcd` 在 client 落地前不可用。见 `11-14-etcd-config-source` 的取证记录。
 - **路由匹配**：线性扫描，无编译索引；`path_prefix` 是字节前缀，不做路径归一化。
 - **入站 TLS**：数据面的 `listen` 只服务明文 HTTP（可开 `h2c`）；需要在该端口终止 TLS 时，请在
   前面放一个代理。上游方向直接支持 `https`（见 `tls.ca_file`）。

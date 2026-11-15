@@ -98,13 +98,19 @@ reload 失败不影响旧流量；非 AI 路由不读 body；AI convert 路由�
 
 恢复 etcd 前必须重新取证，任一项不通过不得进入生产：
 
-- [ ] `etcd-client` 锁定版本的 Watch API（`created` / `canceled` / `compact_revision` / `events` / `fragment`）。
-- [ ] 包含式 `start_revision`：`load` 得 `R` 后从 `R + 1` 订阅不重不漏。
-- [ ] compaction / watcher 落后：watch 被取消并带 `compact_revision`，adapter 触发 `ResyncRequired`。
-- [ ] fragment：按 watch_id 聚合或显式拒绝并全量重载。
-- [ ] Auth 与 TLS；认证失败与 key 删除映射为 `Unavailable`（不是空配置）。
+- [x] `etcd-client` 锁定版本的 Watch API（`created` / `canceled` / `compact_revision` / `events` / `fragment`）：
+      语义由 `11-14-etcd-config-source` 在 **client 接缝的 mock 上**取证（真实 gRPC client 仍待接，
+      接入时实现同一 trait，adapter 逻辑不变）。
+- [x] 包含式 `start_revision`：`load` 得 `R` 后从 `R + 1` 订阅不重不漏（`events_at_or_before_the_start_are_dropped`）。
+- [x] compaction / watcher 落后：watch 被取消并带 `compact_revision`，adapter 触发 `ResyncRequired`（`a_compacted_watch_is_a_resync`）。
+- [x] fragment：显式拒绝并全量重载（`a_fragmented_watch_is_a_resync`）。
+- [x] Auth 与 TLS：认证失败与 key 删除映射为 `Unavailable`，不是空配置（`an_auth_refusal_is_unavailable` /
+      `a_deleted_key_is_unavailable_not_empty`）；TLS 属真实 client，在接缝之下。
 - [ ] endpoint failover；`cargo tree -d` 检查 tonic/hyper/TLS 是否与 Pingora 形成第二套栈。
-- [ ] 单 key 完整文档的大小上限与 `max_bytes` 预算（etcd 3.5 默认 `max-request-bytes` ≈ 1.5 MiB）。
+      **随真实 client 推迟**：adapter 把连接失败折叠为 `Unavailable`，failover 在接缝之下；栈检查在
+      引入 `etcd-client` 依赖时执行。
+- [x] 单 key 完整文档的大小上限与 `max_bytes` 预算（`an_oversized_document_is_too_large` /
+      `an_oversized_event_is_too_large`）。
 
 契约不需要为 etcd 扩展；若上述取证表明协议怪癖无法在 adapter 内吸收，再单独评审 `ConfigEvent` 扩展。
 
