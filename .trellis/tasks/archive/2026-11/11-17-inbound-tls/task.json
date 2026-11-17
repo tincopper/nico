@@ -1,0 +1,28 @@
+{
+  "id": "inbound-tls",
+  "name": "inbound-tls",
+  "title": "入站 TLS：rustls 终止、配置与端到端验证",
+  "description": "在 nico-http 数据面为 http.listen 增加 rustls 入站 TLS 终止：bootstrap http.tls 证书/私钥、启动期校验、TLS 1.2/1.3、ALPN h2+h1、x-forwarded-proto=https、真实 TLS 客户端 e2e 与失败路径；证书热加载/mTLS/SNI 多证书不在本任务。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "tincopper",
+  "assignee": "tincopper",
+  "createdAt": "2026-11-17",
+  "completedAt": "2026-11-17",
+  "branch": "main",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "commit": "c35a379"
+  }
+}

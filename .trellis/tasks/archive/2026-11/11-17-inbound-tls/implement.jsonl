@@ -1,0 +1,9 @@
+{"file": ".trellis/tasks/11-17-inbound-tls/prd.md", "reason": "requirements, scope and acceptance criteria for inbound TLS"}
+{"file": ".trellis/tasks/11-17-inbound-tls/design.md", "reason": "listener identity, bootstrap validation, service build and x-forwarded-proto decisions"}
+{"file": ".trellis/tasks/11-17-inbound-tls/implement.md", "reason": "ordered implementation checkpoints and gates"}
+{"file": ".trellis/spec/backend/pingora-guidelines.md", "reason": "Pingora listener, TLS settings and service assembly constraints"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "startup validation errors and the no-panic/no-secret rule"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "where the inbound TLS and bootstrap modules belong"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "file budget, dependency direction and test conventions"}
+{"file": ".trellis/tasks/archive/2026-11/11-11-upstream-tls/design.md", "reason": "existing TLS policy, fixture and validation patterns to mirror without coupling upstream trust"}
+{"file": ".trellis/tasks/archive/2026-11/11-11-upstream-tls/implement.md", "reason": "how TLS fixtures, startup failures and real TLS e2e were proven before"}

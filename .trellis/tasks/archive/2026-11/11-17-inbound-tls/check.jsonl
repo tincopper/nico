@@ -1,0 +1,6 @@
+{"file": ".trellis/tasks/11-17-inbound-tls/prd.md", "reason": "acceptance criteria and out-of-scope boundaries"}
+{"file": ".trellis/tasks/11-17-inbound-tls/design.md", "reason": "invariants: no plaintext fallback, no panic, startup validation"}
+{"file": ".trellis/spec/backend/pingora-guidelines.md", "reason": "listener assembly, TLS settings and the response/forwarding contract"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "startup errors are typed and never quote key material"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "file budget and gate requirements"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "no certificate/key material in logs; existing request fields stay unchanged"}
