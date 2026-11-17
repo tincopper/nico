@@ -23,7 +23,13 @@ pub fn service(
     conf: &Arc<ServerConf>,
     state: Arc<HttpStateHandle>,
     settings: &HttpSettings,
-) -> Service<HttpProxy<HttpApp, ()>>;
+) -> Result<Service<HttpProxy<HttpApp, ()>>, ServiceBuildError>;
+
+// nico-http::inbound — listener identity, validated before Pingora's panicking loader sees it.
+pub struct InboundTls { /* cert_file, key_file */ }
+pub fn validate_server_identity(cert_pem: &[u8], key_pem: &[u8])
+    -> Result<(), ServerIdentityError>;
+pub enum ServiceBuildError { /* read, identity, TLS settings */ }
 
 // nico-http — the one published value the request path reads
 pub struct HttpState {
@@ -155,7 +161,8 @@ not part of the request path.
 | Field | Meaning | Constraint |
 |---|---|---|
 | `http.listen` | bind address for the data plane | non-zero port; `127.0.0.1:0` is rejected |
-| `http.h2c` | accept cleartext HTTP/2 on that listener | default `false`; only `ProxyServiceBuilder::server_options` can set it |
+| `http.h2c` | accept cleartext HTTP/2 on that listener | default `false`; only `ProxyServiceBuilder::server_options` can set it. Refused together with `http.tls`: one listener has one transport |
+| `http.tls.cert_file` / `http.tls.key_file` | the certificate chain and private key the listener presents | both required when the section is present; read and paired at startup; a bad pair refuses to start; no hot reload |
 | `http.grace_period_ms` | how long in-flight requests keep running after shutdown begins | `1..=300_000`, default 5000, rounded **up** to whole seconds |
 | `http.graceful_shutdown_ms` | upper bound on the final drain | `1..=300_000`, default 30000, `>= grace_period_ms` |
 | `http.threads` | worker threads per service | `1..=256`, default 1 — `ServerConf::threads` feeds Tokio's `worker_threads`, which panics on `0` |
@@ -178,6 +185,27 @@ the data plane. Certificate and hostname verification are always on, SNI is the 
 Three files, three jobs: `upstream/tls/policy.rs` (root source and bundle validation, no Pingora
 type, no I/O), `upstream/tls/adapter.rs` (the only writer of Pingora's TLS configuration), and
 `upstream/tls/mod.rs`'s `ensure_usable` (the one place that reads a source at startup).
+
+### Inbound TLS
+
+`http.tls` turns the data plane listener into a rustls endpoint. It is the listener's identity, not
+the upstream trust roots: the top-level `tls.ca_file` is unchanged and still governs outbound
+handshakes only.
+
+| Fact | Consequence |
+|---|---|
+| `HttpSettings::inbound_tls` is an `InboundTls` path pair; `resolve_with_inbound_tls` rejects `h2c: true` with it | one listener has one transport; neither option silently wins |
+| bootstrap reads both files and calls `validate_server_identity` before the listener exists | an unreadable, unparseable or mismatched pair is a startup refusal (`http.tls.cert_file` / `http.tls.key_file`), never the first request's failure |
+| `service()` returns `Result`; it re-reads and re-validates the pair, then hands Pingora a `StaticCertResolver` holding the already-built `CertifiedKey` | Pingora's `TlsSettings::build` would load paths again and `panic!` on a changed/mismatched pair. The resolver means `build` performs no file I/O; a post-check change is a clean `ServiceBuildError` |
+| `TlsSettings::enable_h2()` | ALPN offers `h2` and `http/1.1`; TLS 1.2/1.3 are the rustls defaults with `tls12` enabled. There is no TLS 1.0/1.1 |
+| one certificate, no client auth, SNI ignored | `StaticCertResolver` returns the same identity for every ClientHello. SNI-based selection and mTLS are separate features |
+| certificate/key changes | restart required; there is no file watcher or hot swap |
+| `HttpApp::inbound_tls` is set by `service()` | `x-forwarded-proto` is `https` when absent on a TLS listener, `http` on plaintext; an existing client value is not appended to |
+| a plaintext client on a TLS listener | handshake failure/connection close; no HTTP parser, no request record, no fallback |
+
+The TLS handshake happens inside Pingora's listener; the HTTP hooks see decrypted bytes and are
+unchanged. A certificate failure at startup is a configuration failure; a client's failed handshake
+is a transport event, not an `HttpError` and not a 5xx.
 
 ### Attribution
 
@@ -302,6 +330,10 @@ streaming response's declared length either.
 | upstream host does not resolve | `502 upstream_unreachable` |
 | `scheme: https` and the handshake fails (certificate not trusted, hostname mismatch, protocol error) | `502 upstream_unreachable` — refused, never a plaintext downgrade; the typed cause stays in the request record |
 | a TLS handshake that spends the connect deadline (`TLSHandshakeTimedout`, or `ConnectTimedout` raised on the handshake) | `504 upstream_timeout`, the same path as every other timeout |
+| `http.tls` section present but `cert_file`/`key_file` missing, unreadable or not a matching identity | startup refusal with `http.tls.cert_file`/`http.tls.key_file`; no listener is bound |
+| `http.tls` and `http.h2c: true` | startup refusal with `http.h2c`; one listener has one transport |
+| TLS identity changes after bootstrap validation | `service()` returns `ServiceBuildError`; the process exits with `FAILURE_EXIT_CODE`, no panic |
+| plaintext request to a TLS listener | TLS handshake failure/close; no HTTP response, no request record |
 | `Content-Length` or metered chunked body over the limit | `413 body_too_large` |
 | an over-limit body in buffered mode | `413 body_too_large` |
 | request body still arriving when the budget expires (caller is slow) | `408 request_timeout` |
@@ -370,6 +402,8 @@ ones the data plane owns. The one exception to both is the informational respons
 | publishing one generation writes the snapshot *and* its chains in one step | `nico-server/tests/publication.rs` |
 | a global plugin runs on a request that matches no route, and before the route scope | `nico-server/tests/plugins_global.rs` |
 | a buffered route withholds the body until the upload ends, then forwards the rewritten whole | `nico-server/tests/plugins_buffered.rs` |
+| a real TLS client verifies the listener, sends HTTP/1.1, and upstream sees `x-forwarded-proto: https`; ALPN offers h2; a wrong root and a plaintext probe are refused | `nico-server/tests/tls_inbound.rs` |
+| a missing/bad/mismatched listener identity and `h2c` + TLS are startup refusals | `nico-server/src/bootstrap/tests/http_tls.rs`, `nico-http/src/inbound.rs`, `service/tests.rs` |
 | a synthesized response is cleaned and written without choosing a peer | `nico-server/tests/plugins_respond.rs` |
 | a response-body plugin sees one chunk per upstream write, never the whole stream | `nico-server/tests/plugins_streaming.rs` |
 

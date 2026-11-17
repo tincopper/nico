@@ -42,6 +42,7 @@ nico/
     │   │   ├── main.rs         # thin: parse args, call lib::run, map error to exit code
     │   │   ├── lib.rs          # //! doc + pub fn run(...); makes wiring integration-testable
     │   │   ├── bootstrap.rs
+    │   │   ├── bootstrap/      # http.rs (the `http` section), http/tls.rs (listener identity read + paired), source.rs, metrics.rs, tls.rs (upstream roots)
     │   │   ├── reload.rs       # watch loop, debounce, single flight, one publication
     │   │   ├── reload/         # error.rs, pacing.rs, publish.rs, startup.rs (one concern each)
     │   │   ├── metrics.rs      # transport: port preflight, recorder install, the assembly step
@@ -55,7 +56,8 @@ nico/
     │       ├── llm_anthropic.rs # Anthropic client → OpenAI provider: one answer, one stream, one refusal, one record
     │       ├── llm_gemini.rs   # OpenAI client → Gemini provider: the pinned path, the folded answer, the 403, the refused passthrough
     │       ├── llm_passthrough.rs # byte-for-byte forwarding through the published endpoint
-    │       └── llm_publication.rs # the plan a document publishes, and what a refused one leaves alone
+    │       ├── llm_publication.rs # the plan a document publishes, and what a refused one leaves alone
+    │       └── tls_inbound.rs  # real TLS client verifies the listener; ALPN, https scheme, plaintext refusal
     ├── nico-core/           # small kernel shared by every data plane
     │   └── src/
     │       ├── lib.rs          # //! crate doc + #![deny(missing_docs)]
@@ -94,8 +96,9 @@ nico/
     │       │   ├── forward.rs  # destination, Host/X-Forwarded-*, and the framing guard
     │       │   └── record.rs   # the request's one log record
     │       ├── route.rs        # match_route(header, routes)
-    │       ├── service.rs      # ServerConf derivation + ProxyServiceBuilder + listener
-    │       ├── settings.rs     # HttpSettings: bootstrap `http` defaults and ranges
+    │       ├── service.rs      # ServerConf derivation + ProxyServiceBuilder + listener; TLS listener is fallible
+    │       ├── settings.rs     # HttpSettings: bootstrap `http` defaults, ranges and inbound TLS identity
+    │       ├── inbound.rs      # InboundTls, PEM identity validation, the static certificate resolver
     │       ├── state.rs        # HttpState/HttpStateHandle: snapshot + plan + llm routes, one store
     │       ├── state/          # plan.rs: the chains and the two per-route framing decisions
     │       ├── llm.rs          # the byte-level LLM seam: LlmRoutes/LlmRoute/ResponseTransform

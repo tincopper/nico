@@ -304,6 +304,25 @@ status). `nico-core` must never contain `StatusCode` or any wire-level detail.
 
 ---
 
+### Inbound TLS startup errors
+
+An inbound listener's certificate and key are a **startup configuration fact**, not a request path
+failure. `nico-http::validate_server_identity` returns `ServerIdentityError` (certificate PEM, key
+PEM, empty chain, missing/unsupported key, pair mismatch); `nico-server` maps it to
+`BootstrapError::InvalidField` under `http.tls.cert_file` or `http.tls.key_file`. The data plane
+repeats the read and check in `service()`, because Pingora's path-based TLS loader would panic on a
+file that changed after the bootstrap check; a failed repeat is `ServiceBuildError` and the process
+exits with `FAILURE_EXIT_CODE`.
+
+Rules:
+
+- No certificate or private-key bytes appear in an error's `Display`, a log field or a response.
+- A bad identity never reaches a listener: the TLS check happens before `add_tls_with_settings` and
+  before `server.bootstrap()`.
+- A client handshake failure is a transport event, not an `HttpError`: it has no request record and
+  no HTTP status, and must not be reported as a gateway 5xx.
+- `http.tls` with `http.h2c: true` is a configuration refusal (`http.h2c`), not a runtime preference.
+
 ## Protocol Error Responses
 
 Mapping happens **once**, at the edge layer:
