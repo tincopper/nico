@@ -61,14 +61,14 @@
 
 ## Acceptance Criteria
 
-- [ ] Anthropic Messages 客户端 ↔ canonical ↔ OpenAI/Anthropic/Gemini provider 的核心组合通过。
-- [ ] OpenAI Responses 客户端 ↔ canonical ↔ OpenAI/Anthropic/Gemini provider 的核心组合通过；无第二套 canonical。
-- [ ] Gemini generateContent 客户端/provider 通过；模型在 path 的方案已选定并测试（常量 `model_map` → `Endpoint` 上的钉住模型、不匹配 403、passthrough 发布期拒绝）。
-- [ ] `providers[].max_output_tokens` 在文档模型、发布期编译与 Anthropic 适配器的拒绝路径上都被测试；客户端的 `max_tokens` 永远优先。
-- [ ] 工具调用/结果、reasoning、图片、stop reason、usage 在矩阵 fixture 中断言；不支持能力显式报错。
-- [ ] raw passthrough 与 convert 的字节/语义断言；SSE 分片与背压通过。
-- [ ] 错误不泄露 provider body/凭证；日志字段一致。
-- [ ] 无 vendor switch 结构测试、依赖边界、文件预算、五条基线全绿。
+- [x] Anthropic Messages 客户端 ↔ canonical ↔ OpenAI/Anthropic/Gemini provider 的核心组合通过。
+- [x] OpenAI Responses 客户端 ↔ canonical ↔ OpenAI/Anthropic/Gemini provider 的核心组合通过；无第二套 canonical。
+- [x] Gemini generateContent 客户端/provider 通过；模型在 path 的方案已选定并测试（常量 `model_map` → `Endpoint` 上的钉住模型、不匹配 403、passthrough 发布期拒绝）。
+- [x] `providers[].max_output_tokens` 在文档模型、发布期编译与 Anthropic 适配器的拒绝路径上都被测试；客户端的 `max_tokens` 永远优先。
+- [x] 工具调用/结果、reasoning、图片、stop reason、usage 在矩阵 fixture 中断言；不支持能力显式报错。
+- [x] raw passthrough 与 convert 的字节/语义断言；SSE 分片与背压通过。
+- [x] 错误不泄露 provider body/凭证；日志字段一致。
+- [x] 无 vendor switch 结构测试、依赖边界、文件预算、五条基线全绿。
 
 ## Out of Scope
 

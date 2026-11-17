@@ -10,13 +10,13 @@
 
 ## 1. 发布期事实（契约扩展 + 配置）
 
-- [ ] `provider/endpoint.rs`：`Endpoint::with_model(ModelId)` / `Endpoint::model() -> Option<&ModelId>`（`Debug` 打印模型）；新增 `EndpointError::RouteFact { field: &'static str, reason: Cow<'static, str> }`，文档写明它是**发布期**失败（保留 LKG）。
-- [ ] `provider/route.rs`：`ProviderRoute::with_max_output_tokens(NonZeroU32)` / `max_output_tokens() -> Option<NonZeroU32>`；`Debug` 带上它。
-- [ ] `filter.rs::Exchange::prepare`：解析模型、过允许列表之后，`endpoint.model()` 存在且不等于物理名 → `ExchangeError::ModelNotAllowed`（403）；`prepare`/`respond` 的调用顺序在测试里断言（endpoint 仍是编译期单次）。
-- [ ] `provider.rs`：`ProviderError::InvalidEndpoint` 与 `ExchangeBuildError::Endpoint` 的文档扩到“缺少本适配器要求的路由事实也算”；`EndpointError::RouteFact` 通过既有的 `EndpointError` re-export 暴露。
-- [ ] `nico-core`：`providers[].max_output_tokens: Option<u32>`（`raw`/`config/provider.rs`/`semantic` 校验 >0/`reference` 不需要改/`document` 测试）；shipped 文档加一行注释说明语义。
-- [ ] `nico-server/llm/plan.rs`：把 `entry.max_output_tokens()` 编进 `ProviderRoute`；plan 测试断言编译后的值。
-- [ ] **检查点 A**：`cargo test -p nico-llm -p nico-core -p nico-server`；既有 OpenAI 路径全绿（`Endpoint::model()` 为 `None` 时行为不变）；`prepare` 的顺序与 403 有测试；文件 ≤500 行。
+- [x] `provider/endpoint.rs`：`Endpoint::with_model(ModelId)` / `Endpoint::model() -> Option<&ModelId>`（`Debug` 打印模型）；新增 `EndpointError::RouteFact { field: &'static str, reason: Cow<'static, str> }`，文档写明它是**发布期**失败（保留 LKG）。
+- [x] `provider/route.rs`：`ProviderRoute::with_max_output_tokens(NonZeroU32)` / `max_output_tokens() -> Option<NonZeroU32>`；`Debug` 带上它。
+- [x] `filter.rs::Exchange::prepare`：解析模型、过允许列表之后，`endpoint.model()` 存在且不等于物理名 → `ExchangeError::ModelNotAllowed`（403）；`prepare`/`respond` 的调用顺序在测试里断言（endpoint 仍是编译期单次）。
+- [x] `provider.rs`：`ProviderError::InvalidEndpoint` 与 `ExchangeBuildError::Endpoint` 的文档扩到“缺少本适配器要求的路由事实也算”；`EndpointError::RouteFact` 通过既有的 `EndpointError` re-export 暴露。
+- [x] `nico-core`：`providers[].max_output_tokens: Option<u32>`（`raw`/`config/provider.rs`/`semantic` 校验 >0/`reference` 不需要改/`document` 测试）；shipped 文档加一行注释说明语义。
+- [x] `nico-server/llm/plan.rs`：把 `entry.max_output_tokens()` 编进 `ProviderRoute`；plan 测试断言编译后的值。
+- [x] **检查点 A**：`cargo test -p nico-llm -p nico-core -p nico-server`；既有 OpenAI 路径全绿（`Endpoint::model()` 为 `None` 时行为不变）；`prepare` 的顺序与 403 有测试；文件 ≤500 行。
 
   **验收要点**
   - 钉模型不通过时不发生任何 encode（测试用 mock provider 断言调用序列）。
@@ -30,11 +30,11 @@
 
 ## 2. 共享 wire 助手
 
-- [ ] `src/wire.rs` + `src/wire/base64.rs`：RFC 4648 编解码（编码从 `provider/openai/base64.rs` 迁移，解码新增；padding 缺失/非法字符/长度错误都是 typed 错误），向量测试含高位字节、空输入、缺失 padding。
-- [ ] `src/wire/json.rs`：`parse`（只报类别与行列）、`error_class`、`reject_extra`（未知成员，引用规则走 `diagnostic`），从 `provider/openai.rs` 抽出来，`provider/openai` 改为引用。
-- [ ] `protocol/openai_chat/message.rs`：`image_url` 的 `data:` URL 不再拒绝，改为 base64 解码成 `ImageSource::Base64`（1.4a 拒绝的理由是“没有解码器”，现在有了；矩阵 fixture 需要一种四协议都能写出的图片拼写）；坏 base64/非 image media type 的拒绝有测试。
-- [ ] `tests/structure.rs`：扫描列表加 `wire`（vendor-free）。
-- [ ] **检查点 B**：既有 1.4a 测试全绿（只在 `data:` 图片这条上预期从“拒绝”改为“解码”，对应测试同步重写）；新助手只有单测消费者时允许 `#![expect(dead_code, reason = "…")]`，直到步骤 3 用到并删除。
+- [x] `src/wire.rs` + `src/wire/base64.rs`：RFC 4648 编解码（编码从 `provider/openai/base64.rs` 迁移，解码新增；padding 缺失/非法字符/长度错误都是 typed 错误），向量测试含高位字节、空输入、缺失 padding。
+- [x] `src/wire/json.rs`：`parse`（只报类别与行列）、`error_class`、`reject_extra`（未知成员，引用规则走 `diagnostic`），从 `provider/openai.rs` 抽出来，`provider/openai` 改为引用。
+- [x] `protocol/openai_chat/message.rs`：`image_url` 的 `data:` URL 不再拒绝，改为 base64 解码成 `ImageSource::Base64`（1.4a 拒绝的理由是“没有解码器”，现在有了；矩阵 fixture 需要一种四协议都能写出的图片拼写）；坏 base64/非 image media type 的拒绝有测试。
+- [x] `tests/structure.rs`：扫描列表加 `wire`（vendor-free）。
+- [x] **检查点 B**：既有 1.4a 测试全绿（只在 `data:` 图片这条上预期从“拒绝”改为“解码”，对应测试同步重写）；新助手只有单测消费者时允许 `#![expect(dead_code, reason = "…")]`，直到步骤 3 用到并删除。
 
   **落地记录（第 2 步）**
   - 新增 `src/wire.rs`（17）、`src/wire/base64.rs`（223）、`src/wire/json.rs`（180）；删除 `provider/openai/base64.rs`（编码迁入 `wire/base64.rs`，解码新增：非 4 的倍数 → `Length`、字母表外字符 → `Character`、`=` 不在末尾或超过两个 → `Padding`，三者 `Display` 都不引用 payload）。
@@ -45,13 +45,13 @@
 
 ## 3. Anthropic provider adapter
 
-- [ ] `provider/base_url.rs`：把 `provider/openai/url.rs` 里与厂商无关的部分（scheme/authority/port/host 规则、前缀与空片段拒绝、`join(operation_path)`）抽成共享解析，`provider/openai/url.rs` 变为薄封装（chat 保留既有行为，新增 `/responses` 后缀）；既有 base URL 测试全部保留。
-- [ ] `provider/anthropic.rs` + `anthropic/{url,request,response,stream,error,usage}.rs`：模块文档写字段表（canonical ↔ Messages），`PROVIDER_KIND = "anthropic"`、`NATIVE_PROTOCOL = "messages"`、`version() = "2023-06-01"`。
-- [ ] `endpoint`：`base_url::parse` + `/v1/messages`；`x-api-key` + `anthropic-version`；发布期缺 `max_output_tokens` → `RouteFact`。
-- [ ] `encode` / `decode_response` / `stream_decoder` / `error_for_status` 按 `design.md` §4.2 与 §5.1 的表；`capabilities()` 不声明 `reasoning`，不声明 `response_format`。
-- [ ] `builtin_registry()` 注册；`tests/registry.rs` 与 `tests/matrix.rs` 的既有行不变。
-- [ ] 测试：`tests/anthropic_provider/{main,endpoint,request,response,stream,exchange,support}.rs`，覆盖 system 顶层字段、tool_use/tool_result 折叠与分组、thinking block、`stop_reason` 全表、usage 四个字段、`max_tokens` 缺省、任意分片流、缺 `stop_reason` 的截断、`ping`/未知事件、错误状态表、Debug 脱敏。
-- [ ] **检查点 C**：单 crate 全绿；`exchange` 测试断言 `anthropic.messages` codec 缺席时只用 mock codec 也能配对（证明两侧独立）。
+- [x] `provider/base_url.rs`：把 `provider/openai/url.rs` 里与厂商无关的部分（scheme/authority/port/host 规则、前缀与空片段拒绝、`join(operation_path)`）抽成共享解析，`provider/openai/url.rs` 变为薄封装（chat 保留既有行为，新增 `/responses` 后缀）；既有 base URL 测试全部保留。
+- [x] `provider/anthropic.rs` + `anthropic/{url,request,response,stream,error,usage}.rs`：模块文档写字段表（canonical ↔ Messages），`PROVIDER_KIND = "anthropic"`、`NATIVE_PROTOCOL = "messages"`、`version() = "2023-06-01"`。
+- [x] `endpoint`：`base_url::parse` + `/v1/messages`；`x-api-key` + `anthropic-version`；发布期缺 `max_output_tokens` → `RouteFact`。
+- [x] `encode` / `decode_response` / `stream_decoder` / `error_for_status` 按 `design.md` §4.2 与 §5.1 的表；`capabilities()` 不声明 `reasoning`，不声明 `response_format`。
+- [x] `builtin_registry()` 注册；`tests/registry.rs` 与 `tests/matrix.rs` 的既有行不变。
+- [x] 测试：`tests/anthropic_provider/{main,endpoint,request,response,stream,exchange,support}.rs`，覆盖 system 顶层字段、tool_use/tool_result 折叠与分组、thinking block、`stop_reason` 全表、usage 四个字段、`max_tokens` 缺省、任意分片流、缺 `stop_reason` 的截断、`ping`/未知事件、错误状态表、Debug 脱敏。
+- [x] **检查点 C**：单 crate 全绿；`exchange` 测试断言 `anthropic.messages` codec 缺席时只用 mock codec 也能配对（证明两侧独立）。
 
   **落地记录（第 3 步）**
   - 新增 `provider/base_url.rs`（247，vendor-free 的 base_url → destination + 前缀 + 操作 path，`openai/url.rs` 退化为 61 行薄封装并留出操作后缀参数给第 4 步）、`provider/anthropic.rs`（265）与 `anthropic/{url,request,request/conversation,response,stream,stream/decoder,error,usage}.rs`（71/256/288/247/150/389/178/61）；`provider.rs`、`lib.rs` 注册与模块文档；`tests/structure.rs` 把 `provider/base_url.rs` 纳入 vendor-free 扫描。
