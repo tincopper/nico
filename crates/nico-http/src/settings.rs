@@ -1,8 +1,8 @@
 //! The process-level HTTP settings the local bootstrap file owns.
 //!
-//! A listening address, plaintext HTTP/2, drain windows, a thread count and the upstream trust
-//! roots describe the *process*, not the configuration a control plane pushes, so they are read once
-//! from the bootstrap file and never from a configuration source. This module owns their defaults and
+//! A listening address, plaintext HTTP/2, an optional inbound TLS identity, drain windows, a thread
+//! count and the upstream trust roots describe the *process*, not the configuration a control plane
+//! pushes, so they are read once from the bootstrap file and never from a configuration source. This module owns their defaults and
 //! their accepted ranges, which is why [`HttpSettings`] can only be built by [`HttpSettings::resolve`]:
 //! every field in an instance was either omitted and defaulted, or written and accepted as written.
 //!
@@ -11,7 +11,7 @@
 
 use std::{borrow::Cow, net::SocketAddr, time::Duration};
 
-use crate::upstream::tls::TlsPolicy;
+use crate::{inbound::InboundTls, upstream::tls::TlsPolicy};
 
 /// Address the data plane listens on when the bootstrap file names none.
 const DEFAULT_LISTEN: &str = "0.0.0.0:8080";
@@ -51,6 +51,7 @@ pub struct HttpSettings {
     graceful_shutdown: Duration,
     threads: usize,
     tls: TlsPolicy,
+    inbound_tls: Option<InboundTls>,
 }
 
 impl HttpSettings {
@@ -77,8 +78,39 @@ impl HttpSettings {
         threads: Option<usize>,
         tls: TlsPolicy,
     ) -> Result<Self, HttpSettingsError> {
+        Self::resolve_with_inbound_tls(
+            listen,
+            h2c,
+            grace_period_ms,
+            graceful_shutdown_ms,
+            threads,
+            tls,
+            None,
+        )
+    }
+
+    /// Resolves the section together with the listener's TLS identity.
+    ///
+    /// The identity is a pair of paths the bootstrap section validated; it is not read here. A
+    /// configured identity and `h2c` are mutually exclusive: one listener cannot be both TLS and
+    /// cleartext HTTP/2, and silently ignoring one of the two would serve a transport the operator
+    /// did not ask for.
+    ///
+    /// # Errors
+    /// Returns [`HttpSettingsError`] naming the field and the rule that rejected it. The checks are
+    /// the same as [`HttpSettings::resolve`], plus the `h2c`/TLS conflict.
+    pub fn resolve_with_inbound_tls(
+        listen: Option<&str>,
+        h2c: Option<bool>,
+        grace_period_ms: Option<u64>,
+        graceful_shutdown_ms: Option<u64>,
+        threads: Option<usize>,
+        tls: TlsPolicy,
+        inbound_tls: Option<InboundTls>,
+    ) -> Result<Self, HttpSettingsError> {
         let mut settings = Self {
             tls,
+            inbound_tls,
             ..Self::default()
         };
 
@@ -89,6 +121,12 @@ impl HttpSettings {
 
         if let Some(h2c) = h2c {
             settings.h2c = h2c;
+        }
+        if settings.h2c && settings.inbound_tls.is_some() {
+            return Err(HttpSettingsError::new(
+                "h2c",
+                "cannot be enabled together with `http.tls`: one listener has one transport",
+            ));
         }
         if let Some(value) = grace_period_ms {
             settings.grace_period = window("grace_period_ms", value)?;
@@ -159,6 +197,15 @@ impl HttpSettings {
     pub const fn tls(&self) -> &TlsPolicy {
         &self.tls
     }
+
+    /// Returns the listener's TLS identity, when this process terminates TLS.
+    ///
+    /// The value is a pair of paths; the service reads and validates them when it builds the
+    /// listener. `None` means plaintext TCP, exactly as before this setting existed.
+    #[must_use]
+    pub const fn inbound_tls(&self) -> Option<&InboundTls> {
+        self.inbound_tls.as_ref()
+    }
 }
 
 impl Default for HttpSettings {
@@ -174,6 +221,7 @@ impl Default for HttpSettings {
             graceful_shutdown: Duration::from_millis(DEFAULT_GRACEFUL_SHUTDOWN_MS),
             threads: DEFAULT_THREADS,
             tls: TlsPolicy::default(),
+            inbound_tls: None,
         }
     }
 }

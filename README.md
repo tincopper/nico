@@ -155,6 +155,10 @@ http:
   grace_period_ms: 5000
   graceful_shutdown_ms: 30000
   threads: 1
+  # 可选：在该监听上终止 TLS（单证书、启动期加载）。
+  # tls:
+  #   cert_file: /etc/nico/tls/fullchain.pem
+  #   key_file: /etc/nico/tls/key.pem
 
 tls:                     # 可选；省略整段 = 使用平台证书库
   ca_file: /etc/nico/roots.pem   # 完整信任根集合（PEM），整体替换平台库
@@ -169,6 +173,9 @@ metrics:                 # 可选；省略整段 = 不监听、不装 recorder
 - `allow_bootstrap_cache: true` 时，若首次发布失败，可从 `cache_dir` 的 last-known-good 快照启动
   （该快照被标记为 stale）。健康进程的行为不受影响。
 - `http` 的每一项都可省略（取内置默认值），但写出来的值会在启动时校验，不会被默认值吞掉。
+- `http.tls` 存在时该 listener 只接受 TLS；证书/私钥在启动时读取并配对，坏文件拒绝启动。TLS 1.2/1.3、
+  ALPN `h2`/`http/1.1`；证书/私钥变更需要重启，不做热加载。`http.tls` 与 `http.h2c` 不能同时启用
+  （一个 listener 只有一种传输）。它和下面的顶层 `tls` 是两件事：后者是**上游**握手的信任根。
 - `metrics` 整段省略即关闭自报面（默认）。写出来后 `listen` 必填；与 `http.listen` 同址、端口为 0、
   或端口无法绑定都会让启动失败 —— 一个存在但渲染不出东西的自报面是运维最难排查的形态。
 - `tls.ca_file` 是**完整信任根集合，整体替换平台证书库，不是追加**。要同时信任公网与私有 CA，
@@ -744,5 +751,6 @@ scripts/gates/       git hook 背后的检查
   支持，接入是 bootstrap schema 的纯增量）。tonic/hyper 栈由 feature 门控：产品二进制（默认与
   `traffic` 角色）不链接，测试构建经 dev-dependencies 使用协议替身。
 - **路由匹配**：线性扫描，无编译索引；`path_prefix` 是字节前缀，不做路径归一化。
-- **入站 TLS**：数据面的 `listen` 只服务明文 HTTP（可开 `h2c`）；需要在该端口终止 TLS 时，请在
-  前面放一个代理。上游方向直接支持 `https`（见 `tls.ca_file`）。
+- **入站 TLS**：`http.tls` 支持单证书、启动期加载的 TLS 终止（TLS 1.2/1.3，ALPN h2+h1），证书/
+  私钥变更需重启。证书热加载/轮换、mTLS、SNI 多证书暂未实现；需要这些能力时仍在前面放代理。上游
+  方向直接支持 `https`（见顶层 `tls.ca_file`）。

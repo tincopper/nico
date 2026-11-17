@@ -51,6 +51,14 @@ http:
   # Worker threads per service. At least one: the count is handed to Tokio's runtime builder, which
   # rejects zero, so a written zero fails at startup instead of panicking on the first request.
   threads: 1
+  # Optional inbound TLS termination on this listener. Both files are required when the section is
+  # present; the certificate/key are read and paired at startup, and a bad pair refuses to start.
+  # A TLS listener cannot also enable `h2c` above. Certificate/key changes take a restart, not a
+  # document reload. `tls` below is a different section: it is the trust an *upstream* handshake
+  # verifies, not the certificate this listener presents.
+  # tls:
+  #   cert_file: /etc/nico/tls/fullchain.pem
+  #   key_file: /etc/nico/tls/key.pem
 
 # Upstream TLS trust roots. The whole section may be omitted, in which case the platform certificate
 # store is used and `SSL_CERT_FILE` / `SSL_CERT_DIR` are honoured by the TLS provider itself. A

@@ -15,6 +15,8 @@ use serde::Deserialize;
 
 use super::BootstrapError;
 
+mod tls;
+
 /// The `http` section exactly as written, before defaults and validation.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,6 +26,9 @@ pub(super) struct RawHttp {
     grace_period_ms: Option<u64>,
     graceful_shutdown_ms: Option<u64>,
     threads: Option<usize>,
+    // Present-but-empty is an error: an operator who wrote `http.tls:` meant TLS, not plaintext.
+    #[serde(default, deserialize_with = "tls::section")]
+    tls: Option<tls::RawHttpTls>,
 }
 
 impl RawHttp {
@@ -33,17 +38,27 @@ impl RawHttp {
     /// this section (a bundle belongs to the process, not to the listener), but it is a field of the
     /// settings this section resolves, so it is handed over here.
     ///
+    /// The optional `http.tls` section is the listener's identity. It is read and validated here,
+    /// once, before the listener is built; the data plane repeats the check when it assembles the
+    /// service so a file that changes in between is refused rather than sent to Pingora's panicking
+    /// loader.
+    ///
     /// # Errors
     /// Returns [`BootstrapError::InvalidField`] under the `http.` prefix, naming the field the data
     /// plane rejected and the rule it applied.
-    pub(super) fn resolve(&self, tls: TlsPolicy) -> Result<HttpSettings, BootstrapError> {
-        HttpSettings::resolve(
+    pub(super) fn resolve(&self, trust: TlsPolicy) -> Result<HttpSettings, BootstrapError> {
+        let inbound = match &self.tls {
+            Some(raw) => Some(raw.resolve()?),
+            None => None,
+        };
+        HttpSettings::resolve_with_inbound_tls(
             self.listen.as_deref(),
             self.h2c,
             self.grace_period_ms,
             self.graceful_shutdown_ms,
             self.threads,
-            tls,
+            trust,
+            inbound,
         )
         .map_err(|error: HttpSettingsError| BootstrapError::InvalidField {
             field: format!("http.{}", error.field()).into(),

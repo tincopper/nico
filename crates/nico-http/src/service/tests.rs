@@ -2,8 +2,10 @@ use std::sync::Arc;
 
 use pingora::{server::configuration::ServerConf, services::Service as ServiceApi};
 
-use super::{server_conf, service};
-use crate::{TlsPolicy, settings::HttpSettings, state::HttpStateHandle, test_support::tls_bundle};
+use super::{ServiceBuildError, server_conf, service};
+use crate::{
+    InboundTls, TlsPolicy, settings::HttpSettings, state::HttpStateHandle, test_support::tls_bundle,
+};
 
 /// Settings whose trust roots are a bundle this crate owns.
 ///
@@ -115,7 +117,8 @@ fn the_default_thread_count_is_pingoras_own_default() {
 #[test]
 fn h2c_reaches_the_proxy_server_options() {
     let settings = settings(5_000, 30_000);
-    let service = service(&conf(&settings), HttpStateHandle::new(), &settings);
+    let service = service(&conf(&settings), HttpStateHandle::new(), &settings)
+        .expect("the plaintext fixture service builds");
 
     let proxy = service
         .app_logic()
@@ -132,7 +135,8 @@ fn h2c_reaches_the_proxy_server_options() {
 fn h2c_stays_disabled_when_the_settings_do_not_ask_for_it() {
     let settings =
         HttpSettings::resolve(None, None, None, None, None, tls()).expect("defaults are valid");
-    let service = service(&conf(&settings), HttpStateHandle::new(), &settings);
+    let service = service(&conf(&settings), HttpStateHandle::new(), &settings)
+        .expect("the plaintext fixture service builds");
 
     let proxy = service.app_logic().expect("the application is held");
     let options = proxy
@@ -147,7 +151,8 @@ fn h2c_stays_disabled_when_the_settings_do_not_ask_for_it() {
 fn the_configured_listener_is_registered_once() {
     let settings = HttpSettings::resolve(Some("127.0.0.1:18080"), None, None, None, None, tls())
         .expect("the fixture address is valid");
-    let service = service(&conf(&settings), HttpStateHandle::new(), &settings);
+    let service = service(&conf(&settings), HttpStateHandle::new(), &settings)
+        .expect("the plaintext fixture service builds");
 
     assert_eq!(
         ServiceApi::listen_addresses(&service),
@@ -167,5 +172,26 @@ fn a_configured_bundle_reaches_the_server_configuration() {
         conf.ca_file.as_deref(),
         Some("/etc/nico/roots.pem"),
         "Pingora reads this field once, when it builds the connector the service uses"
+    );
+}
+
+#[test]
+fn an_unreadable_tls_identity_is_a_service_error_not_a_panic() {
+    let identity = InboundTls::from_bootstrap(
+        std::path::PathBuf::from("/nonexistent/nico-cert.pem"),
+        std::path::PathBuf::from("/nonexistent/nico-key.pem"),
+    );
+    let settings =
+        HttpSettings::resolve_with_inbound_tls(None, None, None, None, None, tls(), Some(identity))
+            .expect("the paths are a legal setting; reading them is the service's job");
+
+    let error = match service(&conf(&settings), HttpStateHandle::new(), &settings) {
+        Ok(_service) => panic!("a missing identity must not produce a listener"),
+        Err(error) => error,
+    };
+
+    assert!(
+        matches!(error, ServiceBuildError::CertificateRead { .. }),
+        "the first unreadable file is reported, got {error:?}"
     );
 }

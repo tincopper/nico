@@ -479,3 +479,5 @@ mod http {
 mod etcd_source;
 
 mod tls;
+
+mod http_tls;

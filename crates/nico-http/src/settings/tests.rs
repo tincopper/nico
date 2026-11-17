@@ -1,5 +1,7 @@
+use std::path::PathBuf;
+
 use super::{HttpSettings, HttpSettingsError};
-use crate::TlsPolicy;
+use crate::{InboundTls, TlsPolicy};
 
 /// Builds the platform trust policy: these tests describe the HTTP knobs, not what is trusted.
 fn tls() -> TlsPolicy {
@@ -246,4 +248,48 @@ fn the_trust_roots_are_carried_by_the_settings() {
         &TlsPolicy::default(),
         "an omitted `tls` section is the platform store"
     );
+}
+
+#[test]
+fn the_inbound_identity_is_carried_by_the_settings() {
+    let identity = InboundTls::from_bootstrap(
+        PathBuf::from("/etc/nico/fullchain.pem"),
+        PathBuf::from("/etc/nico/key.pem"),
+    );
+
+    let settings = HttpSettings::resolve_with_inbound_tls(
+        None,
+        None,
+        None,
+        None,
+        None,
+        tls(),
+        Some(identity.clone()),
+    )
+    .expect("the identity paths are a valid setting");
+
+    assert_eq!(settings.inbound_tls(), Some(&identity));
+    assert_eq!(defaults().inbound_tls(), None);
+}
+
+#[test]
+fn tls_and_cleartext_h2c_cannot_share_one_listener() {
+    let identity = InboundTls::from_bootstrap(
+        PathBuf::from("/etc/nico/fullchain.pem"),
+        PathBuf::from("/etc/nico/key.pem"),
+    );
+
+    let error = HttpSettings::resolve_with_inbound_tls(
+        None,
+        Some(true),
+        None,
+        None,
+        None,
+        tls(),
+        Some(identity),
+    )
+    .expect_err("one listener cannot be both TLS and cleartext h2c");
+
+    assert_eq!(error.field(), "h2c");
+    assert!(error.reason().contains("http.tls"));
 }

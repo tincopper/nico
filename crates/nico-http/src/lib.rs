@@ -93,6 +93,7 @@
 
 pub mod context;
 pub mod error;
+pub mod inbound;
 pub mod llm;
 pub mod plugin;
 pub mod proxy;
@@ -113,6 +114,7 @@ pub use error::{
     BodyFormat, BodyTemplate, HttpError, LlmRejection, LlmRejectionError, MAX_LITERAL_BYTES, Part,
     Rejection, RejectionError, Respond, escape_json_string,
 };
+pub use inbound::{InboundTls, ServerIdentityError, validate_server_identity};
 pub use plugin::{
     LogLevel, Outcome, Plugin, PluginBuildError, PluginChain, PluginContext, PluginEntry,
     PluginError, PluginFactory, PluginInfo, PluginPhase, PluginPhases, PluginRegistry,
@@ -120,7 +122,7 @@ pub use plugin::{
 };
 pub use proxy::HttpApp;
 pub use route::match_route;
-pub use service::{server_conf, service};
+pub use service::{ServiceBuildError, server_conf, service};
 pub use settings::{HttpSettings, HttpSettingsError, validate_listen};
 pub use state::{
     BufferedRoutes, HttpState, HttpStateHandle, PublishedChains, ResponseRewrites, RouteChains,

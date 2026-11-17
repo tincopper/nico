@@ -218,6 +218,50 @@ allow_bootstrap_cache: false
     BootstrapConfig::load(&path).expect("the bootstrap fixture is valid")
 }
 
+/// Writes a bootstrap whose `http.listen` is a TLS listener with `cert_file`/`key_file`.
+///
+/// The upstream trust roots still name the fixture CA, so `serve_with`'s startup probe does not
+/// depend on the host's store. The listener certificate is a separate file: `http.tls` is the
+/// listener's identity, not the roots an upstream handshake trusts.
+pub(crate) fn write_bootstrap_tls(
+    directory: &Path,
+    port: u16,
+    cert_file: &Path,
+    key_file: &Path,
+) -> BootstrapConfig {
+    let path = directory.join("bootstrap.yaml");
+    let text = format!(
+        "\
+config_source:
+  type: local
+  path: {document}
+  max_bytes: 1048576
+  watch: notify
+debounce_ms: 0
+max_wait_ms: 0
+cache_dir: {cache}
+allow_bootstrap_cache: false
+tls:
+  ca_file: \"{ca}\"
+http:
+  listen: 127.0.0.1:{port}
+  grace_period_ms: 1
+  graceful_shutdown_ms: 1000
+  threads: 1
+  tls:
+    cert_file: \"{cert}\"
+    key_file: \"{key}\"
+",
+        document = directory.join("resources.yaml").display(),
+        cache = directory.join("cache").display(),
+        ca = fixture_ca().display(),
+        cert = cert_file.display(),
+        key = key_file.display(),
+    );
+    std::fs::write(&path, text).expect("the TLS bootstrap fixture is written");
+    BootstrapConfig::load(&path).expect("the TLS bootstrap fixture is valid")
+}
+
 pub(crate) mod resources;
 
 // --- running server ----------------------------------------------------------

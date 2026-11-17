@@ -167,7 +167,18 @@ pub fn serve_with(
             shutdown: shutdown.clone(),
         },
     ));
-    server.add_service(http_service(&server.configuration, state, settings));
+    let http_service = match http_service(&server.configuration, state, settings) {
+        Ok(service) => service,
+        Err(error) => {
+            tracing::error!(
+                error = %error,
+                "the HTTP data plane could not be built; refusing to start instead of serving a \
+                 listener whose TLS identity was not usable"
+            );
+            return ExitCode::from(FAILURE_EXIT_CODE);
+        }
+    };
+    server.add_service(http_service);
 
     server.bootstrap();
     server.run(run_args(shutdown));
