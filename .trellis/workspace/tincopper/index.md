@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 10
-- **Last Active**: 2026-11-09
+- **Total Sessions**: 11
+- **Last Active**: 2026-11-17
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~424 | Active |
+| `journal-1.md` | ~446 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 11 | 2026-11-17 | 入站 TLS 收尾：rustls 终止落地并归档 | `c35a379` | `main` |
 | 10 | 2026-11-09 | 阶段 2：可靠性核心落地与收口 | `c43195b` | `main` |
 | 9 | 2026-11-08 | 阶段 1 收官：MVP 伞任务与架构分析任务归档 | `27ed43a` | `main` |
 | 8 | 2026-11-08 | 1.4b 步骤 7–9：Responses 与 Gemini 客户端 codec、矩阵收口与 spec | `a21a289`, `bf33085`, `57a0130`, `27ed43a` | `main` |

@@ -422,3 +422,25 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 
 - 阶段 3：按真实需求扩展（新协议独立 crate/binary；第二个真实消费者出现后再下沉公共 trait）
 - 阶段 2 留待后续里程碑：usage 归一化/计费、LLM token 限额、异构 Provider（语义待澄清）
+
+
+## Session 11: 入站 TLS 收尾：rustls 终止落地并归档
+<!-- trellis-session: v=2 fp=5d0599d0ea366e63 -->
+
+**Date**: 2026-11-17
+**Task**: 入站 TLS 收尾：rustls 终止落地并归档
+**Branch**: `main`
+
+### Summary
+
+提交 11-17-inbound-tls 的交付（feat http TLS 终止 + spec 契约记录），归档任务到 archive/2026-11。发现并修复 cargo-deny wildcard 拒绝（nico-lb 缺 version）。下一任务 11-17-dual-listener（HTTP+HTTPS 双 listener）已完成 prd/design 规划，待写 implement.md 后 start。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c35a379` | feat(http): terminate inbound TLS on http.listen with a startup-validated identity |
+
+### Status
+
+[OK] **Completed**

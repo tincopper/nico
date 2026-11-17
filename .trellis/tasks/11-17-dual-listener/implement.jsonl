@@ -1,0 +1,6 @@
+{"file": ".trellis/tasks/11-17-dual-listener/prd.md", "reason": "requirements, scope and acceptance criteria for the dual listener"}
+{"file": ".trellis/spec/backend/index.md", "reason": "backend spec entry: pre-development checklist and quality gate list"}
+{"file": ".trellis/spec/backend/pingora-guidelines.md", "reason": "listener/TLS assembly constraints just updated by 11-17-inbound-tls"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "startup validation error matrix and the no-secret rule"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "module placement and file budget for inbound/bootstrap TLS"}
+{"file": ".trellis/tasks/11-17-inbound-tls/design.md", "reason": "the single-listener TLS design this task extends; reuse its decisions"}

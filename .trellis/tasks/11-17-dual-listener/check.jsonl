@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "quality check entry"}
+{"file": ".trellis/spec/backend/pingora-guidelines.md", "reason": "verify listener registration and per-connection transport rules"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "file budget, dependency direction and test conventions"}
+{"file": ".trellis/tasks/11-17-dual-listener/prd.md", "reason": "acceptance criteria to verify"}
