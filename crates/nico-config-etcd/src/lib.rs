@@ -2,15 +2,15 @@
 //!
 //! This crate implements nico's [`ConfigSource`](nico_config::ConfigSource) contract for a single
 //! etcd key that holds one complete configuration document, and it does so **without speaking to
-//! etcd**. Every etcd interaction enters through the [`client`] seam: a small trait modelling the
+//! etcd**. Every etcd interaction enters through the [`EtcdClient`] seam: a small trait modelling the
 //! two operations the source needs (`get` and `watch`) and the typed shape of etcd's watch
 //! protocol. Tests drive that seam with a scripted client, which is why every semantic this source
 //! implements is assertable without a real server.
 //!
-//! The real etcd client is deliberately **not** here yet. etcd's client is a tonic/gRPC stack —
-//! a second network stack beside pingora's — so the dependency is deferred until an environment
-//! exists to wire and verify it. When it arrives, it implements the same seam and none of this
-//! crate's logic changes.
+//! The real etcd client lives behind the default-on `client` feature: a tonic/gRPC stack — a second
+//! network stack beside pingora's — so the product binary keeps it gated (`nico-server`'s `etcd`
+//! feature is off by default) and the gating is verified per release. It implements the same seam,
+//! and none of this crate's adapter logic depends on which client drives it.
 //!
 //! # Semantics
 //!
@@ -36,6 +36,8 @@ mod source;
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "mock-server")]
+pub use client::mock_server::{MockServer, StoreState};
 #[cfg(feature = "client")]
 pub use client::real::GrpcEtcdClient;
 pub use client::{EtcdClient, EtcdError, KvEntry, WatchEvent, WatchOutcome, WatchStream};

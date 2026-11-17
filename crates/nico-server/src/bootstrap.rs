@@ -23,19 +23,19 @@ use std::{
     time::Duration,
 };
 
-use nico_config::{LocalConfig, WatchMode};
 use nico_core::{Bound, ParseLimits, SchemaBounds};
 use nico_http::{HttpSettings, TlsPolicy};
 use serde::Deserialize;
+use serde_norway::Value;
 
 mod http;
 mod metrics;
+mod source;
 mod tls;
 
 pub use metrics::MetricsSettings;
-
-/// The only accepted `config_source.type`.
-const SUPPORTED_SOURCE: &str = "local";
+pub use source::SourceSelection;
+use source::parse_source;
 
 /// Largest accepted `debounce_ms`.
 const MAX_DEBOUNCE_MS: u64 = 10_000;
@@ -58,9 +58,8 @@ const MAX_DEPTH_BOUND: usize = 128;
 /// an unvalidated bootstrap would let a deployment select a source type this build cannot serve.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BootstrapConfig {
-    source_path: PathBuf,
+    source: SourceSelection,
     source_max_bytes: usize,
-    watch_mode: WatchMode,
     debounce_ms: u64,
     max_wait_ms: u64,
     cache_dir: PathBuf,
@@ -77,7 +76,8 @@ impl BootstrapConfig {
     /// - [`BootstrapError::Read`] when the file cannot be read.
     /// - [`BootstrapError::Parse`] when it is not YAML, has unknown or missing fields, or has a
     ///   field of the wrong type.
-    /// - [`BootstrapError::UnsupportedSource`] when `config_source.type` is not `local`.
+    /// - [`BootstrapError::UnsupportedSource`] when `config_source.type` is not a type this build
+    ///   serves.
     /// - [`BootstrapError::InvalidField`] when a field is syntactically fine but out of range, for
     ///   example an unknown watch mode or a `max_wait_ms` below `debounce_ms`.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, BootstrapError> {
@@ -87,22 +87,18 @@ impl BootstrapConfig {
         raw.validate()
     }
 
-    /// Returns the path of the configuration document.
+    /// Returns the authoritative source the file selects.
+    ///
+    /// The selection is plain data; the construction site decides which type this build can build.
     #[must_use]
-    pub fn source_path(&self) -> &Path {
-        &self.source_path
+    pub const fn source(&self) -> &SourceSelection {
+        &self.source
     }
 
     /// Returns the maximum accepted configuration document size in bytes.
     #[must_use]
     pub const fn source_max_bytes(&self) -> usize {
         self.source_max_bytes
-    }
-
-    /// Returns how the source detects changes.
-    #[must_use]
-    pub const fn watch_mode(&self) -> WatchMode {
-        self.watch_mode
     }
 
     /// Returns how long a burst of changes is coalesced before publishing.
@@ -168,17 +164,6 @@ impl BootstrapConfig {
     pub const fn max_wait(&self) -> Duration {
         Duration::from_millis(self.max_wait_ms)
     }
-
-    /// Builds the local source configuration described by this file.
-    ///
-    /// The source type is not returned: `local` is the only type [`Self::load`] accepts, so a caller
-    /// cannot accidentally match on a field that is already known.
-    #[must_use]
-    pub fn local_config(&self) -> LocalConfig {
-        LocalConfig::new(self.source_path.clone())
-            .with_max_bytes(self.source_max_bytes)
-            .with_watch_mode(self.watch_mode)
-    }
 }
 
 /// A bootstrap file that could not be read, parsed or accepted.
@@ -200,10 +185,12 @@ pub enum BootstrapError {
         source: serde_norway::Error,
     },
     /// The bootstrap file selects a configuration source this build does not implement.
-    #[error("unsupported configuration source type: {found}")]
+    #[error("unsupported configuration source type: {found}; this build serves {serves}")]
     UnsupportedSource {
         /// The rejected `config_source.type` value.
         found: String,
+        /// The types this build does serve.
+        serves: &'static str,
     },
     /// A field is syntactically valid but outside the range this build accepts.
     ///
@@ -231,7 +218,9 @@ const _: fn() = || {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawBootstrap {
-    config_source: RawSource,
+    // The body is typed per `config_source.type`, which serde's tagged enums cannot express
+    // together with unknown-field rejection — see `source::parse_source`.
+    config_source: Value,
     schema_bounds: Option<RawSchemaBounds>,
     http: Option<http::RawHttp>,
     metrics: Option<metrics::RawMetrics>,
@@ -242,16 +231,6 @@ struct RawBootstrap {
     max_wait_ms: u64,
     cache_dir: PathBuf,
     allow_bootstrap_cache: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawSource {
-    #[serde(rename = "type")]
-    kind: String,
-    path: PathBuf,
-    max_bytes: usize,
-    watch: String,
 }
 
 /// The optional `schema_bounds` section exactly as written.
@@ -328,15 +307,9 @@ fn out_of_range(bound: Bound, value: usize) -> BootstrapError {
 
 impl RawBootstrap {
     fn validate(self) -> Result<BootstrapConfig, BootstrapError> {
-        if self.config_source.kind != SUPPORTED_SOURCE {
-            return Err(BootstrapError::UnsupportedSource {
-                found: self.config_source.kind,
-            });
-        }
+        let (source, source_max_bytes) = parse_source(self.config_source)?;
 
-        let watch_mode = parse_watch_mode(&self.config_source.watch)?;
-
-        if self.config_source.max_bytes == 0 {
+        if source_max_bytes == 0 {
             return Err(BootstrapError::InvalidField {
                 field: "config_source.max_bytes".into(),
                 reason: "must be greater than zero".into(),
@@ -398,9 +371,8 @@ impl RawBootstrap {
         };
 
         Ok(BootstrapConfig {
-            source_path: self.config_source.path,
-            source_max_bytes: self.config_source.max_bytes,
-            watch_mode,
+            source,
+            source_max_bytes,
             debounce_ms: self.debounce_ms,
             max_wait_ms: self.max_wait_ms,
             cache_dir: self.cache_dir,
@@ -409,19 +381,6 @@ impl RawBootstrap {
             http,
             metrics,
         })
-    }
-}
-
-/// Parses the `watch` field, accepting only the two trigger sources and their combination.
-fn parse_watch_mode(value: &str) -> Result<WatchMode, BootstrapError> {
-    match value {
-        "notify" => Ok(WatchMode::Notify),
-        "signal" => Ok(WatchMode::Signal),
-        "notify+signal" | "signal+notify" => Ok(WatchMode::NotifyAndSignal),
-        _ => Err(BootstrapError::InvalidField {
-            field: "config_source.watch".into(),
-            reason: "must be one of `notify`, `signal`, `notify+signal`".into(),
-        }),
     }
 }
 

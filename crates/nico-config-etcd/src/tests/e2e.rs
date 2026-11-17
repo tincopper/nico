@@ -307,3 +307,60 @@ async fn an_auth_refusal_is_unavailable_at_the_contract() {
         }
     ));
 }
+
+// --- the endpoint list: failover beneath the seam ---------------------------------------------------
+
+#[tokio::test]
+async fn a_dead_endpoint_in_the_list_does_not_break_the_client() {
+    let server = MockServer::start().await.expect("the mock etcd starts");
+    server.state().put(b"doc-1");
+    let live = server.endpoint();
+    let dead = format!("{live}/unreachable");
+
+    // The client's transports live on the runtime that connected them, so that runtime must
+    // outlive the client — the fact the bootstrap wiring honours with its daemon thread. The
+    // dedicated thread here is the same shape.
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("the client runtime builds");
+        let client = runtime
+            .block_on(async { GrpcEtcdClient::connect(&[dead, live]).await })
+            .expect("connect succeeds with a dead endpoint listed");
+        let _ = sender.send(client);
+        // Drive the runtime forever: the client's transports depend on it.
+        runtime.block_on(std::future::pending::<()>());
+    });
+    let client = receiver
+        .recv()
+        .expect("the connect thread delivers the client");
+
+    // Both operations run on the test's runtime, not the client's: `GrpcEtcdClient` is `Send +
+    // Sync` and only the transports are pinned to their thread.
+    let entry = client
+        .get(MOCK_KEY)
+        .await
+        .expect("the get succeeds from a foreign runtime")
+        .expect("the key exists");
+    assert_eq!(entry.value.as_ref(), b"doc-1");
+
+    let mut stream = client
+        .watch(MOCK_KEY, 2)
+        .await
+        .expect("the watch establishes");
+    server.state().put(b"doc-2");
+    let outcome = stream
+        .recv()
+        .await
+        .expect("an outcome")
+        .expect("a delivered outcome");
+    assert_events(
+        outcome,
+        &[WatchEvent::Put {
+            value: Bytes::from_static(b"doc-2"),
+            mod_revision: 2,
+        }],
+    );
+}

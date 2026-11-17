@@ -102,7 +102,7 @@ pub trait EtcdClient: Send + Sync {
     async fn watch(&self, key: &str, start_revision: u64) -> Result<WatchStream, EtcdError>;
 }
 
-#[cfg(all(test, feature = "client"))]
+#[cfg(all(feature = "client", any(test, feature = "mock-server")))]
 pub(crate) mod mock_server;
 #[cfg(feature = "client")]
 mod proto;

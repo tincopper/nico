@@ -13,12 +13,19 @@ default = ["client"]
 # stack the roadmap flagged as a second network stack beside pingora's. The stack check lives in
 # this crate's docs: it is documented, gated out of the product binary, and verified per release.
 client = ["dep:etcd-client", "dep:tonic"]
+# The in-process etcd server for integration tests in dependent crates (the protocol double).
+# Never enabled by a production target: it exists so `nico-server`'s tests can run the whole
+# bootstrap-to-source wiring over a real gRPC wire without an etcd environment.
+mock-server = ["client", "dep:prost", "dep:tokio-stream"]
 
 [dependencies]
 etcd-client = { version = "0.14", default-features = false, optional = true }
 # The real client classifies gRPC statuses into the seam's two failure reasons; the crate already
 # links tonic through etcd-client, so naming it directly adds no new stack.
 tonic = { version = "0.12", default-features = false, optional = true, features = ["codegen", "transport", "prost"] }
+# Generated-protocol support for the mock server; test-only through the `mock-server` feature.
+prost = { version = "0.13", optional = true }
+tokio-stream = { version = "0.1", features = ["net", "sync"], optional = true }
 async-trait.workspace = true
 bytes.workspace = true
 futures-core.workspace = true

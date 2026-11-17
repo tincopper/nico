@@ -31,7 +31,7 @@ use std::{
     sync::Arc,
 };
 
-use nico_config::{CacheStore, ConfigSource, LocalFileSource};
+use nico_config::{CacheStore, ConfigSource};
 use nico_core::SnapshotHandle;
 use nico_http::HttpStateHandle;
 use nico_plugins::PluginRuntime;
@@ -48,6 +48,7 @@ pub mod llm;
 mod metrics;
 pub mod reload;
 pub mod server;
+mod source_build;
 
 pub use bootstrap::{BootstrapConfig, BootstrapError};
 #[cfg(feature = "llm")]
@@ -55,6 +56,7 @@ pub use llm::{
     CredentialError, CredentialResolver, EnvFileCredentials, LlmBuildError, LlmPlan, LlmRuntime,
 };
 pub use reload::{LlmCompiler, Publication, ReloadError, ReloadLimits, ReloadSettings, Reloader};
+pub use source_build::{SourceBuildError, build_source};
 
 /// Exit code used when the command line is missing or not understood.
 pub const USAGE_EXIT_CODE: u8 = 2;
@@ -148,13 +150,13 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         }
     };
 
-    let source: Arc<dyn ConfigSource> = match LocalFileSource::new(bootstrap.local_config()) {
-        Ok(source) => Arc::new(source),
+    let source = match build_source(&bootstrap) {
+        Ok(source) => source,
         Err(error) => {
             tracing::error!(
                 error = %error,
                 error.category = ?error.category(),
-                "the local configuration source could not be built"
+                "the configuration source could not be built"
             );
             return ExitCode::from(FAILURE_EXIT_CODE);
         }

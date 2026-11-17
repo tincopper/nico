@@ -52,7 +52,7 @@ struct LiveChange {
 
 /// The shared state one server instance serves, driven directly by its tests.
 #[derive(Debug)]
-pub(crate) struct StoreState {
+pub struct StoreState {
     /// The full history of the key, ascending by revision. An empty value is a delete tombstone.
     history: Mutex<History>,
     /// The revision the store hands out next; one past the newest history entry.
@@ -79,12 +79,12 @@ impl StoreState {
     }
 
     /// Stores a new revision of the key, returns its mod revision, and broadcasts the change.
-    pub(crate) fn put(&self, document: &[u8]) -> i64 {
+    pub fn put(&self, document: &[u8]) -> i64 {
         self.append(document.to_vec())
     }
 
     /// Deletes the key: a tombstone revision, broadcast like any other change.
-    pub(crate) fn delete(&self) -> i64 {
+    pub fn delete(&self) -> i64 {
         self.append(Vec::new())
     }
 
@@ -102,13 +102,13 @@ impl StoreState {
     }
 
     /// Sets the auth requirement. Every operation afterwards is refused until cleared.
-    pub(crate) fn set_require_auth(&self, required: bool) {
+    pub fn set_require_auth(&self, required: bool) {
         *held(self.require_auth.lock()) = required;
     }
 
     /// Compacts history at or below `revision`: every watch starting there is canceled naming it,
     /// exactly as the roadmap's semantics state.
-    pub(crate) fn compact(&self, revision: i64) {
+    pub fn compact(&self, revision: i64) {
         *held(self.compact_to.lock()) = Some(revision);
     }
 
@@ -134,7 +134,7 @@ impl StoreState {
 }
 
 /// One running server: its address, and the store handle its tests drive.
-pub(crate) struct MockServer {
+pub struct MockServer {
     address: SocketAddr,
     state: Arc<StoreState>,
 }
@@ -147,7 +147,7 @@ impl MockServer {
     ///
     /// # Errors
     /// Returns an error when the loopback port cannot be bound or reported.
-    pub(crate) async fn start() -> std::io::Result<Self> {
+    pub async fn start() -> std::io::Result<Self> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let state = Arc::new(StoreState::new());
@@ -168,12 +168,12 @@ impl MockServer {
     }
 
     /// Returns the endpoint the real client connects to.
-    pub(crate) fn endpoint(&self) -> String {
+    pub fn endpoint(&self) -> String {
         format!("http://{}", self.address)
     }
 
     /// Returns the store handle the test drives.
-    pub(crate) fn state(&self) -> Arc<StoreState> {
+    pub fn state(&self) -> Arc<StoreState> {
         Arc::clone(&self.state)
     }
 }

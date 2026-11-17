@@ -52,11 +52,12 @@ fn the_bootstrap_points_at_the_shipped_document() {
     // file we actually ship, so a rename cannot silently leave the image pointing at nothing.
     let bootstrap =
         BootstrapConfig::load(root("deploy/bootstrap.yaml")).expect("the shipped bootstrap loads");
-    let source = bootstrap.source_path();
+    let nico_server::bootstrap::SourceSelection::Local { path, .. } = bootstrap.source() else {
+        panic!("the shipped bootstrap selects the local source");
+    };
     assert!(
-        source
-            .file_name()
+        path.file_name()
             .is_some_and(|name| name == "resources.yaml"),
-        "the bootstrap names the shipped document: {source:?}"
+        "the bootstrap names the shipped document: {path:?}"
     );
 }

@@ -26,9 +26,9 @@ default = ["llm"]
 # The AI role: client protocol codecs and provider adapters are compiled in and published per
 # generation.
 llm = ["dep:nico-llm"]
-# The etcd configuration source. Off by default: the adapter is implemented against a client seam
-# and tested with a scripted client, so no etcd dependency is needed until a real environment
-# exists to wire one against.
+# The etcd configuration source: `config_source.type: etcd` is accepted and wired at startup only
+# when this feature is on. Off by default, because the client is the tonic/gRPC stack the roadmap
+# flagged beside pingora's, and the product binary does not link it.
 etcd = ["dep:nico-config-etcd"]
 # The traffic role: configuration, routing, plugins and the HTTP data plane, with no LLM crate at all.
 traffic = []
@@ -86,6 +86,9 @@ serde_json.workspace = true
 # listener. Declared in the workspace table like every other dependency: its version must be the
 # one `pingora-rustls` resolves to, or the graph would hold two rustls.
 tokio-rustls.workspace = true
+# The bootstrap-to-source wiring test drives the etcd protocol double over a real gRPC wire, so the
+# whole chain is asserted without an etcd environment. `mock-server` exists only for that.
+nico-config-etcd = { workspace = true, features = ["mock-server"] }
 # The origin reads its certificate and key with the same PEM reader the production startup check uses
 # for a trust bundle, so a fixture is read exactly like a deployment's file.
 rustls-pemfile.workspace = true

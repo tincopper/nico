@@ -1,0 +1,4 @@
+{"file": "crates/nico-server/src/bootstrap.rs", "reason": "bootstrap schema 与验证的主战场"}
+{"file": "crates/nico-server/src/lib.rs", "reason": "main 的源构造点 → build_source"}
+{"file": "crates/nico-config-etcd/src/client/mock_server.rs", "reason": "mock-server feature 要公开的协议替身"}
+{"file": ".trellis/tasks/11-15-etcd-bootstrap-wiring/design.md", "reason": "两段式解析、守护线程、feature 布局的设计依据"}

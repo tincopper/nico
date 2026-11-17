@@ -3,6 +3,8 @@
 //! Kept beside the module rather than inline because the fixtures plus the range checks are
 //! longer than the module they exercise, and the 500-line budget applies to the parent file.
 
+use nico_config::WatchMode;
+
 use super::*;
 
 fn document(path: &str, watch: &str, debounce_ms: u64, max_wait_ms: u64) -> String {
@@ -37,7 +39,10 @@ mod load {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/bootstrap.yaml");
         let bootstrap = BootstrapConfig::load(&path).expect("the shipped bootstrap is valid");
 
-        assert_eq!(bootstrap.watch_mode(), WatchMode::NotifyAndSignal);
+        let SourceSelection::Local { watch_mode, .. } = bootstrap.source() else {
+            panic!("the shipped bootstrap selects the local source");
+        };
+        assert_eq!(*watch_mode, WatchMode::NotifyAndSignal);
         assert_eq!(bootstrap.debounce_ms(), 200);
         assert_eq!(bootstrap.max_wait_ms(), 1_000);
         assert_eq!(bootstrap.source_max_bytes(), 1_048_576);
@@ -78,9 +83,15 @@ mod load {
     #[test]
     fn load_rejects_an_unknown_source_type() {
         let text =
-            document("./resources.yaml", "notify", 100, 500).replace("type: local", "type: etcd");
-        match load_document(&text).expect_err("etcd is not implemented yet") {
-            BootstrapError::UnsupportedSource { found } => assert_eq!(found, "etcd"),
+            document("./resources.yaml", "notify", 100, 500).replace("type: local", "type: nacos");
+        match load_document(&text).expect_err("nacos is not a source type this build serves") {
+            BootstrapError::UnsupportedSource { found, serves } => {
+                assert_eq!(found, "nacos");
+                assert!(
+                    serves.contains("`local`"),
+                    "the error must list the types this build serves, got {serves}"
+                );
+            }
             other => panic!("expected UnsupportedSource, got {other:?}"),
         }
     }
@@ -105,7 +116,10 @@ mod load {
         ] {
             let bootstrap = load_document(&document("./resources.yaml", text, 100, 500))
                 .expect("the watch mode is documented");
-            assert_eq!(bootstrap.watch_mode(), expected);
+            let SourceSelection::Local { watch_mode, .. } = bootstrap.source() else {
+                panic!("the document selects the local source");
+            };
+            assert_eq!(*watch_mode, expected);
         }
     }
 
@@ -153,14 +167,16 @@ mod local_config {
     use super::*;
 
     #[test]
-    fn local_config_carries_the_path_the_bound_and_the_watch_mode() {
+    fn the_local_selection_carries_the_path_the_bound_and_the_watch_mode() {
         let bootstrap = load_document(&document("/etc/gateway/resources.yaml", "signal", 50, 90))
             .expect("the document is valid");
-        let config = bootstrap.local_config();
+        let SourceSelection::Local { path, watch_mode } = bootstrap.source() else {
+            panic!("the document selects the local source");
+        };
 
-        assert_eq!(config.path(), Path::new("/etc/gateway/resources.yaml"));
-        assert_eq!(config.max_bytes(), 4096);
-        assert_eq!(config.watch_mode(), WatchMode::Signal);
+        assert_eq!(path, &PathBuf::from("/etc/gateway/resources.yaml"));
+        assert_eq!(*watch_mode, WatchMode::Signal);
+        assert_eq!(bootstrap.source_max_bytes(), 4096);
     }
 }
 
@@ -458,5 +474,8 @@ mod http {
         );
     }
 }
+
+#[cfg(feature = "etcd")]
+mod etcd_source;
 
 mod tls;
