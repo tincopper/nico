@@ -444,3 +444,48 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 ### Status
 
 [OK] **Completed**
+
+
+## Session 12: bootstrap 配置对齐 nginx：runtime / listeners[] / proxy.tls 落地并归档
+<!-- trellis-session: v=2 fp=f6184128071a7b64 -->
+
+**Date**: 2026-11-18
+**Task**: bootstrap 配置对齐 nginx：runtime / listeners[] / proxy.tls 落地并归档
+**Branch**: `main`
+
+### Summary
+
+按 nginx 的形状重排 bootstrap 配置：进程旋钮归 runtime，入站用 http.listeners[] 条目表达（条目带 tls 块即为 TLS 终止），出站信任根改名 proxy.tls，reload 管线旋钮归入 config_source。同时删除 http.tls 接管 http.listen 的旧语义，改为明文与 TLS 两个 listener 并存，x-forwarded-proto 由连接自身的 ssl_digest 判定。任务归档到 archive/2026-11。
+
+### Main Changes
+
+- nico-http：新增 `ServerSettings`（threads 1..=256、grace/shutdown 1..=300_000、shutdown ≥ grace，全部启动期校验）；`HttpSettings` 重造为 `listeners[]` + `h2c`；新增 `Listener::Plain/Tls`；`service()` 按条目分别 add_tcp / add_tls_with_settings；删除 `HttpSettings::inbound_tls` 与 `ProxyHttp::set_inbound_tls` 接管路径
+- 传输判定：`hooks/request.rs` 的 `x-forwarded-proto` 改读 `session.digest().ssl_digest`，双 listener 下明文口与 TLS 口各自正确，客户端已给的 proto 不覆盖（单测构造 SslDigest 覆盖三分支）
+- nico-server：新增 `bootstrap/runtime.rs`、`bootstrap/http/listener.rs`、`bootstrap/proxy.rs`；顶层 `tls` → `proxy.tls`（ca_file 仍为完整替换语义）；`debounce_ms`/`max_wait_ms`/`cache_dir`/`allow_bootstrap_cache`/`schema_bounds` 迁入 `config_source`，旧顶层裸字段成为未知字段被 deny_unknown_fields 拒绝；metrics 碰撞改按解析后的地址集合校验
+- h2c 规则放宽：仅当全部 listener 都是 TLS 条目时拒绝 h2c；与 TLS 条目并存的明文条目仍可接受
+- 文档与契约：`config/bootstrap.yaml`、`deploy/bootstrap.yaml`、`README` 当前限制、spec 三件（pingora-guidelines 签名与契约表、error-handling 错误矩阵字段路径、directory-structure 的 bootstrap/nico-http 文件树）同步；`research/option-b-analysis.md` 标注 superseded
+- 依赖门禁：deny.toml 记录 `RUSTSEC-2026-0543` 的豁免理由（chrono 0.4 由 pingora-core 非可选引入、无修复版本、我们侧不接触其类型），pingora 升级时复核
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `785fab0` | fix(deps): ignore the chrono advisory that pingora-core carries |
+| `c8e998d` | feat(config): align the bootstrap file with nginx — runtime, listeners[], proxy.tls |
+| `8ec1fd3` | docs(spec): record the listener list, the runtime knobs and the proxy trust-root contract |
+
+### Testing
+
+- [OK] cargo test --workspace --all-features：2012 个测试全绿；tls_inbound 新增双 listener 场景（明文口 http / TLS 口 https / 交叉连接无响应 / ALPN h2 保留）
+- [OK] cargo +nightly fmt --all --check；cargo clippy --workspace --all-targets --all-features --locked -D warnings；cargo check（--all-features 与 --no-default-features）；RUSTDOCFLAGS=-D warnings cargo doc；cargo deny check 四项 ok —— 全绿
+- [OK] 文件预算无超过 500 行的 .rs；cargo tree -p nico-http 未见 nico-llm 泄漏
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- resources.yaml 的 nginx 对齐审查（routes≈location / upstreams≈upstream / plugins≈模块），独立任务
+- nginx 迁移映射文档 docs/nginx-migration.md
+- 证书热加载、mTLS、SNI 多证书、metrics 监听 TLS —— 沿既有边界继续
