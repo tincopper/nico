@@ -309,9 +309,11 @@ status). `nico-core` must never contain `StatusCode` or any wire-level detail.
 An inbound listener's certificate and key are a **startup configuration fact**, not a request path
 failure. `nico-http::validate_server_identity` returns `ServerIdentityError` (certificate PEM, key
 PEM, empty chain, missing/unsupported key, pair mismatch); `nico-server` maps it to
-`BootstrapError::InvalidField` under `http.tls.cert_file` or `http.tls.key_file`. The data plane
-repeats the read and check in `service()`, because Pingora's path-based TLS loader would panic on a
-file that changed after the bootstrap check; a failed repeat is `ServiceBuildError` and the process
+`BootstrapError::InvalidField` under `http.listeners[N].tls.cert_file` or
+`http.listeners[N].tls.key_file`. `N` is the entry's position in the section: before it is bound, a
+listener's only name is where the operator wrote it. The data plane repeats the read and check in
+`service()`, for every `Listener::Tls` entry, because Pingora's path-based TLS loader would panic on
+a file that changed after the bootstrap check; a failed repeat is `ServiceBuildError` and the process
 exits with `FAILURE_EXIT_CODE`.
 
 Rules:
@@ -321,7 +323,9 @@ Rules:
   before `server.bootstrap()`.
 - A client handshake failure is a transport event, not an `HttpError`: it has no request record and
   no HTTP status, and must not be reported as a gateway 5xx.
-- `http.tls` with `http.h2c: true` is a configuration refusal (`http.h2c`), not a runtime preference.
+- `http.h2c: true` with no plaintext entry is a configuration refusal (`http.h2c`), not a runtime
+  preference: the flag applies to plaintext listeners, and a section that declares only TLS entries
+  gives it nothing to apply to. Together with a plaintext entry it is ordinary configuration.
 
 ## Protocol Error Responses
 

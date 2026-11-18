@@ -359,8 +359,8 @@ volume — but it does mean a series lives for the process lifetime.
 - A `metrics.listen` that cannot be bound, or a recorder that cannot be installed, is a **startup
   failure** (non-zero exit with the address or the reason). A surface that exists but renders nothing
   is the worst answer an operator can be given.
-- A `metrics` section without `listen`, an unparseable address, or one equal to `http.listen` is a
-  startup failure naming `metrics.listen`.
+- A `metrics` section without `listen`, an unparseable address, or one equal to any
+  `http.listeners[]` address is a startup failure naming `metrics.listen`.
 - The assembly logs one line either way — the address when enabled, `metrics surface disabled` when
   not — so nobody has to guess why a scrape fails.
 - Per-request access logging is deliberately absent: a probe every few seconds would be a self-
