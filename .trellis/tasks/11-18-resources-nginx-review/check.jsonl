@@ -1,0 +1,6 @@
+{"file":".trellis/spec/backend/index.md","reason":"Verify existing product boundaries are described accurately without changing their contracts."}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Verify route identity, limits, validation, atomic reload and LKG claims."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Review evidence quality and static vs executed verification; file exceeds injection limit, so explicitly read its remaining lines including Testing Requirements and Code Review Checklist."}
+{"file":".trellis/tasks/11-18-resources-nginx-review/research/nginx-resource-semantics.md","reason":"Adversarially verify claimed equivalence against official nginx semantics."}
+{"file":".trellis/tasks/11-18-resources-nginx-review/research/current-resource-contract.md","reason":"Cross-check against nico code; exceeds injection limit, so explicitly read the full file, especially sections 5-7, and preserve unverified boundaries."}
+{"file":".trellis/tasks/11-18-resources-nginx-review/research/verification.md","reason":"Verify reported test totals and limits of executed checks without unnecessary repetition."}

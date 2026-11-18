@@ -1,0 +1,6 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend binding boundaries and review expectations; this task's output is research only."}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Strict document validation, authoritative sources, atomic publication and LKG invariants."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"First-principles design and documentation evidence; file exceeds injection limit, so explicitly read its remaining lines including Testing Requirements and Code Review Checklist."}
+{"file":".trellis/tasks/11-18-resources-nginx-review/research/nginx-resource-semantics.md","reason":"Official nginx semantics and primary source URLs for the comparison."}
+{"file":".trellis/tasks/11-18-resources-nginx-review/research/current-resource-contract.md","reason":"Current nico consumers and static evidence; exceeds injection limit, so explicitly read the full file, especially sections 5-7 about buffering, documentation and unverified boundaries."}
+{"file":".trellis/tasks/11-18-resources-nginx-review/research/verification.md","reason":"Verification already executed during planning; do not claim unexecuted integration coverage or repeat passing tests without cause."}
