@@ -1,13 +1,14 @@
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
 
-use pingora::{server::configuration::ServerConf, services::Service as ServiceApi};
+use pingora::services::Service as ServiceApi;
 
 use super::{ServiceBuildError, server_conf, service};
 use crate::{
-    InboundTls, TlsPolicy, settings::HttpSettings, state::HttpStateHandle, test_support::tls_bundle,
+    InboundTls, Listener, ServerSettings, TlsPolicy, settings::HttpSettings,
+    state::HttpStateHandle, test_support::tls_bundle,
 };
 
-/// Settings whose trust roots are a bundle this crate owns.
+/// Trust roots that are a bundle this crate owns.
 ///
 /// A service cannot be built against the platform store here: Pingora reads it while building its
 /// TLS connector, and a test process may not be allowed to read the host's trust settings. The
@@ -16,26 +17,35 @@ fn tls() -> TlsPolicy {
     TlsPolicy::from_bootstrap(Some(tls_bundle().to_owned()))
 }
 
-/// Settings whose two drain windows are `grace_ms` and `shutdown_ms`.
-fn settings(grace_ms: u64, shutdown_ms: u64) -> HttpSettings {
-    HttpSettings::resolve(
-        None,
-        Some(true),
-        Some(grace_ms),
-        Some(shutdown_ms),
-        None,
-        tls(),
-    )
-    .expect("the fixture windows are in range")
+/// Runtime settings whose two drain windows are `grace_ms` and `shutdown_ms`.
+fn runtime(grace_ms: u64, shutdown_ms: u64) -> ServerSettings {
+    ServerSettings::resolve(None, Some(grace_ms), Some(shutdown_ms))
+        .expect("the fixture windows are in range")
 }
 
-fn conf(settings: &HttpSettings) -> Arc<ServerConf> {
-    server_conf(settings)
+/// Http settings naming the given plaintext listeners.
+fn settings(listens: &[&str], h2c: bool) -> HttpSettings {
+    let listeners = listens
+        .iter()
+        .map(|listen| Listener::Plain {
+            listen: (*listen).to_owned(),
+        })
+        .collect();
+    HttpSettings::resolve(listeners, Some(h2c), tls()).expect("the fixture listeners are valid")
+}
+
+/// The `localhost` identity the workspace's shared TLS fixtures hold, as real files on disk.
+fn localhost_identity() -> InboundTls {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../nico-server/tests/fixtures/tls");
+    InboundTls::from_bootstrap(
+        fixtures.join("localhost.pem"),
+        fixtures.join("localhost.key"),
+    )
 }
 
 #[test]
 fn the_grace_period_rounds_up_to_whole_seconds() {
-    let conf = conf(&settings(1_500, 30_000));
+    let conf = server_conf(&runtime(1_500, 30_000), &tls());
 
     assert_eq!(
         conf.grace_period_seconds,
@@ -46,14 +56,14 @@ fn the_grace_period_rounds_up_to_whole_seconds() {
 
 #[test]
 fn the_shutdown_window_rounds_up_to_whole_seconds() {
-    let conf = conf(&settings(1_000, 2_500));
+    let conf = server_conf(&runtime(1_000, 2_500), &tls());
 
     assert_eq!(conf.graceful_shutdown_timeout_seconds, Some(3));
 }
 
 #[test]
 fn a_one_millisecond_window_is_still_one_second_and_never_zero() {
-    let conf = conf(&settings(1, 1));
+    let conf = server_conf(&runtime(1, 1), &tls());
 
     assert_eq!(
         conf.grace_period_seconds,
@@ -66,7 +76,7 @@ fn a_one_millisecond_window_is_still_one_second_and_never_zero() {
 
 #[test]
 fn both_windows_come_from_the_settings_rather_than_from_a_pingora_default() {
-    let conf = conf(&settings(7_000, 60_000));
+    let conf = server_conf(&runtime(7_000, 60_000), &tls());
 
     assert_eq!(conf.grace_period_seconds, Some(7));
     assert_eq!(conf.graceful_shutdown_timeout_seconds, Some(60));
@@ -79,7 +89,7 @@ fn the_attempt_ceiling_covers_every_chain_a_document_can_declare() {
     // immediately. The fuse must be large enough never to be what ends a legitimate chain — and the
     // longest one a document can express is `retry_budget` (≤ 4) times the pool's members (≤ 8) times
     // the chain's targets.
-    let configured = conf(&settings(5_000, 30_000)).max_retries;
+    let configured = server_conf(&runtime(5_000, 30_000), &tls()).max_retries;
     assert!(
         configured > 1,
         "a route that declares a fallback needs more than one round: {configured}"
@@ -96,29 +106,44 @@ fn the_attempt_ceiling_covers_every_chain_a_document_can_declare() {
 
 #[test]
 fn the_thread_count_is_passed_through() {
-    let settings =
-        HttpSettings::resolve(None, None, None, None, Some(8), tls()).expect("8 is in range");
+    let threads = ServerSettings::resolve(Some(8), None, None).expect("8 is in range");
 
-    assert_eq!(conf(&settings).threads, 8);
+    assert_eq!(server_conf(&threads, &tls()).threads, 8);
 }
 
 #[test]
 fn the_default_thread_count_is_pingoras_own_default() {
-    let settings =
-        HttpSettings::resolve(None, None, None, None, None, tls()).expect("defaults are valid");
-
     assert_eq!(
-        conf(&settings).threads,
+        server_conf(&ServerSettings::new(), &tls()).threads,
         1,
         "zero would panic Tokio's builder, so the default is a usable runtime size"
     );
 }
 
 #[test]
+fn the_trust_roots_reach_the_server_configuration_from_the_runtime() {
+    // `server_conf` takes the trust roots separately from the runtime: the two are different
+    // sections of the bootstrap file (`runtime` and `proxy`), and the CA is read by the connector
+    // Pingora builds once, not by the runtime the requests run on.
+    let policy = TlsPolicy::from_bootstrap(Some(PathBuf::from("/etc/nico/roots.pem")));
+    let conf = server_conf(&ServerSettings::new(), &policy);
+
+    assert_eq!(
+        conf.ca_file.as_deref(),
+        Some("/etc/nico/roots.pem"),
+        "Pingora reads this field once, when it builds the connector the service uses"
+    );
+}
+
+#[test]
 fn h2c_reaches_the_proxy_server_options() {
-    let settings = settings(5_000, 30_000);
-    let service = service(&conf(&settings), HttpStateHandle::new(), &settings)
-        .expect("the plaintext fixture service builds");
+    let settings = settings(&["0.0.0.0:8080"], true);
+    let service = service(
+        &server_conf(&ServerSettings::new(), &tls()),
+        HttpStateHandle::new(),
+        &settings,
+    )
+    .expect("the plaintext fixture service builds");
 
     let proxy = service
         .app_logic()
@@ -133,10 +158,13 @@ fn h2c_reaches_the_proxy_server_options() {
 
 #[test]
 fn h2c_stays_disabled_when_the_settings_do_not_ask_for_it() {
-    let settings =
-        HttpSettings::resolve(None, None, None, None, None, tls()).expect("defaults are valid");
-    let service = service(&conf(&settings), HttpStateHandle::new(), &settings)
-        .expect("the plaintext fixture service builds");
+    let settings = settings(&["0.0.0.0:8080"], false);
+    let service = service(
+        &server_conf(&ServerSettings::new(), &tls()),
+        HttpStateHandle::new(),
+        &settings,
+    )
+    .expect("the plaintext fixture service builds");
 
     let proxy = service.app_logic().expect("the application is held");
     let options = proxy
@@ -149,10 +177,13 @@ fn h2c_stays_disabled_when_the_settings_do_not_ask_for_it() {
 
 #[test]
 fn the_configured_listener_is_registered_once() {
-    let settings = HttpSettings::resolve(Some("127.0.0.1:18080"), None, None, None, None, tls())
-        .expect("the fixture address is valid");
-    let service = service(&conf(&settings), HttpStateHandle::new(), &settings)
-        .expect("the plaintext fixture service builds");
+    let settings = settings(&["127.0.0.1:18080"], false);
+    let service = service(
+        &server_conf(&ServerSettings::new(), &tls()),
+        HttpStateHandle::new(),
+        &settings,
+    )
+    .expect("the plaintext fixture service builds");
 
     assert_eq!(
         ServiceApi::listen_addresses(&service),
@@ -161,31 +192,94 @@ fn the_configured_listener_is_registered_once() {
 }
 
 #[test]
-fn a_configured_bundle_reaches_the_server_configuration() {
-    let policy = TlsPolicy::from_bootstrap(Some(std::path::PathBuf::from("/etc/nico/roots.pem")));
-    let settings = HttpSettings::resolve(None, None, None, None, None, policy)
-        .expect("the fixture policy is valid");
-
-    let conf = conf(&settings);
+fn every_named_listener_is_registered_in_the_named_order() {
+    let settings = settings(&["127.0.0.1:18080", "127.0.0.1:18081"], false);
+    let service = service(
+        &server_conf(&ServerSettings::new(), &tls()),
+        HttpStateHandle::new(),
+        &settings,
+    )
+    .expect("distinct plaintext listeners build");
 
     assert_eq!(
-        conf.ca_file.as_deref(),
-        Some("/etc/nico/roots.pem"),
-        "Pingora reads this field once, when it builds the connector the service uses"
+        ServiceApi::listen_addresses(&service),
+        Some(vec![
+            "127.0.0.1:18080".to_owned(),
+            "127.0.0.1:18081".to_owned()
+        ])
+    );
+}
+
+#[test]
+fn a_tls_listener_is_registered_as_a_tls_endpoint() {
+    let identity = localhost_identity();
+    let listeners = vec![Listener::Tls {
+        listen: "127.0.0.1:18443".to_owned(),
+        tls: identity,
+    }];
+    let settings = HttpSettings::resolve(listeners, None, tls())
+        .expect("the fixture listener is a valid section");
+    let service = service(
+        &server_conf(&ServerSettings::new(), &tls()),
+        HttpStateHandle::new(),
+        &settings,
+    )
+    .expect("the workspace fixture identity is readable and valid");
+
+    assert_eq!(
+        ServiceApi::listen_addresses(&service),
+        Some(vec!["127.0.0.1:18443".to_owned()]),
+        "the TLS entry registers its address, through Pingora's TLS path"
+    );
+}
+
+#[test]
+fn a_plaintext_and_a_tls_listener_coexist() {
+    let listeners = vec![
+        Listener::Plain {
+            listen: "127.0.0.1:18080".to_owned(),
+        },
+        Listener::Tls {
+            listen: "127.0.0.1:18443".to_owned(),
+            tls: localhost_identity(),
+        },
+    ];
+    let settings = HttpSettings::resolve(listeners, None, tls())
+        .expect("one listener per transport is the whole point");
+    let service = service(
+        &server_conf(&ServerSettings::new(), &tls()),
+        HttpStateHandle::new(),
+        &settings,
+    )
+    .expect("both transports build");
+
+    assert_eq!(
+        ServiceApi::listen_addresses(&service),
+        Some(vec![
+            "127.0.0.1:18080".to_owned(),
+            "127.0.0.1:18443".to_owned()
+        ])
     );
 }
 
 #[test]
 fn an_unreadable_tls_identity_is_a_service_error_not_a_panic() {
     let identity = InboundTls::from_bootstrap(
-        std::path::PathBuf::from("/nonexistent/nico-cert.pem"),
-        std::path::PathBuf::from("/nonexistent/nico-key.pem"),
+        PathBuf::from("/nonexistent/nico-cert.pem"),
+        PathBuf::from("/nonexistent/nico-key.pem"),
     );
-    let settings =
-        HttpSettings::resolve_with_inbound_tls(None, None, None, None, None, tls(), Some(identity))
-            .expect("the paths are a legal setting; reading them is the service's job");
+    let listeners = vec![Listener::Tls {
+        listen: "127.0.0.1:18443".to_owned(),
+        tls: identity,
+    }];
+    let settings = HttpSettings::resolve(listeners, None, tls())
+        .expect("the paths are a legal setting; reading them is the service's job");
 
-    let error = match service(&conf(&settings), HttpStateHandle::new(), &settings) {
+    let error = match service(
+        &server_conf(&ServerSettings::new(), &tls()),
+        HttpStateHandle::new(),
+        &settings,
+    ) {
         Ok(_service) => panic!("a missing identity must not produce a listener"),
         Err(error) => error,
     };

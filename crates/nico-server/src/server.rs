@@ -91,7 +91,7 @@ pub fn serve_with(
     if let Err(error) = ensure_usable(settings.tls()) {
         tracing::error!(
             error = %error,
-            "the upstream trust roots this process would use are not usable; set `tls.ca_file` in \
+            "the upstream trust roots this process would use are not usable; set `proxy.tls.ca_file` in \
              the bootstrap file to a PEM bundle of certificate authorities, or make the platform \
              certificate store readable"
         );
@@ -118,7 +118,7 @@ pub fn serve_with(
     // Pingora's own default conf is discarded here rather than passed to the constructor: the only
     // fields it reads at construction time are the daemon and pid settings, and this build sets
     // neither. Every field a running server reads comes from this replacement.
-    server.configuration = server_conf(settings);
+    server.configuration = server_conf(bootstrap.runtime(), settings.tls());
 
     if let Some(metrics_settings) = bootstrap.metrics() {
         let registry = match crate::metrics::assemble(metrics_settings) {

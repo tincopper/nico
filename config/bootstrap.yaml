@@ -1,7 +1,20 @@
-# Local-only bootstrap: where the gateway reads its configuration from, and how far to trust it.
+# Local-only bootstrap: what this process is, and where it reads its configuration from.
 #
 # This file is read before any configuration source exists, so it must never be served by a config
-# source. It selects exactly one authoritative source; the last-known-good cache is not a peer.
+# source. It is organised one section per layer, and a section's presence is the fact it states:
+#
+#   runtime       - the process (worker threads, drain windows).          omitted = every default
+#   http          - the protocol and the inbound listeners.               required
+#   proxy         - the outbound side: what an upstream handshake trusts.  omitted = platform store
+#   config_source - where the document comes from, and how it is refreshed, cached and bounded.
+#   metrics       - the self-reporting surface.                          omitted = off
+#
+# The values written here are the built-in defaults, so this file documents them without changing
+# behaviour. A field that is written is validated at startup; only an omitted field takes a default.
+
+# The configuration-acquisition subsystem: the authoritative source, the pacing of a reload, the
+# fallback cache, and the shape bounds of the documents it reads. The last-known-good cache is not
+# a peer of the source.
 config_source:
   type: local
   path: ./config/resources.yaml
@@ -9,56 +22,63 @@ config_source:
   # notify | signal | notify+signal
   watch: notify+signal
 
-# Debounce change events, but never postpone a publish past max_wait_ms while changes keep coming.
-debounce_ms: 200
-max_wait_ms: 1000
+  # Debounce change events, but never postpone a publish past max_wait_ms while changes keep coming.
+  debounce_ms: 200
+  max_wait_ms: 1000
 
-# Last-known-good cache written after a successful publish (temp file + fsync + atomic rename).
-cache_dir: ./.tmp/cache
-# Only start from the cache when explicitly allowed; the snapshot is then marked stale.
-allow_bootstrap_cache: false
+  # Last-known-good cache written after a successful publish (temp file + fsync + atomic rename).
+  # Only start from it when explicitly allowed; the snapshot is then marked stale.
+  cache_dir: ./.tmp/cache
+  allow_bootstrap_cache: false
 
-# Parse-time shape bounds for the resources document. The whole section may be omitted, and so may
-# any single field: an omitted bound takes its value from SchemaBounds::default(). A bound that is
-# written must be in 1..=1000000 (max_routes, max_upstreams, max_providers, max_plugins),
-# 1..=10000000 (max_nodes) or 1..=128 (max_depth). A value of 0 or any value above those limits fails
-# at startup instead of falling back to the default, so a typo never looks like an applied bound.
-schema_bounds:
-  max_routes: 1024
-  max_upstreams: 256
-  max_providers: 64
-  max_plugins: 256
-  max_nodes: 100000
-  max_depth: 32
+  # Parse-time shape bounds for the resources document. The whole block may be omitted, and so may
+  # any single field: an omitted bound takes its value from SchemaBounds::default(). A bound that is
+  # written must be in 1..=1000000 (max_routes, max_upstreams, max_providers, max_plugins,
+  # max_endpoints, max_pool_members), 1..=10000000 (max_nodes) or 1..=128 (max_depth). A value of 0
+  # or any value above those limits fails at startup instead of falling back to the default, so a
+  # typo never looks like an applied bound.
+  schema_bounds:
+    max_routes: 1024
+    max_upstreams: 256
+    max_providers: 64
+    max_plugins: 256
+    max_nodes: 100000
+    max_depth: 32
 
-# Process-level HTTP settings. They are deliberately not part of the resources document: the
-# listener and the drain windows belong to this process, so a pushed configuration must not be able
-# to move them. The whole section and every field in it may be omitted; an omitted field takes its
-# built-in default, while a field that is written is validated at startup instead of being absorbed
-# by that default. The values written here are the built-in defaults, so this file documents them
-# without changing behaviour.
-http:
-  # The `ip:port` (or `host:port`) the data plane binds. The port may not be zero.
-  listen: 0.0.0.0:8080
-  # Accept cleartext HTTP/2 (h2c) on that listener. Never implied: a proxy in front must know that
-  # it may speak HTTP/2 without TLS.
-  h2c: false
+# The runtime the data plane runs on. The whole section may be omitted, in which case every value
+# below is the default. A written value is validated at startup instead of being absorbed by that
+# default.
+runtime:
+  # Worker threads per service. At least one: the count is handed to Tokio's runtime builder, which
+  # rejects zero, so a written zero fails at startup instead of panicking on the first request.
+  threads: 1
   # How long in-flight requests may keep running once shutdown begins, and the upper bound on the
   # final drain. The drain bound may not be shorter than the grace period, or a streaming response
   # would be cut off before it could finish.
   grace_period_ms: 5000
   graceful_shutdown_ms: 30000
-  # Worker threads per service. At least one: the count is handed to Tokio's runtime builder, which
-  # rejects zero, so a written zero fails at startup instead of panicking on the first request.
-  threads: 1
-  # Optional inbound TLS termination on this listener. Both files are required when the section is
-  # present; the certificate/key are read and paired at startup, and a bad pair refuses to start.
-  # A TLS listener cannot also enable `h2c` above. Certificate/key changes take a restart, not a
-  # document reload. `tls` below is a different section: it is the trust an *upstream* handshake
-  # verifies, not the certificate this listener presents.
-  # tls:
-  #   cert_file: /etc/nico/tls/fullchain.pem
-  #   key_file: /etc/nico/tls/key.pem
+
+# The HTTP data plane: one entry per listener, and the transport each one serves. The section is
+# required — a gateway that binds nothing serves nothing, so this is not a default the build
+# invents. An entry with a `tls` block terminates TLS; an entry without one serves plaintext.
+http:
+  # Accept cleartext HTTP/2 (h2c) on the plaintext listeners. Never implied: a proxy in front must
+  # know that it may speak HTTP/2 without TLS. A TLS listener negotiates HTTP/2 through ALPN and is
+  # unaffected, so this flag with only TLS entries is a startup error.
+  h2c: false
+  listeners:
+    # The `ip:port` (or `host:port`) this listener binds. The port may not be zero, and no two
+    # listeners may name the same socket.
+    - listen: 0.0.0.0:8080
+
+    # A TLS listener. Both files are required when the block is present; the certificate/key are
+    # read and paired at startup, and a bad pair refuses to start. Certificate/key changes take a
+    # restart, not a document reload. This block is the identity *this listener presents*; the
+    # `proxy` section below is the trust an upstream handshake verifies — two directions, two names.
+    # - listen: 0.0.0.0:8443
+    #   tls:
+    #     cert_file: /etc/nico/tls/fullchain.pem
+    #     key_file: /etc/nico/tls/key.pem
 
 # Upstream TLS trust roots. The whole section may be omitted, in which case the platform certificate
 # store is used and `SSL_CERT_FILE` / `SSL_CERT_DIR` are honoured by the TLS provider itself. A
@@ -67,5 +87,12 @@ http:
 # one file. The roots are read once, when the service is built, so changing this file takes a restart
 # and never a reload. If neither source can be read, or reads as no certificate at all, the process
 # refuses to start instead of serving with an empty trust store.
-# tls:
-#   ca_file: /etc/nico/roots.pem
+# proxy:
+#   tls:
+#     ca_file: /etc/nico/roots.pem
+
+# Optional self-reporting listener. The whole section may be omitted, which is the default: no second
+# listener and no recorder. A present section must name an address that differs from every listener
+# under `http.listeners`.
+# metrics:
+#   listen: 127.0.0.1:9090

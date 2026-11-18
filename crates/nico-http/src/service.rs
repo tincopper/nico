@@ -2,16 +2,18 @@
 //!
 //! Two things live here, and each of them is the only copy of its decision:
 //!
-//! - [`server_conf`] turns validated [`HttpSettings`] into Pingora's `ServerConf`, so a drain
-//!   window, a thread count or the retry policy is never spelled out anywhere else.
-//! - [`service`] builds the proxy service: one `HttpProxy` over [`HttpApp`], one listener.
+//! - [`server_conf`] turns the validated runtime settings and the upstream trust roots into Pingora's
+//!   `ServerConf`, so a drain window, a thread count or the retry policy is never spelled out
+//!   anywhere else.
+//! - [`service`] builds the proxy service: one `HttpProxy` over [`HttpApp`], and every listener the
+//!   settings name — plaintext entries as TCP, TLS entries as rustls endpoints.
 //!
 //! Neither touches the process: the runtime, the signals and the shutdown token belong to the
 //! binary that assembles them (`nico`, built by the `nico-server` crate), which is what keeps this crate a servable
 //! library — it can be embedded in a test or a second front-end without installing a signal
 //! handler as a side effect of being linked.
 
-use std::{io, sync::Arc, time::Duration};
+use std::{io, sync::Arc};
 
 use nico_core::MAX_ATTEMPTS_PER_ROUTE;
 use pingora::{
@@ -27,9 +29,10 @@ use crate::{
         InboundTls, StaticCertResolver, certified_key, read_identity, validate_server_identity,
     },
     proxy::HttpApp,
-    settings::HttpSettings,
+    server_settings::ServerSettings,
+    settings::{HttpSettings, Listener},
     state::HttpStateHandle,
-    upstream::tls,
+    upstream::{tls, tls::TlsPolicy},
 };
 
 /// Builds the server configuration the data plane runs with.
@@ -52,39 +55,44 @@ use crate::{
 /// bound can leave the other behind. A route that declared nothing still makes exactly one attempt,
 /// because its walk answers "no" immediately.
 ///
-/// `threads` is never zero — [`HttpSettings`] rejects zero for the same reason Pingora would panic
+/// `threads` is never zero — [`ServerSettings`] rejects zero for the same reason Pingora would panic
 /// on it, so the value handed to Tokio's `worker_threads` is always a usable runtime size.
 ///
 /// The upstream trust roots are written here because this is the last moment before Pingora reads
 /// them: `ProxyServiceBuilder::build` derives its TLS connector from this value, once. That is also
 /// why changing the CA is a restart and not a reload.
 #[must_use]
-pub fn server_conf(settings: &HttpSettings) -> Arc<ServerConf> {
+pub fn server_conf(runtime: &ServerSettings, tls: &TlsPolicy) -> Arc<ServerConf> {
     let mut conf = ServerConf {
-        grace_period_seconds: Some(whole_seconds(settings.grace_period())),
-        graceful_shutdown_timeout_seconds: Some(whole_seconds(settings.graceful_shutdown())),
-        threads: settings.threads(),
+        grace_period_seconds: Some(whole_seconds(runtime.grace_period_ms())),
+        graceful_shutdown_timeout_seconds: Some(whole_seconds(runtime.graceful_shutdown_ms())),
+        threads: runtime.threads(),
         max_retries: MAX_ATTEMPTS_PER_ROUTE,
         ..ServerConf::default()
     };
-    tls::apply(settings.tls(), &mut conf);
+    tls::apply(tls, &mut conf);
     Arc::new(conf)
 }
 
-/// Builds the proxy service and registers the listener the settings name.
+/// Builds the proxy service and registers every listener the settings name.
 ///
 /// `state` is the only configuration source the request path reads: the reload pipeline publishes a
 /// snapshot and the plan compiled from it together, so the data plane never pairs one generation's
 /// routes with another's policies.
 ///
-/// A configured `http.tls` makes this a TLS listener: the certificate and key are read and checked
-/// again here (the bootstrap already did it once), the resulting identity is handed to Pingora as a
-/// static resolver, and ALPN advertises `h2`/`http/1.1`. The resolver is deliberate: Pingora's
+/// Each plaintext entry is registered as TCP. Each TLS entry re-reads and re-checks its certificate
+/// and key here (the bootstrap already did it once), hands the resulting identity to Pingora as a
+/// static resolver, and advertises `h2`/`http/1.1` over ALPN. The resolver is deliberate: Pingora's
 /// path-based settings load the files during `build()` and panic on a bad or changed pair, whereas a
-/// resolver only uses the bytes this function already validated.
+/// resolver only uses the bytes this function already validated. A plaintext and a TLS listener can
+/// coexist — they are entries of the same section, each serving its own transport.
+///
+/// The listeners are non-empty and pairwise distinct by [`HttpSettings::resolve`], so the section
+/// the settings came from cannot produce a service with nothing to bind or two listeners fighting
+/// over one socket.
 ///
 /// # Errors
-/// Returns [`ServiceBuildError`] when the listener's TLS identity cannot be read or validated, or
+/// Returns [`ServiceBuildError`] when a listener's TLS identity cannot be read or validated, or
 /// when Pingora rejects the TLS settings. A failed build leaves the process unstarted; it never
 /// serves a listener whose certificate was silently ignored.
 pub fn service(
@@ -92,22 +100,24 @@ pub fn service(
     state: Arc<HttpStateHandle>,
     settings: &HttpSettings,
 ) -> Result<Service<HttpProxy<HttpApp, ()>>, ServiceBuildError> {
-    let mut app = HttpApp::new(state);
-    app.set_inbound_tls(settings.inbound_tls().is_some());
     // `HttpServerOptions` is non-exhaustive, so it is defaulted first and then narrowed: `h2c` is
     // the one option this build decides, and `ProxyServiceBuilder` is the only path that can set
-    // it at all (`http_proxy_service()` cannot).
+    // it at all (`http_proxy_service()` cannot). It applies to the plaintext listeners; a TLS
+    // listener negotiates HTTP/2 through ALPN and is not affected.
     let mut options = HttpServerOptions::default();
     options.h2c = settings.h2c();
-    let mut service = ProxyServiceBuilder::new(conf, app)
+    let mut service = ProxyServiceBuilder::new(conf, HttpApp::new(state))
         .server_options(options)
         .build();
 
-    if let Some(inbound) = settings.inbound_tls() {
-        let tls = tls_settings(inbound)?;
-        service.add_tls_with_settings(settings.listen(), None, tls);
-    } else {
-        service.add_tcp(settings.listen());
+    for listener in settings.listeners() {
+        match listener {
+            Listener::Plain { listen } => service.add_tcp(listen),
+            Listener::Tls { listen, tls } => {
+                let tls = tls_settings(tls)?;
+                service.add_tls_with_settings(listen, None, tls);
+            }
+        }
     }
     Ok(service)
 }
@@ -177,10 +187,12 @@ fn tls_settings(inbound: &InboundTls) -> Result<TlsSettings, ServiceBuildError> 
     Ok(settings)
 }
 
-/// Rounds a configured window up to whole seconds and never down to zero.
-fn whole_seconds(window: Duration) -> u64 {
-    let seconds = window.as_secs() + u64::from(window.subsec_nanos() > 0);
-    seconds.max(1)
+/// Rounds a configured window in milliseconds up to whole seconds and never down to zero.
+///
+/// The windows come from [`ServerSettings`], which rejects anything below one millisecond, so the
+/// ceiling is at least one second: Pingora reads zero as "do not wait at all".
+fn whole_seconds(window_ms: u64) -> u64 {
+    window_ms.div_ceil(1000)
 }
 
 #[cfg(test)]

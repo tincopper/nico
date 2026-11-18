@@ -59,7 +59,7 @@ nico --bootstrap <path>   # 启动网关
 nico --help               # 打印用法
 ```
 
-默认监听 `0.0.0.0:8080`（见 `config/bootstrap.yaml` 的 `http.listen`）。
+监听地址由 `http.listeners[]` 决定（`http` 段必填）；`config/bootstrap.yaml` 的示例监听 `0.0.0.0:8080`。
 
 ### 容器部署
 
@@ -90,7 +90,7 @@ LKG 缓存在 `/var/lib/nico/cache`）与 `deploy/resources.yaml`（只有 upstr
 `ROLE=traffic` 时 `resources.yaml` 不能出现 provider 路由。
 
 上游 TLS 用镜像内的平台根证书（runtime 装了 `ca-certificates`）；私有 CA 挂一个 bundle 并
-取消 `deploy/bootstrap.yaml` 里 `tls.ca_file` 的注释——改这个文件需要重启，reload 不重读它。
+取消 `deploy/bootstrap.yaml` 里 `proxy.tls.ca_file` 的注释——改这个文件需要重启，reload 不重读它。
 
 ### 验证
 
@@ -135,33 +135,38 @@ config_source:
   max_bytes: 1048576
   watch: notify+signal   # notify | signal | notify+signal
 
-debounce_ms: 200         # 变化事件合并窗口
-max_wait_ms: 1000        # 变化持续时，发布最多被推迟多久
-cache_dir: ./.tmp/cache
-allow_bootstrap_cache: false   # 仅当启动失败且显式允许时才回退到缓存
+  debounce_ms: 200       # 变化事件合并窗口
+  max_wait_ms: 1000      # 变化持续时，发布最多被推迟多久
+  cache_dir: ./.tmp/cache
+  allow_bootstrap_cache: false   # 仅当启动失败且显式允许时才回退到缓存
 
-schema_bounds:           # 可选，省略的字段取默认值
-  max_routes: 1024
-  max_upstreams: 256
-  max_providers: 64
-  max_plugins: 256
-  max_endpoints: 64      # 单个 upstream 的成员数上限
-  max_nodes: 100000
-  max_depth: 32
+  schema_bounds:         # 可选，省略的字段取默认值
+    max_routes: 1024
+    max_upstreams: 256
+    max_providers: 64
+    max_plugins: 256
+    max_endpoints: 64    # 单个 upstream 的成员数上限
+    max_nodes: 100000
+    max_depth: 32
 
-http:
-  listen: 0.0.0.0:8080
-  h2c: false             # 是否在该监听上接受明文 HTTP/2
+runtime:                 # 可选；省略整段 = 全默认
+  threads: 1
   grace_period_ms: 5000
   graceful_shutdown_ms: 30000
-  threads: 1
-  # 可选：在该监听上终止 TLS（单证书、启动期加载）。
-  # tls:
-  #   cert_file: /etc/nico/tls/fullchain.pem
-  #   key_file: /etc/nico/tls/key.pem
 
-tls:                     # 可选；省略整段 = 使用平台证书库
-  ca_file: /etc/nico/roots.pem   # 完整信任根集合（PEM），整体替换平台库
+http:                    # 必填；一个条目 = 一个 listener
+  h2c: false             # 是否在明文 listener 上接受明文 HTTP/2
+  listeners:
+    - listen: 0.0.0.0:8080
+    # 带 `tls` 块的条目是 TLS listener（单证书、启动期加载）。
+    # - listen: 0.0.0.0:8443
+    #   tls:
+    #     cert_file: /etc/nico/tls/fullchain.pem
+    #     key_file: /etc/nico/tls/key.pem
+
+proxy:                   # 可选；省略整段 = 使用平台证书库
+  tls:
+    ca_file: /etc/nico/roots.pem   # 完整信任根集合（PEM），整体替换平台库
 
 metrics:                 # 可选；省略整段 = 不监听、不装 recorder
   listen: 127.0.0.1:9090
@@ -172,13 +177,21 @@ metrics:                 # 可选；省略整段 = 不监听、不装 recorder
 - `watch` 决定配置变化的检测方式；`signal` 之外还监听进程信号。
 - `allow_bootstrap_cache: true` 时，若首次发布失败，可从 `cache_dir` 的 last-known-good 快照启动
   （该快照被标记为 stale）。健康进程的行为不受影响。
-- `http` 的每一项都可省略（取内置默认值），但写出来的值会在启动时校验，不会被默认值吞掉。
-- `http.tls` 存在时该 listener 只接受 TLS；证书/私钥在启动时读取并配对，坏文件拒绝启动。TLS 1.2/1.3、
-  ALPN `h2`/`http/1.1`；证书/私钥变更需要重启，不做热加载。`http.tls` 与 `http.h2c` 不能同时启用
-  （一个 listener 只有一种传输）。它和下面的顶层 `tls` 是两件事：后者是**上游**握手的信任根。
-- `metrics` 整段省略即关闭自报面（默认）。写出来后 `listen` 必填；与 `http.listen` 同址、端口为 0、
-  或端口无法绑定都会让启动失败 —— 一个存在但渲染不出东西的自报面是运维最难排查的形态。
-- `tls.ca_file` 是**完整信任根集合，整体替换平台证书库，不是追加**。要同时信任公网与私有 CA，
+- `http` 段**必填**：缺席即启动失败，而不是退化成默认的 8080。`listeners` 至少一条，端口不能为 0，
+  地址解析后两两不同；写出来的值在启动时校验，不会被默认值吞掉。
+- `http.listeners[]` 的一个条目就是一个 listener：带 `tls` 块的条目终止 TLS（证书/私钥启动时读取
+  并配对，坏文件拒绝启动；TLS 1.2/1.3、ALPN `h2`/`http/1.1`；变更需要重启，不做热加载），不带的条目
+  只服务明文。两种条目可以在同一份配置里并存（TLS-only、纯明文、明文+TLS 都由同一张 schema 表达），
+  每个连接报给上游的 `x-forwarded-proto` 由该连接自己的传输决定。
+- `tls` 块是**本 listener 出示的身份**；`proxy.tls` 是**上游**握手的信任根，两个方向两个名字。
+- `http.h2c` 是段级事实：作用于全部明文条目。只有 TLS 条目时写 `h2c: true` 是启动错误 —— 一个
+  listener 只有一种传输，这个开关没有作用对象（TLS listener 走 ALPN 协商 HTTP/2，不受影响）。
+- `runtime` 段三个进程旋钮可省略取默认；写出来则在启动时校验（`threads` 1..=256、两个窗口
+  1..=300_000、drain 不得短于 grace）。
+- `metrics` 整段省略即关闭自报面（默认）。写出来后 `listen` 必填；与任一 `http.listeners[]` 地址
+  同址、端口为 0、或端口无法绑定都会让启动失败 —— 一个存在但渲染不出东西的自报面是运维最难排查
+  的形态。
+- `proxy.tls.ca_file` 是**完整信任根集合，整体替换平台证书库，不是追加**。要同时信任公网与私有 CA，
   请把两者拼进同一个文件。省略整段即用平台库；`SSL_CERT_FILE` / `SSL_CERT_DIR` 仍由底层 TLS
   provider 读取，属部署手段，不是本网关的配置项。
 - 信任根在**构建 service 时定型**：改 CA 需要重启，reload 只换文档快照。启动时会先读一次这个来源
@@ -613,8 +626,8 @@ message。响应头是封闭集合：`content-type`、`content-length`、`x-nico
 
 ### 优雅停机
 
-`SIGINT` / `SIGTERM` 触发优雅停机：先等 `grace_period_ms`（默认 5 s）让在途请求跑完，再在
-`graceful_shutdown_ms`（默认 30 s）内 drain。整个进程只有一个 shutdown 源（`CancellationToken`），
+`SIGINT` / `SIGTERM` 触发优雅停机：先等 `runtime.grace_period_ms`（默认 5 s）让在途请求跑完，再在
+`runtime.graceful_shutdown_ms`（默认 30 s）内 drain。整个进程只有一个 shutdown 源（`CancellationToken`），
 数据面、配置管道、停机 drain 都由它驱动。
 
 ### 构建角色
@@ -751,6 +764,7 @@ scripts/gates/       git hook 背后的检查
   支持，接入是 bootstrap schema 的纯增量）。tonic/hyper 栈由 feature 门控：产品二进制（默认与
   `traffic` 角色）不链接，测试构建经 dev-dependencies 使用协议替身。
 - **路由匹配**：线性扫描，无编译索引；`path_prefix` 是字节前缀，不做路径归一化。
-- **入站 TLS**：`http.tls` 支持单证书、启动期加载的 TLS 终止（TLS 1.2/1.3，ALPN h2+h1），证书/
-  私钥变更需重启。证书热加载/轮换、mTLS、SNI 多证书暂未实现；需要这些能力时仍在前面放代理。上游
-  方向直接支持 `https`（见顶层 `tls.ca_file`）。
+- **入站 TLS**：`http.listeners[]` 中带 `tls` 块的条目终止 TLS——单证书、启动期加载（TLS 1.2/1.3，
+  ALPN h2+h1），证书/私钥变更需重启；明文条目与 TLS 条目可以在同一份配置里并存（即 nginx
+  `listen 443 ssl` 的形状）。证书热加载/轮换、mTLS、SNI 多证书、同一端口上自动识别明文与 TLS
+  暂未实现；需要这些能力时仍在前面放代理。上游方向直接支持 `https`（见 `proxy.tls.ca_file`）。

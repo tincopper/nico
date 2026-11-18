@@ -18,7 +18,9 @@
 
 use std::time::{Duration, Instant};
 
-use pingora::{Error, http::RequestHeader, proxy::Session, upstreams::peer::HttpPeer};
+use pingora::{
+    Error, http::RequestHeader, protocols::Digest, proxy::Session, upstreams::peer::HttpPeer,
+};
 use tokio::time::Instant as TokioInstant;
 
 use super::{
@@ -324,7 +326,7 @@ fn select_attempt(ctx: &mut HttpContext, now: TokioInstant) -> Result<(), HttpEr
 /// and it rejects a request that tries to nominate `Host` or `X-Forwarded-*`. Reimplementing that here
 /// would be a second, weaker copy of a rule the framework already applies before this hook runs.
 pub(super) async fn upstream_request_filter(
-    app: &HttpApp,
+    _app: &HttpApp,
     session: &mut Session,
     request: &mut RequestHeader,
     ctx: &mut HttpContext,
@@ -365,10 +367,14 @@ pub(super) async fn upstream_request_filter(
         set_header(request, "x-forwarded-for", &forwarded_for, ctx)?;
     }
     // Only the outermost hop states the scheme: appending a second value produces a list that no
-    // server parses. The transport this listener actually uses decides the value; a client that
+    // server parses. The transport this connection actually uses decides the value; a client that
     // already supplied one keeps it, as before.
     if request.headers.get("x-forwarded-proto").is_none() {
-        let scheme = if app.inbound_tls() { "https" } else { "http" };
+        let scheme = if is_tls_connection(session.digest()) {
+            "https"
+        } else {
+            "http"
+        };
         set_header(request, "x-forwarded-proto", scheme, ctx)?;
     }
     set_header(request, "host", &host, ctx)?;
@@ -393,3 +399,19 @@ pub(super) async fn upstream_request_filter(
 
     Ok(())
 }
+
+/// Reports whether the downstream connection terminated TLS, from the connection's own digest.
+///
+/// The digest is a per-connection fact, so a process that serves plaintext and TLS listeners at once
+/// classifies each request by the connection it arrived on — a process-level flag would describe
+/// only one of them. H1 and H2 server sessions always carry a digest (pingora 0.9.1,
+/// `protocols/http/server.rs`), and the TLS layer writes `ssl_digest` when it accepted a handshake.
+/// `None` — a path without a digest, which this build does not produce — is defended as plaintext.
+fn is_tls_connection(digest: Option<&Digest>) -> bool {
+    digest
+        .and_then(|digest| digest.ssl_digest.as_ref())
+        .is_some()
+}
+
+#[cfg(test)]
+mod tests;

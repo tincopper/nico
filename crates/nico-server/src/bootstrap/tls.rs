@@ -1,11 +1,11 @@
-//! The optional `tls` section of the bootstrap file: the roots an upstream handshake trusts.
+//! The optional `proxy.tls` block of the bootstrap file: the roots an upstream handshake trusts.
 //!
 //! Trust roots describe *this process*, not a route: they are read once at startup and Pingora
 //! bakes them into its client connector, so a reload of the document cannot change them. That is
 //! why they live in the bootstrap file, next to the listener and the drain windows, and never in a
 //! configuration source.
 //!
-//! An omitted section means the platform certificate store. A **present** section is a complete
+//! An omitted block means the platform certificate store. A **present** section is a complete
 //! replacement for it — rustls uses a configured bundle *instead of* the native roots — so the
 //! operator has to concatenate what they want to trust into one file. The section is documented as
 //! replace-not-append for the same reason: an operator who assumed "add" would silently lose the
@@ -28,7 +28,7 @@ use serde::{Deserialize, Deserializer};
 
 use super::BootstrapError;
 
-/// The `tls` section exactly as written, before validation.
+/// The `proxy.tls` block exactly as written, before validation.
 ///
 /// Every field is optional so that `ca_file`'s absence is reported as a missing field rather than
 /// as a missing section; the resolver refuses it either way.
@@ -40,10 +40,10 @@ pub(super) struct RawTls {
 
 /// Reads the `tls` key when it is present, including when its body is empty.
 ///
-/// A section with no body (`tls:` and nothing under it) deserializes as `None`, which would be
-/// indistinguishable from an omitted section — and an operator who wrote the section and forgot the
-/// path would believe a bundle was configured while the platform roots stayed in force. Mapping the
-/// empty body to an empty section makes the resolver report it as `tls.ca_file`.
+/// A block with no body (`tls:` and nothing under it) deserializes as `None`, which would be
+/// indistinguishable from an omitted block — and an operator who wrote the key and forgot the path
+/// would believe a bundle was configured while the platform roots stayed in force. Mapping the empty
+/// body to an empty block makes the resolver report it as `proxy.tls.ca_file`.
 ///
 /// # Errors
 /// Returns the deserializer's error when the section is not a mapping, or has unknown fields.
@@ -55,15 +55,15 @@ where
 }
 
 impl RawTls {
-    /// Resolves the section into the policy the data plane is built with.
+    /// Resolves the block into the policy the data plane is built with.
     ///
     /// The file is read once, here: the policy stores its path, and Pingora opens that path again
     /// while building the connector. A file whose content changes in between is therefore a startup
     /// failure, not a surprise on the first request.
     ///
     /// # Errors
-    /// Returns [`BootstrapError::InvalidField`] under `tls.ca_file` when the section names no file,
-    /// when the file cannot be read, or when its bytes are not a usable set of trust roots.
+    /// Returns [`BootstrapError::InvalidField`] under `proxy.tls.ca_file` when the block names no
+    /// file, when the file cannot be read, or when its bytes are not a usable set of trust roots.
     pub(super) fn resolve(&self) -> Result<TlsPolicy, BootstrapError> {
         let Some(path) = self
             .ca_file
@@ -71,7 +71,7 @@ impl RawTls {
             .filter(|path| !path.as_os_str().is_empty())
         else {
             return Err(invalid(
-                "the `tls` section is present, so it must name a `ca_file`",
+                "the `proxy.tls` section is present, so it must name a `ca_file`",
             ));
         };
         let bytes =
@@ -86,7 +86,7 @@ impl RawTls {
 /// Builds the rejection for a bundle this process cannot use.
 fn invalid(reason: impl Into<Cow<'static, str>>) -> BootstrapError {
     BootstrapError::InvalidField {
-        field: "tls.ca_file".into(),
+        field: "proxy.tls.ca_file".into(),
         reason: reason.into(),
     }
 }

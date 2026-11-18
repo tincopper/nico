@@ -38,13 +38,17 @@ impl MetricsSettings {
 
 impl RawMetrics {
     /// Resolves the section, rejecting a present section with no address and an address that
-    /// collides with the data plane's.
+    /// collides with one the data plane binds.
+    ///
+    /// `listeners` is every address the `http` section resolves to — plaintext **and** TLS. A TLS
+    /// listener owns its socket exactly as a plaintext one does, so a self-reporting listener that
+    /// named it would fight it for the bind.
     ///
     /// # Errors
     /// Returns [`BootstrapError::InvalidField`] under `metrics.listen` when the section is present
     /// but names no address, when the address is not a legal listener, or when it is the same
-    /// address the data plane binds.
-    pub(super) fn resolve(&self, http_listen: &str) -> Result<MetricsSettings, BootstrapError> {
+    /// address one of the data plane's listeners binds.
+    pub(super) fn resolve(&self, listeners: &[&str]) -> Result<MetricsSettings, BootstrapError> {
         let Some(listen) = self.listen.as_deref() else {
             return Err(BootstrapError::InvalidField {
                 field: "metrics.listen".into(),
@@ -56,10 +60,13 @@ impl RawMetrics {
             field: "metrics.listen".into(),
             reason: error.reason().to_owned().into(),
         })?;
-        if same_address(listen, http_listen) {
+        if let Some(collision) = listeners
+            .iter()
+            .find(|listener| same_address(listen, listener))
+        {
             return Err(BootstrapError::InvalidField {
                 field: "metrics.listen".into(),
-                reason: format!("must differ from `http.listen` ({http_listen})").into(),
+                reason: format!("must differ from `http.listeners` entry `{collision}`").into(),
             });
         }
         Ok(MetricsSettings {

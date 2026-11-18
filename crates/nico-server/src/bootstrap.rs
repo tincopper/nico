@@ -1,20 +1,30 @@
-//! Bootstrap configuration: the local file that says where the gateway reads its configuration.
+//! Bootstrap configuration: the local file that says how the gateway process runs and where it
+//! reads its configuration.
 //!
 //! This file is read before any configuration source exists, so it is never served *by* a
 //! configuration source. A remote control plane must not be able to rewrite where the process reads
-//! its configuration from, or which local directory it writes its cache to.
+//! its configuration from, which local directory it writes its cache to, which sockets it binds, or
+//! which certificate it presents on them.
 //!
-//! The file selects one authoritative source, bounds how long a debounce may postpone a publish, and
-//! states whether a cached document may be served before the source has ever answered. It also
-//! carries the optional parse-time shape bounds, so an operator can tighten or widen them without a
-//! rebuild — but only from this local file, never from the configuration source whose size those
-//! bounds are meant to contain.
+//! It is organised the way nginx's own configuration is: one section per layer, and the section's
+//! presence is the fact it states.
+//!
+//! - `runtime` — the process: worker threads and the two shutdown windows. Optional; absent means
+//!   every default.
+//! - `http` — the protocol and the inbound side: one `listeners[]` entry per socket, each a
+//!   plaintext listener or, when it carries a `tls` block, a TLS listener. **Required**: a gateway
+//!   that binds nothing serves nothing, so this is not a default the build can invent.
+//! - `proxy` — the outbound side: the roots an *upstream* handshake is verified against. Optional;
+//!   absent means the platform certificate store.
+//! - `config_source` — where the document comes from, and how it is watched, de-bounced, cached and
+//!   bounded.
+//! - `metrics` — the self-reporting surface. Optional; absent means off.
 //!
 //! It contains no routes: routing is runtime configuration, and it arrives through the source.
 //!
 //! [`BootstrapConfig`] can only be built by [`BootstrapConfig::load`], so every instance is already
-//! validated: the source type is known, the watch mode is parsed, and the timing and shape bounds are
-//! sane.
+//! validated: the source type is known, the watch mode is parsed, the listeners are legal and
+//! pairwise distinct, and the timing, trust and shape bounds are sane.
 
 use std::{
     borrow::Cow,
@@ -23,13 +33,15 @@ use std::{
     time::Duration,
 };
 
-use nico_core::{Bound, ParseLimits, SchemaBounds};
-use nico_http::{HttpSettings, TlsPolicy};
+use nico_core::{ParseLimits, SchemaBounds};
+use nico_http::{HttpSettings, ServerSettings, TlsPolicy};
 use serde::Deserialize;
 use serde_norway::Value;
 
 mod http;
 mod metrics;
+mod proxy;
+mod runtime;
 mod source;
 mod tls;
 
@@ -37,25 +49,11 @@ pub use metrics::MetricsSettings;
 pub use source::SourceSelection;
 use source::parse_source;
 
-/// Largest accepted `debounce_ms`.
-const MAX_DEBOUNCE_MS: u64 = 10_000;
-
-/// Largest accepted `max_wait_ms`.
-const MAX_MAX_WAIT_MS: u64 = 60_000;
-
-/// Largest accepted `schema_bounds.max_routes`, `max_upstreams`, `max_providers` and `max_plugins`.
-const MAX_COLLECTION_BOUND: usize = 1_000_000;
-
-/// Largest accepted `schema_bounds.max_nodes`.
-const MAX_NODES_BOUND: usize = 10_000_000;
-
-/// Largest accepted `schema_bounds.max_depth`.
-const MAX_DEPTH_BOUND: usize = 128;
-
 /// A validated bootstrap configuration.
 ///
 /// Fields are private and there is no public constructor besides [`BootstrapConfig::load`], because
-/// an unvalidated bootstrap would let a deployment select a source type this build cannot serve.
+/// an unvalidated bootstrap would let a deployment select a source type this build cannot serve, or
+/// bind a listener whose certificate was never read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BootstrapConfig {
     source: SourceSelection,
@@ -65,6 +63,7 @@ pub struct BootstrapConfig {
     cache_dir: PathBuf,
     allow_bootstrap_cache: bool,
     schema_bounds: SchemaBounds,
+    runtime: ServerSettings,
     http: HttpSettings,
     metrics: Option<MetricsSettings>,
 }
@@ -79,7 +78,8 @@ impl BootstrapConfig {
     /// - [`BootstrapError::UnsupportedSource`] when `config_source.type` is not a type this build
     ///   serves.
     /// - [`BootstrapError::InvalidField`] when a field is syntactically fine but out of range, for
-    ///   example an unknown watch mode or a `max_wait_ms` below `debounce_ms`.
+    ///   example an unknown watch mode, a `max_wait_ms` below `debounce_ms`, an unusable listener
+    ///   address, or a certificate and key that are not a pair.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, BootstrapError> {
         let bytes = fs::read(path.as_ref()).map_err(|source| BootstrapError::Read { source })?;
         let raw: RawBootstrap =
@@ -125,10 +125,22 @@ impl BootstrapConfig {
         self.allow_bootstrap_cache
     }
 
-    /// Returns the process-level settings of the HTTP data plane.
+    /// Returns the process-level runtime settings: worker threads and the two shutdown windows.
     ///
     /// They are validated here and nowhere else, so a listener or a drain window cannot disagree
-    /// between the binary that assembles the server and the service that runs it.
+    /// between the binary that assembles the server and the service that runs it. An absent
+    /// `runtime` section resolves to [`ServerSettings::new`], so this is never `None`: a process
+    /// always has a thread count and a drain window, it just may not have written them down.
+    #[must_use]
+    pub const fn runtime(&self) -> &ServerSettings {
+        &self.runtime
+    }
+
+    /// Returns the process-level settings of the HTTP data plane: its listeners, `h2c` and the
+    /// outbound trust roots.
+    ///
+    /// They are validated here and nowhere else, so a listener cannot be assembled from values the
+    /// bootstrap never accepted. The `http` section is required, so this is never `None`.
     #[must_use]
     pub const fn http(&self) -> &HttpSettings {
         &self.http
@@ -145,9 +157,10 @@ impl BootstrapConfig {
 
     /// Builds the parse limits the pipeline applies to every document.
     ///
-    /// The byte bound is `config_source.max_bytes`; the shape bounds are the `schema_bounds` section
-    /// with every omitted field filled from [`SchemaBounds::default`]. This is the pipeline's only
-    /// source of parse limits, so the file and the built-in defaults cannot diverge.
+    /// The byte bound is `config_source.max_bytes`; the shape bounds are the
+    /// `config_source.schema_bounds` block with every omitted field filled from
+    /// [`SchemaBounds::default`]. This is the pipeline's only source of parse limits, so the file
+    /// and the built-in defaults cannot diverge.
     #[must_use]
     pub fn parse_limits(&self) -> ParseLimits {
         ParseLimits::new(self.source_max_bytes).with_schema(self.schema_bounds)
@@ -214,170 +227,63 @@ const _: fn() = || {
 /// The bootstrap file exactly as written, before any interpretation.
 ///
 /// Keeping this separate from [`BootstrapConfig`] is what makes the validated type unable to hold an
-/// unparsed watch mode or an unsupported source type.
+/// unparsed watch mode, an unsupported source type, or a listener whose certificate was never read.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawBootstrap {
     // The body is typed per `config_source.type`, which serde's tagged enums cannot express
     // together with unknown-field rejection — see `source::parse_source`.
     config_source: Value,
-    schema_bounds: Option<RawSchemaBounds>,
-    http: Option<http::RawHttp>,
+    // Omitted means "every default", so the process-level knobs stay optional.
+    runtime: Option<runtime::RawRuntime>,
+    // Required: a gateway with no listener serves nothing, and a default port would silently open a
+    // socket no operator asked for.
+    http: http::RawHttp,
+    // Present-but-empty is a configuration error, not "no section": see `proxy::section`.
+    #[serde(default, deserialize_with = "proxy::section")]
+    proxy: Option<proxy::RawProxy>,
     metrics: Option<metrics::RawMetrics>,
-    // Present-but-empty is a configuration error, not "no section": see `tls::section`.
-    #[serde(default, deserialize_with = "tls::section")]
-    tls: Option<tls::RawTls>,
-    debounce_ms: u64,
-    max_wait_ms: u64,
-    cache_dir: PathBuf,
-    allow_bootstrap_cache: bool,
-}
-
-/// The optional `schema_bounds` section exactly as written.
-///
-/// Every field is optional, so the whole section or any single field can be omitted. A field that is
-/// absent keeps its [`SchemaBounds::default`] value; a field that is *present* must be accepted as
-/// written, so a typo or a `0` fails at startup instead of being absorbed by the default. The
-/// built-in values are never restated here: an omitted field is simply not applied.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawSchemaBounds {
-    max_routes: Option<usize>,
-    max_upstreams: Option<usize>,
-    max_providers: Option<usize>,
-    max_plugins: Option<usize>,
-    max_endpoints: Option<usize>,
-    max_pool_members: Option<usize>,
-    max_nodes: Option<usize>,
-    max_depth: Option<usize>,
-}
-
-impl RawSchemaBounds {
-    /// Applies every written bound over the defaults, rejecting one outside its operator range.
-    fn resolve(&self) -> Result<SchemaBounds, BootstrapError> {
-        let mut bounds = SchemaBounds::default();
-        for (bound, written) in [
-            (Bound::Routes, self.max_routes),
-            (Bound::Upstreams, self.max_upstreams),
-            (Bound::Providers, self.max_providers),
-            (Bound::Plugins, self.max_plugins),
-            (Bound::Endpoints, self.max_endpoints),
-            (Bound::PoolMembers, self.max_pool_members),
-            (Bound::Nodes, self.max_nodes),
-            (Bound::Depth, self.max_depth),
-        ] {
-            let Some(value) = written else { continue };
-            if value > maximum(bound) {
-                return Err(out_of_range(bound, value));
-            }
-            bounds = bounds
-                .with(bound, value)
-                // The upper bound was checked above, so `with` can only reject a `0` here.
-                .map_err(|_error| out_of_range(bound, value))?;
-        }
-        Ok(bounds)
-    }
-}
-
-/// Returns the largest value an operator may write for `bound`.
-///
-/// This is a bootstrap policy, not a property of [`SchemaBounds`]: the parser accepts any non-zero
-/// bound, while a hand-written file is bounded so a typo cannot ask for a million routes. The match
-/// is exhaustive on purpose — a new bound must state its own limit instead of inheriting one.
-const fn maximum(bound: Bound) -> usize {
-    match bound {
-        Bound::Routes
-        | Bound::Upstreams
-        | Bound::Providers
-        | Bound::Plugins
-        | Bound::Endpoints
-        | Bound::PoolMembers => MAX_COLLECTION_BOUND,
-        Bound::Nodes => MAX_NODES_BOUND,
-        Bound::Depth => MAX_DEPTH_BOUND,
-    }
-}
-
-/// Builds the error for a bound an operator may not write.
-fn out_of_range(bound: Bound, value: usize) -> BootstrapError {
-    BootstrapError::InvalidField {
-        field: format!("schema_bounds.{}", bound.name()).into(),
-        reason: format!("must be in 1..={} (found {value})", maximum(bound)).into(),
-    }
 }
 
 impl RawBootstrap {
     fn validate(self) -> Result<BootstrapConfig, BootstrapError> {
-        let (source, source_max_bytes) = parse_source(self.config_source)?;
+        // The `config_source` section owns the document's provenance and the pacing of its reload.
+        let source = parse_source(self.config_source)?;
 
-        if source_max_bytes == 0 {
-            return Err(BootstrapError::InvalidField {
-                field: "config_source.max_bytes".into(),
-                reason: "must be greater than zero".into(),
-            });
-        }
-        if self.debounce_ms > MAX_DEBOUNCE_MS {
-            return Err(BootstrapError::InvalidField {
-                field: "debounce_ms".into(),
-                reason: format!(
-                    "must be in 0..={MAX_DEBOUNCE_MS} (found {})",
-                    self.debounce_ms
-                )
-                .into(),
-            });
-        }
-        if self.max_wait_ms < self.debounce_ms {
-            return Err(BootstrapError::InvalidField {
-                field: "max_wait_ms".into(),
-                reason: "must be at least debounce_ms".into(),
-            });
-        }
-        if self.max_wait_ms > MAX_MAX_WAIT_MS {
-            return Err(BootstrapError::InvalidField {
-                field: "max_wait_ms".into(),
-                reason: format!(
-                    "must be in 0..={MAX_MAX_WAIT_MS} (found {})",
-                    self.max_wait_ms
-                )
-                .into(),
-            });
-        }
-
-        let schema_bounds = match &self.schema_bounds {
-            Some(raw) => raw.resolve()?,
-            None => SchemaBounds::default(),
-        };
-
-        // The trust roots are resolved first because they are an input to the settings the `http`
-        // section produces: a configured bundle is a field of `HttpSettings`, not a knob some hook
-        // reads on its own. An omitted `tls` is the platform store, exactly as before the section
-        // existed.
-        let tls = match &self.tls {
+        // The outbound trust roots are resolved before the listeners because they are an input to
+        // the settings the `http` section produces: a configured bundle is a field of
+        // `HttpSettings`, not a knob some hook reads on its own. An omitted `proxy` is the platform
+        // store, exactly as the top-level `tls` section used to be.
+        let trust = match &self.proxy {
             Some(raw) => raw.resolve()?,
             None => TlsPolicy::from_bootstrap(None),
         };
 
-        // An omitted section and an empty section must behave identically, so both go through
+        // An omitted `runtime` section and an empty one behave identically, so both go through
         // `resolve`: the defaults are applied and validated on the same path.
-        let http = match &self.http {
-            Some(raw) => raw.resolve(tls)?,
-            None => http::RawHttp::default().resolve(tls)?,
+        let runtime = match &self.runtime {
+            Some(raw) => raw.resolve()?,
+            None => ServerSettings::new(),
         };
 
-        // The metrics section is resolved against the data plane's own address, so it can only
-        // collide when both are written; an omitted section stays `None`.
+        let http = self.http.resolve(trust)?;
+
+        // The metrics section is resolved against every address the data plane binds, so it can
+        // only collide when both are written; an omitted section stays `None`.
         let metrics = match &self.metrics {
-            Some(raw) => Some(raw.resolve(http.listen())?),
+            Some(raw) => Some(raw.resolve(&http.listener_addresses())?),
             None => None,
         };
 
         Ok(BootstrapConfig {
-            source,
-            source_max_bytes,
-            debounce_ms: self.debounce_ms,
-            max_wait_ms: self.max_wait_ms,
-            cache_dir: self.cache_dir,
-            allow_bootstrap_cache: self.allow_bootstrap_cache,
-            schema_bounds,
+            source: source.selection,
+            source_max_bytes: source.max_bytes,
+            debounce_ms: source.debounce_ms,
+            max_wait_ms: source.max_wait_ms,
+            cache_dir: source.cache_dir,
+            allow_bootstrap_cache: source.allow_bootstrap_cache,
+            schema_bounds: source.schema_bounds,
+            runtime,
             http,
             metrics,
         })

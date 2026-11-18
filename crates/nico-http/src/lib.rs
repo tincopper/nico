@@ -17,7 +17,9 @@
 //!   bodies are translated, and the per-response transform that does it.
 //! - [proxy] — the Pingora hook contract that ties the above together, and [mod@service] — the
 //!   process-level assembly (server configuration, listener).
-//! - [settings] — the validated bootstrap knobs this data plane is configured with.
+//! - [settings] — the validated `http` section (listeners, plaintext HTTP/2) and the shared
+//!   listener-address rule; [server_settings] — the validated `runtime` section (threads, shutdown
+//!   windows).
 //!
 //! Two boundaries stay inside the crate: `budget` owns the body/time budget arithmetic, and
 //! `upstream` owns "destination → connectable peer". Neither is part of the public contract: the
@@ -99,6 +101,7 @@ pub mod plugin;
 pub mod proxy;
 pub(crate) mod quota;
 pub mod route;
+pub mod server_settings;
 pub mod service;
 pub mod settings;
 pub mod state;
@@ -122,8 +125,9 @@ pub use plugin::{
 };
 pub use proxy::HttpApp;
 pub use route::match_route;
+pub use server_settings::{ServerSettings, ServerSettingsError};
 pub use service::{ServiceBuildError, server_conf, service};
-pub use settings::{HttpSettings, HttpSettingsError, validate_listen};
+pub use settings::{HttpSettings, HttpSettingsError, Listener, validate_listen};
 pub use state::{
     BufferedRoutes, HttpState, HttpStateHandle, PublishedChains, ResponseRewrites, RouteChains,
 };

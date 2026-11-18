@@ -7,7 +7,11 @@ use nico_config::WatchMode;
 
 use super::*;
 
-fn document(path: &str, watch: &str, debounce_ms: u64, max_wait_ms: u64) -> String {
+/// The `config_source` section every fixture shares, with the values a caller varies.
+///
+/// The reload knobs are written inside the section, which is where they live now: they are facts
+/// about the configuration-acquisition subsystem, not about the process as a whole.
+fn config_source(path: &str, watch: &str, debounce_ms: u64, max_wait_ms: u64) -> String {
     format!(
         "\
 config_source:
@@ -15,11 +19,19 @@ config_source:
   path: {path}
   max_bytes: 4096
   watch: {watch}
-debounce_ms: {debounce_ms}
-max_wait_ms: {max_wait_ms}
-cache_dir: ./.tmp/cache
-allow_bootstrap_cache: false
+  debounce_ms: {debounce_ms}
+  max_wait_ms: {max_wait_ms}
+  cache_dir: ./.tmp/cache
+  allow_bootstrap_cache: false
 "
+    )
+}
+
+/// A complete bootstrap document: [`config_source`] plus one plaintext listener.
+fn document(path: &str, watch: &str, debounce_ms: u64, max_wait_ms: u64) -> String {
+    format!(
+        "{}http:\n  listeners:\n    - listen: 127.0.0.1:8080\n",
+        config_source(path, watch, debounce_ms, max_wait_ms)
     )
 }
 
@@ -127,7 +139,9 @@ mod load {
     fn load_rejects_max_wait_below_the_debounce_window() {
         let text = document("./resources.yaml", "notify", 500, 200);
         match load_document(&text).expect_err("max_wait must not be shorter than debounce") {
-            BootstrapError::InvalidField { field, .. } => assert_eq!(field, "max_wait_ms"),
+            BootstrapError::InvalidField { field, .. } => {
+                assert_eq!(field, "config_source.max_wait_ms");
+            }
             other => panic!("expected InvalidField, got {other:?}"),
         }
     }
@@ -136,7 +150,9 @@ mod load {
     fn load_rejects_a_debounce_window_above_ten_seconds() {
         let text = document("./resources.yaml", "notify", 10_001, 20_000);
         match load_document(&text).expect_err("debounce is bounded") {
-            BootstrapError::InvalidField { field, .. } => assert_eq!(field, "debounce_ms"),
+            BootstrapError::InvalidField { field, .. } => {
+                assert_eq!(field, "config_source.debounce_ms");
+            }
             other => panic!("expected InvalidField, got {other:?}"),
         }
     }
@@ -145,7 +161,9 @@ mod load {
     fn load_rejects_a_max_wait_above_sixty_seconds() {
         let text = document("./resources.yaml", "notify", 100, 60_001);
         match load_document(&text).expect_err("max_wait is bounded") {
-            BootstrapError::InvalidField { field, .. } => assert_eq!(field, "max_wait_ms"),
+            BootstrapError::InvalidField { field, .. } => {
+                assert_eq!(field, "config_source.max_wait_ms");
+            }
             other => panic!("expected InvalidField, got {other:?}"),
         }
     }
@@ -180,293 +198,176 @@ mod local_config {
     }
 }
 
-mod schema_bounds {
-    use nico_core::Bound;
+mod http {
+    use nico_http::Listener;
 
     use super::*;
 
-    /// Bounds a test writes, paired with the value it expects to read back.
-    const WRITTEN: [(Bound, usize); 7] = [
-        (Bound::Routes, 8),
-        (Bound::Upstreams, 7),
-        (Bound::Providers, 6),
-        (Bound::Plugins, 3),
-        (Bound::Endpoints, 2),
-        (Bound::Nodes, 5),
-        (Bound::Depth, 4),
-    ];
-
-    /// Appends a `schema_bounds` section to an otherwise complete bootstrap document.
-    fn with_bounds(section: &str) -> String {
+    /// A document whose `http` section holds `section`.
+    fn with_http(section: &str) -> String {
         format!(
-            "{}schema_bounds:\n{section}",
-            document("./resources.yaml", "notify", 100, 500)
+            "{}http:\n{section}",
+            config_source("./resources.yaml", "notify", 100, 500)
         )
     }
 
-    /// Loads a document whose `schema_bounds` section holds `section` and returns its parse limits.
-    fn limits(section: &str) -> ParseLimits {
-        load_document(&with_bounds(section))
-            .expect("the fixture is a valid bootstrap document")
-            .parse_limits()
+    /// Loads a document whose `http` section holds `section`.
+    fn launched(section: &str) -> Result<BootstrapConfig, BootstrapError> {
+        load_document(&with_http(section))
     }
 
-    /// Returns the section line that writes `value` for `bound`.
-    fn line(bound: Bound, value: usize) -> String {
-        format!("  {}: {value}\n", bound.name())
+    /// Loads a document whose `http` section holds `section` and expects it to be rejected.
+    fn rejection(section: &str) -> BootstrapError {
+        launched(section)
+            .err()
+            .unwrap_or_else(|| panic!("`{section}` must be rejected"))
     }
 
-    /// Asserts that `section` is rejected as an out-of-range bound, naming `bound`.
-    fn expect_out_of_range(bound: Bound, section: &str) {
-        match load_document(&with_bounds(section)) {
-            Err(BootstrapError::InvalidField { field, reason }) => {
-                assert_eq!(field, format!("schema_bounds.{}", bound.name()));
-                assert!(
-                    reason.contains(&format!("1..={}", maximum(bound))),
-                    "the message must quote the enforced limit, got {reason:?}"
-                );
-            }
-            other => panic!("expected InvalidField for {}, got {other:?}", bound.name()),
-        }
+    /// A plaintext listener on `127.0.0.1:9000`, the address most tests here use.
+    const PLAINTEXT: &str = "  listeners:\n    - listen: 127.0.0.1:9000\n";
+
+    #[test]
+    fn an_absent_section_is_a_parse_error() {
+        let error = load_document(&config_source("./resources.yaml", "notify", 100, 500))
+            .expect_err("`http` is required");
+
+        assert!(
+            matches!(error, BootstrapError::Parse { .. }),
+            "a gateway with no listener is not a default, got {error:?}"
+        );
     }
 
     #[test]
-    fn an_omitted_section_uses_the_built_in_bounds() {
-        let bootstrap = load_document(&document("./resources.yaml", "notify", 100, 500))
-            .expect("the section is optional");
+    fn a_section_without_listeners_names_no_listener() {
+        for section in ["", "  h2c: false\n", "  listeners: []\n"] {
+            let error = rejection(section);
 
-        assert_eq!(bootstrap.parse_limits().schema(), SchemaBounds::default());
-        assert_eq!(bootstrap.parse_limits().max_bytes(), 4096);
-    }
-
-    #[test]
-    fn an_omitted_field_keeps_its_built_in_bound() {
-        let parsed = limits(&line(Bound::Routes, 8));
-        let defaults = SchemaBounds::default();
-
-        assert_eq!(parsed.schema().get(Bound::Routes), 8);
-        for (bound, _) in WRITTEN {
-            if bound != Bound::Routes {
-                assert_eq!(
-                    parsed.schema().get(bound),
-                    defaults.get(bound),
-                    "{} changed although it was omitted",
-                    bound.name()
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn every_written_field_reaches_the_parse_limits() {
-        let section = WRITTEN.map(|(bound, value)| line(bound, value)).concat();
-        let parsed = limits(&section);
-
-        for (bound, value) in WRITTEN {
-            assert_eq!(
-                parsed.schema().get(bound),
-                value,
-                "{} was not applied",
-                bound.name()
+            assert!(
+                matches!(
+                    &error,
+                    BootstrapError::InvalidField { field, .. } if field == "http.listeners"
+                ),
+                "expected an invalid http.listeners for `{section}`, got {error:?}"
             );
         }
     }
 
     #[test]
-    fn an_unknown_bound_is_rejected() {
-        let error = load_document(&with_bounds("  max_routez: 8\n"))
-            .expect_err("a misspelt bound must not be absorbed by the default");
-
-        assert!(
-            matches!(error, BootstrapError::Parse { .. }),
-            "expected Parse, got {error:?}"
-        );
-    }
-
-    #[test]
-    fn a_zero_bound_is_rejected_for_every_field() {
-        for (bound, _) in WRITTEN {
-            expect_out_of_range(bound, &line(bound, 0));
-        }
-    }
-
-    #[test]
-    fn a_bound_above_the_operator_maximum_is_rejected_for_every_field() {
-        for (bound, _) in WRITTEN {
-            expect_out_of_range(bound, &line(bound, maximum(bound) + 1));
-        }
-    }
-}
-
-mod http {
-    use std::time::Duration;
-
-    use super::*;
-
-    /// Appends an `http` section to an otherwise complete bootstrap document.
-    fn with_http(section: &str) -> String {
-        format!(
-            "{}http:\n{section}",
-            document("./resources.yaml", "notify", 100, 500)
-        )
-    }
-
-    /// Loads a document whose `http` section holds `section` and returns its settings.
-    fn settings(section: &str) -> nico_http::HttpSettings {
-        load_document(&with_http(section))
-            .expect("the fixture is a valid bootstrap document")
-            .http()
-            .clone()
-    }
-
-    /// Loads a document whose `http` section holds `section` and expects it to be rejected.
-    fn rejection(section: &str) -> BootstrapError {
-        load_document(&with_http(section))
-            .err()
-            .unwrap_or_else(|| panic!("`{section}` must be rejected"))
-    }
-
-    #[test]
-    fn an_omitted_section_takes_every_default() {
-        let bootstrap = load_document(&document("./resources.yaml", "notify", 100, 500))
-            .expect("the document is valid");
+    fn one_plaintext_listener_reaches_the_settings() {
+        let bootstrap = launched(PLAINTEXT).expect("the fixture is a valid listener");
 
         assert_eq!(
-            bootstrap.http(),
-            &nico_http::HttpSettings::default(),
-            "an omitted section must be the same value as its defaults"
+            bootstrap.http().listeners(),
+            &[Listener::Plain {
+                listen: "127.0.0.1:9000".to_owned(),
+            }]
         );
-        assert_eq!(bootstrap.http(), &settings(""));
+        assert_eq!(bootstrap.http().listener_addresses(), ["127.0.0.1:9000"]);
+        assert_eq!(bootstrap.http().plain_addresses(), ["127.0.0.1:9000"]);
+        assert!(!bootstrap.http().h2c());
     }
 
     #[test]
-    fn the_shipped_section_is_the_documented_default() {
+    fn the_shipped_section_is_the_documented_listener() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/bootstrap.yaml");
         let bootstrap = BootstrapConfig::load(&path).expect("the shipped bootstrap is valid");
 
         assert_eq!(
-            bootstrap.http(),
-            &nico_http::HttpSettings::default(),
-            "the shipped file documents the defaults instead of inventing policy"
+            bootstrap.http().listener_addresses(),
+            ["0.0.0.0:8080"],
+            "the shipped file documents one plaintext listener instead of inventing policy"
         );
-    }
-
-    #[test]
-    fn every_written_field_reaches_the_settings() {
-        let settings = settings(concat!(
-            "  listen: 127.0.0.1:9000\n",
-            "  h2c: true\n",
-            "  grace_period_ms: 1000\n",
-            "  graceful_shutdown_ms: 60000\n",
-            "  threads: 8\n",
-        ));
-
-        assert_eq!(settings.listen(), "127.0.0.1:9000");
-        assert!(settings.h2c());
-        assert_eq!(settings.grace_period(), Duration::from_secs(1));
-        assert_eq!(settings.graceful_shutdown(), Duration::from_secs(60));
-        assert_eq!(settings.threads(), 8);
-    }
-
-    #[test]
-    fn an_omitted_field_keeps_its_default_within_a_written_section() {
-        let settings = settings("  threads: 2\n");
-
-        assert_eq!(settings.threads(), 2);
-        assert_eq!(settings.listen(), "0.0.0.0:8080");
-        assert_eq!(settings.grace_period(), Duration::from_secs(5));
-        assert_eq!(settings.graceful_shutdown(), Duration::from_secs(30));
+        assert!(
+            matches!(bootstrap.http().listeners(), [Listener::Plain { .. }]),
+            "and it terminates no TLS"
+        );
+        assert!(!bootstrap.http().h2c());
     }
 
     #[test]
     fn h2c_is_false_unless_it_is_explicitly_enabled() {
-        assert!(!settings("").h2c());
-        assert!(!settings("  h2c: false\n").h2c());
-        assert!(settings("  h2c: true\n").h2c());
-    }
-
-    #[test]
-    fn an_unparsable_listen_address_is_rejected_at_startup() {
-        let error = rejection("  listen: nowhere\n");
-
+        assert!(!launched(PLAINTEXT).expect("valid").http().h2c());
         assert!(
-            matches!(
-                &error,
-                BootstrapError::InvalidField { field, .. } if field == "http.listen"
-            ),
-            "expected an invalid http.listen, got {error:?}"
+            !launched(&format!("  h2c: false\n{PLAINTEXT}"))
+                .expect("valid")
+                .http()
+                .h2c()
+        );
+        assert!(
+            launched(&format!("  h2c: true\n{PLAINTEXT}"))
+                .expect("h2c applies to a plaintext listener")
+                .http()
+                .h2c()
         );
     }
 
     #[test]
-    fn a_zero_port_is_rejected_at_startup() {
-        let error = rejection("  listen: 0.0.0.0:0\n");
+    fn an_unparsable_listen_address_is_reported_against_the_entry() {
+        let error = rejection("  listeners:\n    - listen: nowhere\n");
 
         assert!(
             matches!(
                 &error,
-                BootstrapError::InvalidField { field, .. } if field == "http.listen"
+                BootstrapError::InvalidField { field, .. } if field == "http.listeners[0].listen"
             ),
-            "expected an invalid http.listen, got {error:?}"
+            "expected an invalid http.listeners[0].listen, got {error:?}"
         );
     }
 
     #[test]
-    fn a_zero_grace_period_is_rejected_at_startup() {
-        let error = rejection("  grace_period_ms: 0\n");
+    fn a_zero_port_is_reported_against_the_entry() {
+        let error = rejection("  listeners:\n    - listen: 0.0.0.0:0\n");
 
         assert!(
             matches!(
                 &error,
-                BootstrapError::InvalidField { field, .. } if field == "http.grace_period_ms"
+                BootstrapError::InvalidField { field, .. } if field == "http.listeners[0].listen"
             ),
-            "expected an invalid http.grace_period_ms, got {error:?}"
+            "expected an invalid http.listeners[0].listen, got {error:?}"
         );
     }
 
     #[test]
-    fn a_grace_period_above_the_maximum_is_rejected_at_startup() {
-        assert!(matches!(
-            rejection("  grace_period_ms: 301000\n"),
-            BootstrapError::InvalidField { .. }
-        ));
-    }
-
-    #[test]
-    fn a_zero_shutdown_window_is_rejected_at_startup() {
-        assert!(matches!(
-            rejection("  graceful_shutdown_ms: 0\n"),
-            BootstrapError::InvalidField { .. }
-        ));
-    }
-
-    #[test]
-    fn a_shutdown_window_shorter_than_the_grace_period_is_rejected_at_startup() {
+    fn a_repeated_address_is_rejected() {
         let error = rejection(concat!(
-            "  grace_period_ms: 10000\n",
-            "  graceful_shutdown_ms: 5000\n",
+            "  listeners:\n",
+            "    - listen: 127.0.0.1:9000\n",
+            "    - listen: 127.0.0.1:9000\n",
         ));
 
-        assert!(
-            matches!(
-                &error,
-                BootstrapError::InvalidField { field, .. } if field == "http.graceful_shutdown_ms"
-            ),
-            "expected an invalid http.graceful_shutdown_ms, got {error:?}"
-        );
+        match error {
+            BootstrapError::InvalidField { field, reason } => {
+                assert_eq!(field, "http.listeners");
+                assert!(
+                    reason.contains("must not repeat"),
+                    "the reason states what the second entry did: {reason}"
+                );
+            }
+            other => panic!("expected InvalidField, got {other:?}"),
+        }
     }
 
     #[test]
-    fn too_many_threads_are_rejected_at_startup() {
-        assert!(matches!(
-            rejection("  threads: 257\n"),
-            BootstrapError::InvalidField { .. }
-        ));
+    fn the_moved_process_knobs_are_unknown_fields() {
+        for line in [
+            "  threads: 2\n",
+            "  grace_period_ms: 1000\n",
+            "  graceful_shutdown_ms: 60000\n",
+        ] {
+            let error = rejection(&format!("{line}{PLAINTEXT}"));
+
+            assert!(
+                matches!(error, BootstrapError::Parse { .. }),
+                "`{line}` belongs to `runtime` now, got {error:?}"
+            );
+        }
     }
 
     #[test]
     fn an_unknown_http_field_is_rejected_rather_than_ignored() {
-        let error = rejection("  tls: true\n");
+        let error = rejection(&format!(
+            "  h2c: true\n  listen: 127.0.0.1:9000\n{PLAINTEXT}"
+        ));
 
         assert!(
             matches!(error, BootstrapError::Parse { .. }),
@@ -478,6 +379,7 @@ mod http {
 #[cfg(feature = "etcd")]
 mod etcd_source;
 
-mod tls;
-
+mod config_source_section;
 mod http_tls;
+mod runtime;
+mod tls;

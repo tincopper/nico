@@ -70,7 +70,7 @@ const PROBE_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Returns a port nothing is listening on, by binding one and releasing it.
 ///
-/// A bootstrap `listen` may not name port zero, and Pingora never reports the port it bound, so the
+/// A listener entry may not name port zero, and Pingora never reports the port it bound, so the
 /// fixture has to pick one. The listener is dropped immediately, which leaves a window in which
 /// another process could take the port; a fixed port would instead collide with whatever the
 /// developer's machine already runs, so the release-then-rebind race is the smaller risk.
@@ -121,7 +121,7 @@ pub(crate) fn write_bootstrap(
 ///
 /// Only the untrusted-chain scenario needs this: it asserts what a process does when the peer's
 /// chain leads to a root set this process was **not** given, which is a fact about the configured
-/// `tls.ca_file` and not about the peer. Every other scenario uses the common fixture.
+/// `proxy.tls.ca_file` and not about the peer. Every other scenario uses the common fixture.
 pub(crate) fn write_bootstrap_trusting(directory: &Path, port: u16, ca: &Path) -> BootstrapConfig {
     write(directory, port, false, 1, 1000, Some(ca), None)
 }
@@ -163,7 +163,7 @@ pub(crate) fn write_bootstrap_with_metrics_and_grace(
     )
 }
 
-/// Writes a bootstrap with **no** `tls` section, so the process uses the platform trust store.
+/// Writes a bootstrap with **no** `proxy` section, so the process uses the platform trust store.
 ///
 /// Only the public-network smoke test wants this: every other scenario names a bundle, because a
 /// test runner's platform store is not a fact the suite may depend on.
@@ -188,11 +188,10 @@ fn write(
     let metrics = metrics_port.map_or_else(String::new, |port| {
         format!("metrics:\n  listen: 127.0.0.1:{port}\n")
     });
-    // An absent section is the platform store; a present one is a bundle that replaces it.
-    let tls = ca.map_or_else(String::new, |ca| {
-        format!("tls:\n  ca_file: \"{}\"\n", ca.display())
+    // An absent `proxy` section is the platform store; a present one is a bundle that replaces it.
+    let proxy = ca.map_or_else(String::new, |ca| {
+        format!("proxy:\n  tls:\n    ca_file: \"{}\"\n", ca.display())
     });
-    let path = directory.join("bootstrap.yaml");
     let text = format!(
         "\
 config_source:
@@ -200,69 +199,37 @@ config_source:
   path: {document}
   max_bytes: 1048576
   watch: notify
-debounce_ms: 0
-max_wait_ms: 0
-cache_dir: {cache}
-allow_bootstrap_cache: false
-{tls}http:
-  listen: 127.0.0.1:{port}
-  h2c: {h2c}
+  debounce_ms: 0
+  max_wait_ms: 0
+  cache_dir: {cache}
+  allow_bootstrap_cache: false
+runtime:
+  threads: 1
   grace_period_ms: {grace_period_ms}
   graceful_shutdown_ms: {graceful_shutdown_ms}
-  threads: 1
+{proxy}http:
+  h2c: {h2c}
+  listeners:
+    - listen: 127.0.0.1:{port}
 {metrics}",
         document = directory.join("resources.yaml").display(),
         cache = directory.join("cache").display(),
     );
+    write_and_load(directory, &text)
+}
+
+/// Writes `text` as the bootstrap file and returns it parsed.
+///
+/// A file the schema rejects fails while the test is being written, not while it runs, so every
+/// fixture shape ends here rather than repeating the write and the load.
+fn write_and_load(directory: &Path, text: &str) -> BootstrapConfig {
+    let path = directory.join("bootstrap.yaml");
     std::fs::write(&path, text).expect("the bootstrap fixture is written");
     BootstrapConfig::load(&path).expect("the bootstrap fixture is valid")
 }
 
-/// Writes a bootstrap whose `http.listen` is a TLS listener with `cert_file`/`key_file`.
-///
-/// The upstream trust roots still name the fixture CA, so `serve_with`'s startup probe does not
-/// depend on the host's store. The listener certificate is a separate file: `http.tls` is the
-/// listener's identity, not the roots an upstream handshake trusts.
-pub(crate) fn write_bootstrap_tls(
-    directory: &Path,
-    port: u16,
-    cert_file: &Path,
-    key_file: &Path,
-) -> BootstrapConfig {
-    let path = directory.join("bootstrap.yaml");
-    let text = format!(
-        "\
-config_source:
-  type: local
-  path: {document}
-  max_bytes: 1048576
-  watch: notify
-debounce_ms: 0
-max_wait_ms: 0
-cache_dir: {cache}
-allow_bootstrap_cache: false
-tls:
-  ca_file: \"{ca}\"
-http:
-  listen: 127.0.0.1:{port}
-  grace_period_ms: 1
-  graceful_shutdown_ms: 1000
-  threads: 1
-  tls:
-    cert_file: \"{cert}\"
-    key_file: \"{key}\"
-",
-        document = directory.join("resources.yaml").display(),
-        cache = directory.join("cache").display(),
-        ca = fixture_ca().display(),
-        cert = cert_file.display(),
-        key = key_file.display(),
-    );
-    std::fs::write(&path, text).expect("the TLS bootstrap fixture is written");
-    BootstrapConfig::load(&path).expect("the TLS bootstrap fixture is valid")
-}
-
 pub(crate) mod resources;
+pub(crate) mod tls_bootstrap;
 
 // --- running server ----------------------------------------------------------
 
@@ -335,9 +302,12 @@ impl RunningServer {
     ) -> Self {
         let bootstrap = BootstrapConfig::load(directory.join("bootstrap.yaml"))
             .expect("the bootstrap fixture loads");
-        let address: SocketAddr = bootstrap
-            .http()
-            .listen()
+        // The first listener is the one a scenario talks to: a multi-listener fixture writes its
+        // plaintext entry first, and a TLS-only one writes its single entry. Reading the address
+        // from the parsed bootstrap rather than from the caller keeps the fixture and the file that
+        // describes it from disagreeing; any listener after the first is reached through the port
+        // the scenario chose before writing the file.
+        let address: SocketAddr = bootstrap.http().listener_addresses()[0]
             .parse()
             .expect("the fixture listens on an ip:port address");
         // Read from the parsed bootstrap rather than from the caller, so a scenario cannot believe a

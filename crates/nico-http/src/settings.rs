@@ -1,66 +1,85 @@
-//! The process-level HTTP settings the local bootstrap file owns.
+//! The validated `http` settings the local bootstrap file owns.
 //!
-//! A listening address, plaintext HTTP/2, an optional inbound TLS identity, drain windows, a thread
-//! count and the upstream trust roots describe the *process*, not the configuration a control plane
-//! pushes, so they are read once from the bootstrap file and never from a configuration source. This module owns their defaults and
-//! their accepted ranges, which is why [`HttpSettings`] can only be built by [`HttpSettings::resolve`]:
-//! every field in an instance was either omitted and defaulted, or written and accepted as written.
+//! A listener is one address and the transport it serves: a plaintext entry, or a TLS entry whose
+//! identity the bootstrap already validated. The listeners, plaintext HTTP/2 and the upstream trust
+//! roots describe *this process* — protocol facts, not configuration a control plane pushes — so
+//! they are read once from the bootstrap file and never from a configuration source. This module
+//! owns their accepted shapes, which is why an [`HttpSettings`] can only be built by
+//! [`HttpSettings::resolve`]: every listener in an instance names a legal address that no other
+//! listener repeats, and `h2c` names a listener it actually applies to.
 //!
 //! The values are the only source of the numbers the startup diagnostics quote: an error message is
 //! built from the constant the check applied, never from a second copy of it.
 
-use std::{borrow::Cow, net::SocketAddr, time::Duration};
+use std::{
+    borrow::Cow,
+    net::{SocketAddr, ToSocketAddrs},
+};
 
 use crate::{inbound::InboundTls, upstream::tls::TlsPolicy};
 
-/// Address the data plane listens on when the bootstrap file names none.
-const DEFAULT_LISTEN: &str = "0.0.0.0:8080";
-
-/// Default `grace_period_ms`: how long in-flight requests may finish after shutdown begins.
-const DEFAULT_GRACE_PERIOD_MS: u64 = 5_000;
-
-/// Default `graceful_shutdown_ms`: the upper bound on draining once the grace period has elapsed.
-const DEFAULT_GRACEFUL_SHUTDOWN_MS: u64 = 30_000;
-
-/// Largest accepted value for either drain window, in milliseconds.
-const MAX_WINDOW_MS: u64 = 300_000;
-
-/// Default `threads`: Pingora's own default for a service runtime.
+/// The fixed reason an address is not a usable listener address.
 ///
-/// It is not zero: `ServerConf::threads` is handed straight to Tokio's `worker_threads`, which
-/// panics on zero, so "let Pingora decide" is expressed by keeping its default, not by writing a
-/// zero through.
-const DEFAULT_THREADS: usize = 1;
+/// Both the `http.listeners` entries and the metrics listener are checked against the same rule, so
+/// the sentence lives here once and every error borrows it.
+const BAD_LISTEN_REASON: &str = "must be an `ip:port` or `host:port` address";
 
-/// Smallest accepted `threads` value.
-const MIN_THREADS: usize = 1;
+/// One listener of the `http` section: an address, and the transport it serves.
+///
+/// The variant **is** the transport decision, so a TLS entry structurally cannot carry an `h2c`
+/// flag and a plaintext entry structurally cannot carry a certificate: neither combination can be
+/// constructed, let alone silently resolved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Listener {
+    /// A plaintext TCP listener: HTTP/1.1 and, when `h2c` is set, cleartext HTTP/2.
+    Plain {
+        /// The address this listener binds.
+        listen: String,
+    },
+    /// A TLS listener: HTTP over the certificate and key it presents.
+    Tls {
+        /// The address this listener binds.
+        listen: String,
+        /// The identity this listener presents; a pair of paths the bootstrap validated.
+        tls: InboundTls,
+    },
+}
 
-/// Largest accepted `threads` value.
-const MAX_THREADS: usize = 256;
+impl Listener {
+    /// Returns the address this entry binds, whatever transport it serves.
+    fn listen(&self) -> &str {
+        match self {
+            Self::Plain { listen } | Self::Tls { listen, .. } => listen,
+        }
+    }
+}
 
-/// Validated process-level settings for the HTTP data plane.
+/// Validated settings for the HTTP data plane's listeners.
 ///
 /// Fields are private and there is no public constructor besides [`HttpSettings::resolve`], because
-/// an unvalidated instance would let a bootstrap typo reach Pingora's `ServerConf` as a drain
-/// window of zero seconds.
+/// an unvalidated instance would let a bootstrap typo reach Pingora as two listeners bound to one
+/// address, or as a `h2c` flag with no listener to apply it to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpSettings {
-    listen: String,
+    listeners: Vec<Listener>,
     h2c: bool,
-    grace_period: Duration,
-    graceful_shutdown: Duration,
-    threads: usize,
     tls: TlsPolicy,
-    inbound_tls: Option<InboundTls>,
 }
 
 impl HttpSettings {
-    /// Resolves the `http` section, defaulting every omitted field.
+    /// Resolves the `http` section from its listeners.
     ///
-    /// A written field is validated even when it happens to equal the default, so a `0` or an
-    /// out-of-range value fails at startup instead of being absorbed by the fallback. The two drain
-    /// windows are also checked against each other: the shutdown deadline may never be shorter than
-    /// the grace period, because that would cut streaming responses off before they could finish.
+    /// The section must name at least one listener, and the entries must resolve to pairwise
+    /// different addresses: two listeners that name one socket would fight over a bind Pingora can
+    /// only lose. Addresses are compared **after** resolution, so two spellings of one socket
+    /// (`127.0.0.1:9000` and `localhost:9000`) collide just like a literal repeat does; an entry
+    /// whose address does not resolve is rejected with the same shape error every listener address
+    /// goes through.
+    ///
+    /// `h2c` is a section-level fact that applies to the plaintext listeners: a TLS listener
+    /// negotiates HTTP/2 through ALPN and never accepts cleartext HTTP/2, so `h2c: true` with no
+    /// plaintext entry would state a knob with nothing to apply it to. Together with TLS entries it
+    /// is fine — one listener per transport, each transport served where it is declared.
     ///
     /// `tls` is passed in rather than defaulted here: building one means reading a file, and reading
     /// files is not this module's job. The bootstrap section is the one caller, and it validates the
@@ -68,125 +87,73 @@ impl HttpSettings {
     /// checked — a policy records the fact, and this module does not re-check it.
     ///
     /// # Errors
-    /// Returns [`HttpSettingsError`] naming the field and the rule that rejected it, with the bound
-    /// quoted from the constant the check applied.
+    /// Returns [`HttpSettingsError`] naming the field and the rule that rejected it: an empty
+    /// listener list, an unusable or repeated address (field `listeners`), or `h2c` without a
+    /// plaintext listener (field `h2c`).
     pub fn resolve(
-        listen: Option<&str>,
+        listeners: Vec<Listener>,
         h2c: Option<bool>,
-        grace_period_ms: Option<u64>,
-        graceful_shutdown_ms: Option<u64>,
-        threads: Option<usize>,
         tls: TlsPolicy,
     ) -> Result<Self, HttpSettingsError> {
-        Self::resolve_with_inbound_tls(
-            listen,
-            h2c,
-            grace_period_ms,
-            graceful_shutdown_ms,
-            threads,
+        if listeners.is_empty() {
+            return Err(HttpSettingsError::new(
+                "listeners",
+                "must name at least one listener",
+            ));
+        }
+        pairwise_distinct(&listeners)?;
+        let settings = Self {
+            listeners,
+            h2c: h2c.unwrap_or(false),
             tls,
-            None,
-        )
-    }
-
-    /// Resolves the section together with the listener's TLS identity.
-    ///
-    /// The identity is a pair of paths the bootstrap section validated; it is not read here. A
-    /// configured identity and `h2c` are mutually exclusive: one listener cannot be both TLS and
-    /// cleartext HTTP/2, and silently ignoring one of the two would serve a transport the operator
-    /// did not ask for.
-    ///
-    /// # Errors
-    /// Returns [`HttpSettingsError`] naming the field and the rule that rejected it. The checks are
-    /// the same as [`HttpSettings::resolve`], plus the `h2c`/TLS conflict.
-    pub fn resolve_with_inbound_tls(
-        listen: Option<&str>,
-        h2c: Option<bool>,
-        grace_period_ms: Option<u64>,
-        graceful_shutdown_ms: Option<u64>,
-        threads: Option<usize>,
-        tls: TlsPolicy,
-        inbound_tls: Option<InboundTls>,
-    ) -> Result<Self, HttpSettingsError> {
-        let mut settings = Self {
-            tls,
-            inbound_tls,
-            ..Self::default()
         };
-
-        if let Some(listen) = listen {
-            settings.listen = listen.to_owned();
-        }
-        validate_listen(&settings.listen)?;
-
-        if let Some(h2c) = h2c {
-            settings.h2c = h2c;
-        }
-        if settings.h2c && settings.inbound_tls.is_some() {
+        // The plaintext subset is read through the accessor rather than re-matched here, so "which
+        // listeners does `h2c` apply to" has one definition for the rule and for every caller.
+        if settings.h2c && settings.plain_addresses().is_empty() {
             return Err(HttpSettingsError::new(
                 "h2c",
-                "cannot be enabled together with `http.tls`: one listener has one transport",
+                "requires a plaintext listener: every configured listener terminates TLS",
             ));
-        }
-        if let Some(value) = grace_period_ms {
-            settings.grace_period = window("grace_period_ms", value)?;
-        }
-        if let Some(value) = graceful_shutdown_ms {
-            settings.graceful_shutdown = window("graceful_shutdown_ms", value)?;
-        }
-        if settings.graceful_shutdown < settings.grace_period {
-            return Err(HttpSettingsError::with_owned_reason(
-                "graceful_shutdown_ms",
-                format!(
-                    "must be at least `grace_period_ms` ({} ms)",
-                    settings.grace_period.as_millis()
-                ),
-            ));
-        }
-        if let Some(value) = threads {
-            if !(MIN_THREADS..=MAX_THREADS).contains(&value) {
-                return Err(HttpSettingsError::with_owned_reason(
-                    "threads",
-                    format!("must be in {MIN_THREADS}..={MAX_THREADS} (found {value})"),
-                ));
-            }
-            settings.threads = value;
         }
 
         Ok(settings)
     }
 
-    /// Returns the address the data plane listens on.
+    /// Returns the listeners the data plane binds, in the order the section named them.
     #[must_use]
-    pub fn listen(&self) -> &str {
-        &self.listen
+    pub fn listeners(&self) -> &[Listener] {
+        &self.listeners
     }
 
-    /// Returns whether cleartext HTTP/2 (h2c) is accepted on the listener.
+    /// Returns the address of every listener, in the order the section named them.
+    ///
+    /// The self-reporting listener is checked against this set, so a `metrics.listen` that names any
+    /// listener the data plane binds — plaintext or TLS — is refused before either is opened.
+    #[must_use]
+    pub fn listener_addresses(&self) -> Vec<&str> {
+        self.listeners.iter().map(Listener::listen).collect()
+    }
+
+    /// Returns the addresses of the plaintext listeners, in the order the section named them.
+    ///
+    /// This is the subset `h2c` applies to: a TLS listener negotiates HTTP/2 through ALPN and never
+    /// accepts cleartext HTTP/2, so a self-reporting listener that names a TLS address collides with
+    /// [`HttpSettings::listener_addresses`], not with this set.
+    #[must_use]
+    pub fn plain_addresses(&self) -> Vec<&str> {
+        self.listeners
+            .iter()
+            .filter_map(|listener| match listener {
+                Listener::Plain { listen } => Some(listen.as_str()),
+                Listener::Tls { .. } => None,
+            })
+            .collect()
+    }
+
+    /// Returns whether cleartext HTTP/2 (h2c) is accepted on the plaintext listeners.
     #[must_use]
     pub const fn h2c(&self) -> bool {
         self.h2c
-    }
-
-    /// Returns how long in-flight requests may finish once shutdown has begun.
-    #[must_use]
-    pub const fn grace_period(&self) -> Duration {
-        self.grace_period
-    }
-
-    /// Returns the upper bound on draining once the grace period has elapsed.
-    #[must_use]
-    pub const fn graceful_shutdown(&self) -> Duration {
-        self.graceful_shutdown
-    }
-
-    /// Returns how many worker threads each service gets.
-    ///
-    /// It is always at least one: Pingora passes the value to Tokio's `worker_threads`, which
-    /// panics on zero.
-    #[must_use]
-    pub const fn threads(&self) -> usize {
-        self.threads
     }
 
     /// Returns the trust roots an upstream TLS handshake is verified against.
@@ -196,33 +163,6 @@ impl HttpSettings {
     #[must_use]
     pub const fn tls(&self) -> &TlsPolicy {
         &self.tls
-    }
-
-    /// Returns the listener's TLS identity, when this process terminates TLS.
-    ///
-    /// The value is a pair of paths; the service reads and validates them when it builds the
-    /// listener. `None` means plaintext TCP, exactly as before this setting existed.
-    #[must_use]
-    pub const fn inbound_tls(&self) -> Option<&InboundTls> {
-        self.inbound_tls.as_ref()
-    }
-}
-
-impl Default for HttpSettings {
-    /// Returns the settings an omitted `http` section stands for.
-    ///
-    /// Every field is a constant that [`HttpSettings::resolve`] also accepts, so the defaults and
-    /// the validation cannot drift apart: `resolve` starts from this value and validates it.
-    fn default() -> Self {
-        Self {
-            listen: DEFAULT_LISTEN.to_owned(),
-            h2c: false,
-            grace_period: Duration::from_millis(DEFAULT_GRACE_PERIOD_MS),
-            graceful_shutdown: Duration::from_millis(DEFAULT_GRACEFUL_SHUTDOWN_MS),
-            threads: DEFAULT_THREADS,
-            tls: TlsPolicy::default(),
-            inbound_tls: None,
-        }
     }
 }
 
@@ -267,22 +207,45 @@ impl HttpSettingsError {
     }
 }
 
-/// Turns a window in milliseconds into a duration, rejecting one outside the accepted range.
-fn window(field: &'static str, value: u64) -> Result<Duration, HttpSettingsError> {
-    if !(1..=MAX_WINDOW_MS).contains(&value) {
-        return Err(HttpSettingsError::with_owned_reason(
-            field,
-            format!("must be in 1..={MAX_WINDOW_MS} (found {value})"),
-        ));
+/// Checks that every entry names a usable address and that no two entries resolve to one socket.
+///
+/// The shape rule is the same one the metrics listener goes through (`validate_listen`), so the two
+/// surfaces cannot accept different shapes; the error is reported against the entries, whose
+/// configuration path is `http.listeners`. Resolution is what makes the comparison honest: two
+/// spellings of one socket must collide even though their strings differ.
+fn pairwise_distinct(listeners: &[Listener]) -> Result<(), HttpSettingsError> {
+    let mut resolved: Vec<Vec<SocketAddr>> = Vec::with_capacity(listeners.len());
+    for listener in listeners {
+        let listen = listener.listen();
+        validate_listen(listen).map_err(|error| {
+            HttpSettingsError::with_owned_reason("listeners", error.reason().to_owned())
+        })?;
+        let addrs: Vec<SocketAddr> = listen
+            .to_socket_addrs()
+            .map_err(|_| HttpSettingsError::new("listeners", BAD_LISTEN_REASON))?
+            .collect();
+        if addrs.is_empty() {
+            return Err(HttpSettingsError::new("listeners", BAD_LISTEN_REASON));
+        }
+        if resolved
+            .iter()
+            .any(|previous| previous.iter().any(|address| addrs.contains(address)))
+        {
+            return Err(HttpSettingsError::with_owned_reason(
+                "listeners",
+                format!("must not repeat `{listen}`: two listeners cannot bind one address"),
+            ));
+        }
+        resolved.push(addrs);
     }
-    Ok(Duration::from_millis(value))
+    Ok(())
 }
 
 /// Checks that `listen` names a bindable address with a non-zero port.
 ///
 /// This is the single definition of "what counts as a legal address" for a listener: the data
-/// plane's own `http.listen` and the metrics listener's `metrics.listen` are both checked here, so
-/// the two surfaces cannot accept different shapes.
+/// plane's `http.listeners` entries and the metrics listener's `metrics.listen` are both checked
+/// here, so the two surfaces cannot accept different shapes.
 ///
 /// An IP literal is parsed for real; a name is only checked for shape, because resolving it here
 /// would make startup depend on DNS for an address the operator already knows is local. A bind
@@ -312,7 +275,7 @@ pub fn validate_listen(listen: &str) -> Result<(), HttpSettingsError> {
 
 /// The error for an address that is not `host:port`.
 fn bad_listen() -> HttpSettingsError {
-    HttpSettingsError::new("listen", "must be an `ip:port` or `host:port` address")
+    HttpSettingsError::new("listen", BAD_LISTEN_REASON)
 }
 
 #[cfg(test)]

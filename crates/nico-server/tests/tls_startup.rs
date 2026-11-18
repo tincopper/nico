@@ -67,7 +67,7 @@ fn a_bundle_that_disappeared_between_bootstrap_and_assembly_stops_the_process() 
         .find(|line| line.contains(REFUSAL) && line.contains("could not be read"))
         .unwrap_or_else(|| panic!("the refusal was not logged; captured:\n{text}"));
     assert!(
-        line.contains("tls.ca_file"),
+        line.contains("proxy.tls.ca_file"),
         "the line names the remedy an operator can act on: {line}"
     );
 }

@@ -55,16 +55,20 @@ config_source:
   path: ./resources.yaml
   max_bytes: 4096
   watch: notify
-debounce_ms: 100
-max_wait_ms: 500
-cache_dir: {}
-allow_bootstrap_cache: false
-tls:
-  ca_file: \"{}\"
-http:
-  listen: 127.0.0.1:{port}
+  debounce_ms: 100
+  max_wait_ms: 500
+  cache_dir: {}
+  allow_bootstrap_cache: false
+runtime:
+  threads: 1
   grace_period_ms: 1
   graceful_shutdown_ms: 1000
+proxy:
+  tls:
+    ca_file: \"{}\"
+http:
+  listeners:
+    - listen: 127.0.0.1:{port}
 ",
         cache_dir.display(),
         fixture_ca().display(),

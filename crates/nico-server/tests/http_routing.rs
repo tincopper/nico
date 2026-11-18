@@ -187,10 +187,7 @@ async fn routing_ranks_host_before_prefix_and_answers_404_and_503() {
     assert_eq!(hosted.observation().connections, 3);
 
     // The configured drain window came from the fixture, not from Pingora's 300 s default.
-    assert_eq!(
-        bootstrap.http().grace_period(),
-        std::time::Duration::from_millis(1)
-    );
+    assert_eq!(bootstrap.runtime().grace_period_ms(), 1);
 
     let code = server.cancel_and_join().await;
     assert_eq!(code, std::process::ExitCode::SUCCESS);

@@ -30,10 +30,13 @@ config_source:
 {endpoints}
   key: {key}
   max_bytes: 65536
-debounce_ms: 50
-max_wait_ms: 200
-cache_dir: ./.tmp/cache
-allow_bootstrap_cache: false
+  debounce_ms: 50
+  max_wait_ms: 200
+  cache_dir: ./.tmp/cache
+  allow_bootstrap_cache: false
+http:
+  listeners:
+    - listen: 127.0.0.1:8080
 "
     )
 }

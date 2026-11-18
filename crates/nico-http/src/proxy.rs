@@ -1,7 +1,7 @@
 //! The HTTP data plane: one type, one hook contract, one response per failure.
 //!
-//! [`HttpApp`] is what Pingora drives. It holds the publication handle the reload pipeline writes,
-//! the listener's transport fact and the trace-id counter — and no per-request state, which lives
+//! [`HttpApp`] is what Pingora drives. It holds the publication handle the reload pipeline writes
+//! and the trace-id counter — and no per-request state, which lives
 //! in [`HttpContext`] instead so two concurrent requests cannot observe each other. The plugin chains — one
 //! that runs before routing, one per route — travel *inside* the published value
 //! ([`crate::HttpState`]), so a request cannot see one generation's routes with another's policies.
@@ -54,9 +54,6 @@ const MAX_TRACE_ID_BYTES: usize = 128;
 /// concurrent requests cannot observe each other.
 pub struct HttpApp {
     state: Arc<HttpStateHandle>,
-    /// Whether the listener that serves this app terminates TLS. It is a process-level fact because
-    /// one service has one listener transport; the forwarding hook uses it to state the scheme.
-    inbound_tls: bool,
     /// Backs the generated trace id. Shared by every worker, so ids are unique per process.
     sequence: AtomicU64,
 }
@@ -67,22 +64,8 @@ impl HttpApp {
     pub fn new(state: Arc<HttpStateHandle>) -> Self {
         Self {
             state,
-            inbound_tls: false,
             sequence: AtomicU64::new(0),
         }
-    }
-
-    /// Records whether this app's listener terminates TLS.
-    ///
-    /// Only the assembly calls this, from the settings the listener was built with. It is not a
-    /// per-request fact: a request cannot choose its transport.
-    pub(crate) fn set_inbound_tls(&mut self, inbound_tls: bool) {
-        self.inbound_tls = inbound_tls;
-    }
-
-    /// Returns whether the listener terminates TLS, for the forwarding hook's scheme field.
-    pub(crate) const fn inbound_tls(&self) -> bool {
-        self.inbound_tls
     }
 
     /// Returns the token-budget table every request and every reload share.

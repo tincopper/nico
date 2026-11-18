@@ -254,7 +254,8 @@ impl Stream for HandDrivenWatch {
 /// What a test wants written into the local bootstrap file.
 ///
 /// `max_bytes` bounds the resources document, `schema_bounds` is the body of the optional
-/// `schema_bounds` section — `None` omits the section, `Some` lets a test write it partially.
+/// `config_source.schema_bounds` block, written at its own nesting depth — `None` omits the block,
+/// `Some` lets a test write it partially.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BootstrapFixture<'a> {
     pub(crate) max_bytes: usize,
@@ -276,7 +277,7 @@ impl Default for BootstrapFixture<'_> {
 pub(crate) fn bootstrap(directory: &Path, fixture: BootstrapFixture<'_>) -> BootstrapConfig {
     let section = fixture
         .schema_bounds
-        .map(|bounds| format!("schema_bounds:\n{bounds}"))
+        .map(|bounds| format!("  schema_bounds:\n{bounds}"))
         .unwrap_or_default();
     let path = directory.join("bootstrap.yaml");
     let text = format!(
@@ -286,11 +287,14 @@ config_source:
   path: {document}
   max_bytes: {max_bytes}
   watch: notify
-debounce_ms: {debounce}
-max_wait_ms: {max_wait}
-cache_dir: {cache}
-allow_bootstrap_cache: {allow}
-{section}",
+  debounce_ms: {debounce}
+  max_wait_ms: {max_wait}
+  cache_dir: {cache}
+  allow_bootstrap_cache: {allow}
+{section}http:
+  listeners:
+    - listen: 127.0.0.1:8080
+",
         document = directory.join("resources.yaml").display(),
         max_bytes = fixture.max_bytes,
         debounce = DEBOUNCE.as_millis(),

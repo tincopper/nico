@@ -24,15 +24,39 @@ config_source:
   path: ./resources.yaml
   max_bytes: 4096
   watch: notify
-debounce_ms: 100
-max_wait_ms: 500
-cache_dir: ./.tmp/cache
-allow_bootstrap_cache: false
+  debounce_ms: 100
+  max_wait_ms: 500
+  cache_dir: ./.tmp/cache
+  allow_bootstrap_cache: false
 {http}{metrics}"
     )
 }
 
-const HTTP: &str = "http:\n  listen: 127.0.0.1:8080\n";
+/// Returns one file of the repository's TLS fixture set.
+fn fixture(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/tls")
+        .join(name)
+}
+
+const HTTP: &str = "http:\n  listeners:\n    - listen: 127.0.0.1:8080\n";
+
+/// The same section with a plaintext and a TLS listener on two other addresses.
+fn dual_http(tls_port: u16) -> String {
+    format!(
+        "\
+http:
+  listeners:
+    - listen: 127.0.0.1:8080
+    - listen: 127.0.0.1:{tls_port}
+      tls:
+        cert_file: {}
+        key_file: {}
+",
+        fixture("localhost.pem").display(),
+        fixture("localhost.key").display()
+    )
+}
 
 #[test]
 fn an_omitted_section_disables_the_surface() {
@@ -92,6 +116,26 @@ fn the_data_planes_own_address_is_rejected() {
             assert!(
                 reason.contains("http.listen") && reason.contains("127.0.0.1:8080"),
                 "the reason names the other listener: {reason}"
+            );
+        }
+        other => panic!("expected InvalidField, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_tls_listeners_address_is_rejected_too() {
+    let error = load_document(&document(
+        &dual_http(8443),
+        "metrics:\n  listen: 127.0.0.1:8443\n",
+    ))
+    .expect_err("a TLS listener owns its socket exactly as a plaintext one does");
+
+    match error {
+        BootstrapError::InvalidField { field, reason } => {
+            assert_eq!(field, "metrics.listen");
+            assert!(
+                reason.contains("127.0.0.1:8443"),
+                "the reason names the listener it collides with: {reason}"
             );
         }
         other => panic!("expected InvalidField, got {other:?}"),

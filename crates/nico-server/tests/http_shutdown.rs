@@ -50,14 +50,8 @@ async fn a_stream_in_flight_survives_the_configured_grace_period_and_then_stops(
     let bootstrap = write_bootstrap(directory.path(), port, false, GRACE_MS, GRACEFUL_MS);
 
     // The bootstrap value is a fact the test can state: the process was told 1200 ms, not 300 s.
-    assert_eq!(
-        bootstrap.http().grace_period(),
-        Duration::from_millis(GRACE_MS)
-    );
-    assert_eq!(
-        bootstrap.http().graceful_shutdown(),
-        Duration::from_millis(GRACEFUL_MS)
-    );
+    assert_eq!(bootstrap.runtime().grace_period_ms(), GRACE_MS);
+    assert_eq!(bootstrap.runtime().graceful_shutdown_ms(), GRACEFUL_MS);
 
     let events: Vec<Vec<u8>> = (0..EVENTS)
         .map(|index| format!("data: {{\"event\":{index}}}\n\n").into_bytes())

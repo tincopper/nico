@@ -6,17 +6,25 @@
 use super::*;
 
 /// Builds a bootstrap document whose `config_source` selects etcd with `body` lines.
+///
+/// The reload knobs are part of the same section, so they follow the type-specific fields inside
+/// it; trailing whitespace in `body` is trimmed so a caller cannot accidentally glue two keys
+/// together.
 fn etcd_document(body: &str) -> String {
     format!(
         "\
 config_source:
   type: etcd
-{body}
-debounce_ms: 100
-max_wait_ms: 500
-cache_dir: ./.tmp/cache
-allow_bootstrap_cache: false
-"
+{}
+  debounce_ms: 100
+  max_wait_ms: 500
+  cache_dir: ./.tmp/cache
+  allow_bootstrap_cache: false
+http:
+  listeners:
+    - listen: 127.0.0.1:8080
+",
+        body.trim_end()
     )
 }
 

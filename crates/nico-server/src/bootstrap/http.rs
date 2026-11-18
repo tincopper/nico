@@ -1,68 +1,96 @@
-//! The optional `http` section of the bootstrap file.
+//! The required `http` section of the bootstrap file: the listeners this process opens.
 //!
-//! These are process knobs, not configuration: a listening address, plaintext HTTP/2, the two drain
-//! windows and a worker-thread count describe *this* process, so a control plane must not be able to
-//! change them by pushing a document. They are read once, before any configuration source exists.
+//! A listener is a process fact, not configuration: its address, its transport (the presence of a
+//! `tls` block) and the section-level `h2c` flag describe *this* process, so a control plane must
+//! not be able to change them by pushing a document. They are read once, before any configuration
+//! source exists.
 //!
-//! Every field is optional and the section itself may be omitted. A field that is **written** is
-//! validated as written, even when it happens to equal its default, so a typo fails at startup
-//! instead of being absorbed by the fallback; only an omitted field takes its default. The defaults
-//! and the accepted ranges belong to the data plane, which is why this module only translates the
-//! written YAML into [`RawHttp`] and delegates the rules to [`HttpSettings::resolve`].
+//! The section itself is **required**: an absent `http` block is a serde missing-field error, not a
+//! default listener. A gateway that binds nothing serves nothing, so "which socket?" is a question
+//! the operator answers rather than one the build answers for them. Inside the section every field
+//! is validated as written; the accepted shapes belong to the data plane, which is why this module
+//! only translates the written YAML into [`RawHttp`] and delegates the rules to
+//! [`HttpSettings::resolve`].
 
-use nico_http::{HttpSettings, HttpSettingsError, TlsPolicy};
+use nico_http::{HttpSettings, HttpSettingsError, Listener, TlsPolicy, validate_listen};
 use serde::Deserialize;
 
 use super::BootstrapError;
 
-mod tls;
+mod listener;
 
-/// The `http` section exactly as written, before defaults and validation.
-#[derive(Debug, Default, Deserialize)]
+/// The `http` section exactly as written, before validation.
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawHttp {
-    listen: Option<String>,
     h2c: Option<bool>,
-    grace_period_ms: Option<u64>,
-    graceful_shutdown_ms: Option<u64>,
-    threads: Option<usize>,
-    // Present-but-empty is an error: an operator who wrote `http.tls:` meant TLS, not plaintext.
-    #[serde(default, deserialize_with = "tls::section")]
-    tls: Option<tls::RawHttpTls>,
+    // A list cannot express "at least one entry", so an empty list is a resolve-time error rather
+    // than a parse error — which is also where the entry addresses are checked. `default` is what
+    // makes an empty section report that field instead of serde's missing-field message.
+    #[serde(default)]
+    listeners: Vec<RawListener>,
+}
+
+/// One `http.listeners[]` entry exactly as written.
+///
+/// A single struct with an optional `tls` block rather than an untagged enum: `tls` being present
+/// *is* the transport decision, and a missing one produces one readable error instead of the
+/// untagged-enum "did not match any variant" message.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawListener {
+    listen: String,
+    // Present-but-empty is an error: an operator who wrote `tls:` meant TLS, not plaintext.
+    #[serde(default, deserialize_with = "listener::section")]
+    tls: Option<listener::RawTlsIdentity>,
 }
 
 impl RawHttp {
     /// Resolves the section into the settings the data plane runs with.
     ///
-    /// `tls` is the trust policy the bootstrap's own `tls` section produced. It is not a field of
-    /// this section (a bundle belongs to the process, not to the listener), but it is a field of the
-    /// settings this section resolves, so it is handed over here.
+    /// `trust` is the outbound trust policy the bootstrap's own `proxy` section produced. It is not
+    /// a field of this section (a bundle belongs to the process, not to a listener), but it is a
+    /// field of the settings this section resolves, so it is handed over here.
     ///
-    /// The optional `http.tls` section is the listener's identity. It is read and validated here,
-    /// once, before the listener is built; the data plane repeats the check when it assembles the
-    /// service so a file that changes in between is refused rather than sent to Pingora's panicking
-    /// loader.
+    /// Each entry is checked here before it becomes a [`Listener`], so an unusable address is
+    /// reported against the entry that carries it (`http.listeners[N].listen`) and a broken
+    /// certificate against its block (`http.listeners[N].tls.*`). The data plane repeats both
+    /// checks: it is the crate that decides what a listener may be, and a settings value built
+    /// anywhere else must not be able to skip them.
     ///
     /// # Errors
-    /// Returns [`BootstrapError::InvalidField`] under the `http.` prefix, naming the field the data
-    /// plane rejected and the rule it applied.
+    /// Returns [`BootstrapError::InvalidField`] under the `http.` prefix, naming the entry and the
+    /// field the data plane rejected, or the rule it applied to the section as a whole.
     pub(super) fn resolve(&self, trust: TlsPolicy) -> Result<HttpSettings, BootstrapError> {
-        let inbound = match &self.tls {
-            Some(raw) => Some(raw.resolve()?),
-            None => None,
-        };
-        HttpSettings::resolve_with_inbound_tls(
-            self.listen.as_deref(),
-            self.h2c,
-            self.grace_period_ms,
-            self.graceful_shutdown_ms,
-            self.threads,
-            trust,
-            inbound,
-        )
-        .map_err(|error: HttpSettingsError| BootstrapError::InvalidField {
-            field: format!("http.{}", error.field()).into(),
-            reason: error.reason().to_owned().into(),
+        if self.listeners.is_empty() {
+            return Err(BootstrapError::InvalidField {
+                field: "http.listeners".into(),
+                reason: "must name at least one listener".into(),
+            });
+        }
+
+        let mut listeners = Vec::with_capacity(self.listeners.len());
+        for (index, raw) in self.listeners.iter().enumerate() {
+            validate_listen(&raw.listen).map_err(|error| BootstrapError::InvalidField {
+                field: format!("http.listeners[{index}].listen").into(),
+                reason: error.reason().to_owned().into(),
+            })?;
+            listeners.push(match &raw.tls {
+                Some(identity) => Listener::Tls {
+                    listen: raw.listen.clone(),
+                    tls: identity.resolve(index)?,
+                },
+                None => Listener::Plain {
+                    listen: raw.listen.clone(),
+                },
+            });
+        }
+
+        HttpSettings::resolve(listeners, self.h2c, trust).map_err(|error: HttpSettingsError| {
+            BootstrapError::InvalidField {
+                field: format!("http.{}", error.field()).into(),
+                reason: error.reason().to_owned().into(),
+            }
         })
     }
 }

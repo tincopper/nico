@@ -6,7 +6,7 @@
 //! handshake against a real listener:
 //!
 //! 1. **the configured bundle is used** — the origin's certificate is signed by a fixture CA that no
-//!    platform trust store knows, so a successful `200` can only come from `tls.ca_file`;
+//!    platform trust store knows, so a successful `200` can only come from `proxy.tls.ca_file`;
 //! 2. **both target kinds reach it** — an `upstreams[].scheme: https` route and a provider route
 //!    whose `base_url` is `https://…` produce the same destination, so both complete a handshake;
 //! 3. **the hostname is verified** — a chain that verifies against the same root while its

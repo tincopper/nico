@@ -84,7 +84,7 @@ const TWO_ROUTES: &str = concat!(
     "    upstream: api-backend\n",
 );
 
-/// Builds a bootstrap whose `schema_bounds` section holds `bounds`.
+/// Builds a bootstrap whose `config_source.schema_bounds` block holds `bounds`.
 fn fixture(directory: &Path, bounds: &str) -> BootstrapConfig {
     bootstrap(
         directory,
@@ -99,7 +99,7 @@ fn fixture(directory: &Path, bounds: &str) -> BootstrapConfig {
 #[tokio::test(flavor = "current_thread")]
 async fn serve_rejects_a_document_above_the_bootstrap_route_bound() {
     let directory = tempfile::TempDir::new().expect("temporary directory");
-    let bootstrap = fixture(directory.path(), "  max_routes: 1\n");
+    let bootstrap = fixture(directory.path(), "    max_routes: 1\n");
     let source = FakeConfigSource::new("fake")
         .push_load(Ok(FakeConfigSource::version_at(1, TWO_ROUTES.as_bytes())));
 
@@ -117,7 +117,7 @@ async fn serve_rejects_a_document_above_the_bootstrap_route_bound() {
 async fn a_rejected_document_keeps_the_last_good_snapshot_and_the_generation() {
     tokio::time::pause();
     let directory = tempfile::TempDir::new().expect("temporary directory");
-    let bootstrap = fixture(directory.path(), "  max_routes: 1\n");
+    let bootstrap = fixture(directory.path(), "    max_routes: 1\n");
     let source = ChannelSource::new("channel");
     source.push_load(Ok(ConfigVersion::new(
         Revision::comparable(1),

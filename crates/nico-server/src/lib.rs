@@ -273,12 +273,15 @@ config_source:
   path: ./resources.yaml
   max_bytes: 4096
   watch: notify
-debounce_ms: 100
-max_wait_ms: 500
-cache_dir: ./.tmp/cache
-allow_bootstrap_cache: false
-schema_bounds:
-  max_depth: 0
+  debounce_ms: 100
+  max_wait_ms: 500
+  cache_dir: ./.tmp/cache
+  allow_bootstrap_cache: false
+  schema_bounds:
+    max_depth: 0
+http:
+  listeners:
+    - listen: 127.0.0.1:8080
 ",
         )
         .expect("the bootstrap fixture is written");

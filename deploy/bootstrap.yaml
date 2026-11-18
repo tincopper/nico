@@ -13,21 +13,26 @@ config_source:
   max_bytes: 1048576
   watch: signal
 
-debounce_ms: 200
-max_wait_ms: 1000
+  debounce_ms: 200
+  max_wait_ms: 1000
 
-# Last-known-good cache. This directory is owned by uid 10001 and is a named volume in compose;
-# keeping it separate from /etc/nico is what lets the config mount be read-only.
-cache_dir: /var/lib/nico/cache
-allow_bootstrap_cache: false
+  # Last-known-good cache. This directory is owned by uid 10001 and is a named volume in compose;
+  # keeping it separate from /etc/nico is what lets the config mount be read-only.
+  cache_dir: /var/lib/nico/cache
+  allow_bootstrap_cache: false
 
-# Process-level HTTP settings. These belong to this process, not to a pushed document.
-http:
-  listen: 0.0.0.0:8080
-  h2c: false
+# The runtime this process runs on. These belong to this process, not to a pushed document.
+runtime:
+  threads: 1
   grace_period_ms: 5000
   graceful_shutdown_ms: 30000
-  threads: 1
+
+# The data plane: one entry per listener, and the transport each one serves. An entry with a `tls`
+# block terminates TLS; this deployment serves plaintext and expects a proxy in front.
+http:
+  h2c: false
+  listeners:
+    - listen: 0.0.0.0:8080
 
 # Self-reporting surface. /health/live answers from the process, /health/ready answers 200 once a
 # snapshot reached service. Exposed on 9090 in the sample compose file.
@@ -37,5 +42,6 @@ metrics:
 # Upstream TLS uses the platform roots installed in the runtime image. A deployment with a private
 # CA mounts a bundle and uncomments this section; the file is read once at startup, so changing it
 # takes a restart, never a reload.
-# tls:
-#   ca_file: /etc/nico/roots.pem
+# proxy:
+#   tls:
+#     ca_file: /etc/nico/roots.pem
