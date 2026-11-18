@@ -203,8 +203,8 @@ metrics:                 # 可选；省略整段 = 不监听、不装 recorder
 ```yaml
 apiVersion: gateway/v1
 request:
-  max_body_bytes: 1048576   # 必填；0 表示不接受请求体
-  timeout_ms: 30000         # 必填；1..=600000
+  max_body_bytes: 1048576   # 必填；0 表示不接受请求体（不是「不限」）
+  timeout_ms: 30000         # 必填；1..=600000，是全文档预算也是每条路由的上限
   # max_response_bytes: 8388608   # 可选，默认 8 MiB；路由只能收紧
 
 providers: []   # 必填节，可为空
@@ -236,8 +236,8 @@ routes:
     host: api.example.com   # 可选；省略则匹配任意 host
     path_prefix: /api/
     upstream: api-backend
-    timeout_ms: 30000        # 可选，受 request.timeout_ms 约束
-    max_body_bytes: 1048576  # 可选，受 request.max_body_bytes 约束
+    timeout_ms: 30000        # 可选；只能收紧 request.timeout_ms
+    max_body_bytes: 1048576  # 可选；不能超过 request.max_body_bytes，否则发布期拒绝
     plugins: [public-jwt, api-quota]
 ```
 
@@ -246,10 +246,22 @@ routes:
 1. 指定了 `host` 的路由只匹配该 host（大小写不敏感、忽略端口）；未指定 `host` 的路由匹配任意 host。
 2. 限定 host 的路由优先于不限 host 的路由，与前缀长短无关。
 3. 同一 host 等级内，`path_prefix` 越长越优先。
-4. host 等级与前缀长度都相同时，文档中靠前的路由胜出。
+4. host 等级与前缀长度都相同时，文档中靠前的路由胜出——但这样的两条规则在发布期就被判为重复
+   并拒绝整份文档，所以合法文档里不存在需要靠顺序取胜的情形。
 
 `path_prefix` 按字节比较：`/api/` 不匹配 `/api`，而 `/api` 匹配 `/apix`。路由选择**只读请求头**，
-不读请求体。
+不读请求体。列表是平面的：所有 `http.listeners[]` 条目共用这一张表，listener 不参与选择（它不是
+虚拟主机）；路由前缀也不会被剥离，`/api/` 路由把原路径转给上游，未命中的“父前缀路由”不提供
+插件或限制。
+
+`request` 段与路由字段的约束方式不一样：
+
+| 字段 | 路由值超过文档值时 |
+|---|---|
+| `max_body_bytes` / `max_response_bytes` | 发布期拒绝整份文档 |
+| `timeout_ms` | 仍然发布，但运行时取较小值——写大不会放宽预算 |
+
+超时从请求进入数据面时算一次，命中路由只收紧、不重新计时。
 
 ## 上游（`upstreams`）
 
@@ -294,10 +306,10 @@ upstreams:
 
 | 值 | 语义 |
 |---|---|
-| `round_robin` | 按文档顺序轮转（默认） |
-| `weighted_round_robin` | 按 `weight` 比例的平滑加权轮转（`3:1` 交错成 `a,b,a,a`，不是先发三次再发一次） |
-| `least_conn` | 当前活跃请求数最少者，平票按轮转；计数由数据面在“选中 → 请求结束”之间自己维护 |
-| `ip_hash` | 调用方**地址**哈希（会合哈希），同一调用方稳定落在同一成员；成员增删只迁移约 1/n 的键 |
+| `round_robin` | 按文档顺序轮转（默认）；**不读 `weight`**，写了权重也不改变选择 |
+| `weighted_round_robin` | 按 `weight` 比例的平滑加权轮转（`3:1` 交错成 `a,b,a,a`，不是先发三次再发一次）；这是唯一消费 `weight` 的策略 |
+| `least_conn` | 当前活跃**请求**数最少者（不是连接池里的 socket 数），平票按轮转；不读 `weight` |
+| `ip_hash` | 调用方**完整地址**加 endpoint 名做会合哈希；不读 `weight`，且 endpoint 改名会改变映射。成员增删只迁移约 1/n 的键 |
 
 **失败与剔除**（被动，不做主动探测）：
 
@@ -316,8 +328,16 @@ upstreams:
 
 ## 插件
 
-插件是“命名实例”，由路由按名字引用（或列入 `global_plugins`）。一个实例不是 kind 别名：两条路由
-需要不同参数，就写两个同 kind 的实例。
+插件是“命名实例”，由路由按名字引用（或列入 `global_plugins`）。声明本身不会让它运行：顶层
+`plugins` 只定义实例，`global_plugins` 与 `routes[].plugins` 才决定使用范围与顺序。一个实例不是
+kind 别名：两条路由需要不同参数，就写两个同 kind 的实例。
+
+- **`enabled: false` 在全部使用点生效**：声明保留、引用仍合法，但配置不编译、密钥不读取、不运行；
+  它不是“只停这条路由”。
+- 所有 `enabled` 的定义都会编译，但没有使用点的实例不会运行；反过来，一个写坏的未被引用实例
+  仍会让整份文档发布失败。
+- 阶段顺序在一个作用域内由插件类别决定：认证排在限流之前；跨作用域则是 `global_plugins` → 路由
+  匹配 → 该路由的插件。响应方向反过来。
 
 ```yaml
 plugins:
@@ -343,9 +363,11 @@ plugins:
 | `error_response` | 可选，覆盖拒绝时的 `status` / `content_type` / `body`（`code` 不可覆盖） |
 | `config` | 该 kind 自己的配置，发布时解析 |
 
-> `buffers_body: true` 会让该路由整体缓冲：上游要等客户端最后一个字节到达才收到请求，内存为
-> `request.max_body_bytes` × 并发缓冲上传数。因此它是逐实例 opt-in。响应永远不可能被缓冲（可能是
-> 无限流）。
+> `buffers_body: true` 会让该路由整体缓冲请求体：请求头照常先发，但上游在客户端最后一个字节
+> 到达前收不到 body，因此它的延迟包含整个上传；内存为 `request.max_body_bytes` × 并发缓冲上传数，
+> 再加上插件返回的内容。因此它是逐实例 opt-in。插件接口永远不被交给完整响应（响应可能是无限流）；
+> 但 LLM convert 路由的非流式应答会由前端整体缓冲，受 `request.max_response_bytes` 约束——两件事
+> 不要混为一谈。
 
 ### jwt
 
@@ -385,7 +407,8 @@ plugins:
 ```
 
 - 默认 header 是 `authorization`，值取 `Bearer <key>` 的 key 部分。
-- 自定义 header（如 `x-upload-key`）按原样匹配，**不带** scheme 前缀。
+- 自定义 header（如 `x-upload-key`）按原样匹配，**不带** scheme 前缀；显式写 `header: authorization`
+  同样按原样匹配，不再剥 `Bearer`。
 - `keys` 不可为空；`name` 会成为请求身份与日志字段。
 
 ### rate_limit
@@ -402,8 +425,14 @@ plugins:
     identity: subject    # 可选，subject | ip，默认 subject
 ```
 
-- 桶按 `(route_id, 实例名, subject|ip)` 分隔。
-- 默认按认证插件建立的身份分桶；`identity: ip` 按客户端地址哈希分桶。
+- 桶按 `(route_id, 实例名, subject|ip)` 分隔。同一实例挂在两条路由上会得到两个桶，额度不会
+  跨路由共享；要共享就把实例放进 `global_plugins`（那里 route_id 为空），但全局与路由的两次限流
+  是叠加关系，不是覆盖关系。
+- 默认按认证插件建立的身份分桶；没有身份时**回退到调用方地址哈希**（不是不限制）。`identity: ip`
+  直接按地址哈希分桶，忽略身份。
+- 全局作用域在路由之前运行，所以没有 route_id；但它不总是没有身份：同一作用域里排在它前面的
+  认证插件已经建立了 subject，全局限流可以按 subject 分桶。
+- 桶表是**进程内**的，跨 reload 保留（参数变了重建），多副本之间不共享。
 - 超限 → `429 rate_limited`，并带 `retry-after`（秒）。
 
 ## LLM 路由
@@ -421,7 +450,6 @@ providers:
       fast: gpt-4o-mini
     model_allowlist: [gpt-4o-mini, gpt-4o]   # 可选：provider 侧模型白名单
     max_output_tokens: 8192                  # 可选：端点在请求未设时的输出上限
-    timeout_ms: 120000                       # 可选
     circuit_breaker:
       failure_threshold: 5                   # 连续失败数，0 表示禁用熔断
       cooldown_ms: 30000                     # 打开后等待探针的时间
@@ -431,7 +459,8 @@ routes:
     path_prefix: /v1/chat/
     provider: openai-primary
     protocol: openai.chat     # openai.chat | openai.responses | anthropic.messages | gemini.generate_content
-    timeout_ms: 120000
+    # timeout_ms 只能收紧 `request.timeout_ms`；写得更大会被截到文档值，不会拒绝发布。
+    # 需要两分钟预算时，必须同时调高 `request.timeout_ms`——那会放宽所有没写自己预算的路由。
     max_response_bytes: 4194304   # 只能收紧 request.max_response_bytes
     # retry_budget: 2              # 可选，默认 1（不重试），上限 4
     # fallback: [openai-secondary] # 可选，按顺序尝试，最多 3 个
