@@ -26,6 +26,12 @@ fail() {
     exit 1
 }
 
+# `protoc` is a build-script dependency rather than a Rust one: `etcd-client` compiles its own
+# protos in `build.rs`, and `nico-config-etcd` generates the mock etcd server the same way. Without
+# it the workspace build dies inside a third-party panic, so name the tool and its installer here.
+command -v protoc >/dev/null 2>&1 \
+    || fail "protoc missing: 'brew install protobuf' on macOS, 'apt-get install protobuf-compiler' on Debian/Ubuntu"
+
 if rustup toolchain list 2>/dev/null | grep -q '^nightly'; then
     cargo +nightly fmt --all -- --check \
         || fail "formatting: run 'cargo +nightly fmt --all'"

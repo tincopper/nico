@@ -105,6 +105,11 @@ lefthook install             # writes .git/hooks/{pre-commit,pre-push}
   fmt, `clippy -D warnings`, `cargo test --workspace`, `cargo doc` with `RUSTDOCFLAGS="-D warnings"`,
   the feature matrix, and `cargo deny check` when installed.
 - Manual invocation: `lefthook run pre-commit` / `lefthook run pre-push`.
+- Build-script prerequisite: `protoc` must be on `PATH`. `etcd-client` and `nico-config-etcd`
+  compile `.proto` files in their build scripts, and both gates build with `--all-features`, so
+  every Rust change reaches them. Each script checks for it up front and fails with the install
+  command, instead of letting a third-party build script panic. The container image needs neither:
+  `etcd` is not in a role's default feature graph.
 - Skips: `merge` and `rebase` for pre-commit (a replay would produce false failures).
 
 Rules:

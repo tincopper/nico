@@ -10,6 +10,7 @@ contract for structure, errors, logging, tests and the file budget.
 |---|---|---|
 | Rust | builds the workspace | `rust-toolchain.toml` pins `1.99.0`; rustup installs it on first `cargo` call. The declared MSRV is `1.88` (`rust-version`), raised because an advisory-free `time` in the production tree requires it |
 | C compiler (`cc`) | builds `ring`, the crypto provider behind the upstream TLS backend | Xcode Command Line Tools on macOS, `build-essential` on Debian/Ubuntu; no CMake or Ninja is needed |
+| `protoc` | build scripts generate gRPC code: `etcd-client` compiles its own protos, and `nico-config-etcd` generates the mock etcd server its tests drive | `brew install protobuf` on macOS, `apt-get install protobuf-compiler` on Debian/Ubuntu. Not needed for the container image: `etcd` is not in a role's default feature graph |
 | nightly toolchain + rustfmt | `cargo +nightly fmt` (import grouping is nightly-only) | `rustup toolchain install nightly --profile minimal && rustup component add rustfmt --toolchain nightly` |
 | `cargo-deny` | license / advisory / source policy | `cargo install cargo-deny --locked` |
 | `lefthook` | git hook orchestration | macOS `brew install lefthook`; elsewhere `go install github.com/evilmartians/lefthook@latest` |
@@ -22,6 +23,7 @@ contract for structure, errors, logging, tests and the file budget.
 rustup toolchain install nightly --profile minimal
 rustup component add rustfmt --toolchain nightly
 cargo install cargo-deny --locked
+brew install protobuf        # or: apt-get install protobuf-compiler
 brew install lefthook
 
 # hooks (once per clone)

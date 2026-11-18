@@ -34,6 +34,18 @@ jobs:
           rustup toolchain install nightly --profile minimal
           rustup component add rustfmt --toolchain nightly
 
+      # `protoc` is a build-script dependency, not a Rust one: `etcd-client` compiles its own
+      # protos, and `nico-config-etcd` generates the mock etcd server the same way. The baseline
+      # builds `--all-features`, so both build scripts run here and neither has a vendored protoc.
+      #
+      # The image job needs no such step: `etcd` is not in a role's default feature graph, so
+      # `cargo build -p nico-server` never reaches either build script.
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler
+          protoc --version
+
       # `cargo install` is the same path CONTRIBUTING.md documents. Cached by the binary's version
       # so a workflow re-run does not recompile cargo-deny from scratch.
       - name: Install cargo-deny
