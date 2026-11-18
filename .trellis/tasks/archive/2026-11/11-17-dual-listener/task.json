@@ -3,7 +3,7 @@
   "name": "dual-listener",
   "title": "HTTP 与 HTTPS 双 listener 并存",
   "description": "让 http.tls 拥有可选的独立 listen 地址：同时注册明文与 TLS 两个 listener，x-forwarded-proto 改为按连接的 ssl_digest 判定，h2c 冲突规则放宽到仅在 TLS 接管 http.listen 时保留。",
-  "status": "planning",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -11,8 +11,8 @@
   "creator": "tincopper",
   "assignee": "tincopper",
   "createdAt": "2026-11-17",
-  "completedAt": null,
-  "branch": null,
+  "completedAt": "2026-11-18",
+  "branch": "main",
   "base_branch": "main",
   "worktree_path": null,
   "commit": null,
@@ -22,5 +22,7 @@
   "parent": null,
   "relatedFiles": [],
   "notes": "",
-  "meta": {}
+  "meta": {
+    "description": "bootstrap 配置 nginx 对齐：runtime 段（threads/grace 旋钮从 http 迁出）+ http.listeners[] 条目化 listener（tls 块存在即 TLS，拆除 http.tls 接管语义）+ 顶层 tls 改名 proxy.tls（对齐 nginx proxy_ssl_* 家族）+ reload 旋钮归组 config_source（顶层裸标量清零）+ x-forwarded-proto 按连接 ssl_digest 判定。resources.yaml 对齐与迁移文档为后续任务。"
+  }
 }

@@ -2,3 +2,5 @@
 {"file": ".trellis/spec/backend/pingora-guidelines.md", "reason": "verify listener registration and per-connection transport rules"}
 {"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "file budget, dependency direction and test conventions"}
 {"file": ".trellis/tasks/11-17-dual-listener/prd.md", "reason": "acceptance criteria to verify"}
+{"file": ".trellis/tasks/11-17-dual-listener/research/nginx-config-analysis.md", "reason": "verify the final config shape and validation matrix against the decision"}
+{"file": ".trellis/tasks/11-17-dual-listener/research/option-b-analysis.md", "reason": "D1-D4 缺陷与 metrics 碰撞修正的依据"}

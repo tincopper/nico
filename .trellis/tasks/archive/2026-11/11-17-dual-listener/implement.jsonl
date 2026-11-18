@@ -3,4 +3,6 @@
 {"file": ".trellis/spec/backend/pingora-guidelines.md", "reason": "listener/TLS assembly constraints just updated by 11-17-inbound-tls"}
 {"file": ".trellis/spec/backend/error-handling.md", "reason": "startup validation error matrix and the no-secret rule"}
 {"file": ".trellis/spec/backend/directory-structure.md", "reason": "module placement and file budget for inbound/bootstrap TLS"}
-{"file": ".trellis/tasks/11-17-inbound-tls/design.md", "reason": "the single-listener TLS design this task extends; reuse its decisions"}
+{"file": ".trellis/tasks/11-17-dual-listener/research/nginx-config-analysis.md", "reason": "config shape decision: nginx-derived listeners list + server section"}
+{"file": ".trellis/tasks/11-17-dual-listener/research/option-b-analysis.md", "reason": "superseded B analysis: knob ownership (D1-D4) still governs the refactor scope"}
+{"file": ".trellis/tasks/archive/2026-11/11-17-inbound-tls/design.md", "reason": "InboundTls/static resolver/e2e fixture 的来源设计（本任务大量复用）"}
