@@ -489,3 +489,37 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 - resources.yaml 的 nginx 对齐审查（routes≈location / upstreams≈upstream / plugins≈模块），独立任务
 - nginx 迁移映射文档 docs/nginx-migration.md
 - 证书热加载、mTLS、SNI 多证书、metrics 监听 TLS —— 沿既有边界继续
+
+
+## Session 13: 资源配置 nginx 对齐审查：19 项对应、9 个反例与后续边界
+<!-- trellis-session: v=2 fp=6c655cbe4384b248 -->
+
+**Date**: 2026-11-18
+**Task**: 资源配置 nginx 对齐审查：19 项对应、9 个反例与后续边界
+**Branch**: `main`
+
+### Summary
+
+按 nginx 官方文档与 nico 现行源码取证审查 resources.yaml：交付 research/findings.md 报告（19 项有条件对应、9 个可观察反例、6 项文档建议、3 项命名/消费核查、4 组能力缺口）。结论是保留平面结构与资源名称，优先修正文档与示例；同步记录 spec 评估与独立检查（限定 C5 的 nginx 1.28.0 前提）。产品代码、spec、README、示例零改动；829 项库测试复用，未做 nginx 差分。
+
+### Main Changes
+
+- 新增 .trellis/tasks/11-18-resources-nginx-review/ 全套规划与研究文档；随后归档至 archive/2026-11/
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e1c1fc3` | docs(config): review nginx resource semantics and migration gaps |
+
+### Testing
+
+- [OK] cargo test -p nico-core --lib（236）、-p nico-http -p nico-lb -p nico-plugins --lib（593）；task.py validate 通过；109 处源码锚点与 20 个 nginx 官方 URL 校验通过
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 按报告 D1/D2 修正 config/resources.yaml 的 30000/120000 示例与全局身份措辞，再补 D3 策略矩阵；另列 provider timeout 消费核查
