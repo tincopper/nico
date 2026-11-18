@@ -32,6 +32,13 @@ ignore = [
     # Re-check on every pingora upgrade: drop this entry when pingora-rustls moves to
     # `rustls-pki-types` directly.
     "RUSTSEC-2025-0134",
+    # chrono 0.4.45 <- pingora-core (and pingora-cache <- pingora-proxy). Unmaintained as a whole
+    # crate, not vulnerable: the advisory offers no fixed version ("no safe upgrade is available"),
+    # and chrono is a non-optional dependency of pingora-core, so it cannot be compiled out.
+    # Nothing of ours names a `chrono` type — it is pingora's own date arithmetic, and it never sees
+    # a byte of ours. Re-check on every pingora upgrade: drop this entry when upstream moves to
+    # `jiff` or `time`.
+    "RUSTSEC-2026-0543",
 ]
 
 [licenses]
