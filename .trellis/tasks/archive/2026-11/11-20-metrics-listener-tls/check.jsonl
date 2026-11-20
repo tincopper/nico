@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "quality gates, file budget, and test expectations the check agent enforces"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "startup error field naming and exit-code mapping to verify against"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "module placement and dependency direction for the refactor and the new bootstrap module"}
+{"file": ".trellis/tasks/11-20-metrics-listener-tls/prd.md", "reason": "acceptance criteria the check agent verifies item by item"}
+{"file": ".trellis/tasks/11-20-metrics-listener-tls/design.md", "reason": "invariants and contracts to verify; deviations need a reason"}

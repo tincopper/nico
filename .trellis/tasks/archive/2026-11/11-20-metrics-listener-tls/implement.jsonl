@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "backend conventions index; pre-development checklist and layer routing for this change"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "nico-server bootstrap layout, nico-http boundaries, and the file-budget rules this task edits against"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "startup error fields and how bootstrap errors map to exit codes; the TLS field naming must match this contract"}
+{"file": ".trellis/spec/backend/pingora-guidelines.md", "reason": "verified Pingora listener/TLS constraints and the hook contract the shared TLS settings builder sits behind"}
+{"file": ".trellis/tasks/11-20-metrics-listener-tls/design.md", "reason": "the chosen structure, contracts, and rejected alternatives for this task"}
+{"file": ".trellis/tasks/11-20-metrics-listener-tls/implement.md", "reason": "ordered execution steps and validation commands"}
