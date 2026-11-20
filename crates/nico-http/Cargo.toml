@@ -50,6 +50,10 @@ tracing.workspace = true
 # bundle path again, so "the file is gone" and "the file is a key" are behaviours about real files.
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
+# The client side of a listener handshake. `tokio-rustls` already reaches this crate through
+# `pingora-rustls`, so naming it here adds no crate to the graph: it is what lets a test offer ALPN
+# protocols the way a browser or a scraper does and read back what the listener selected.
+tokio-rustls.workspace = true
 
 [lints]
 workspace = true

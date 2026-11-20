@@ -5,6 +5,10 @@
 //! assembly it is attached. It contains the only Pingora code that knows a metrics endpoint exists,
 //! and even here the adapter does not know what `/health/live` means — it forwards a method and a
 //! path and writes back the [`Response`] the capability layer produced.
+//!
+//! The socket has two possible transports and one of them is not decided here: `listener.rs` asks
+//! `nico-http` for the TLS settings of the configured identity, so the self-reporting surface and
+//! the data plane terminate TLS through the same builder.
 
 mod app;
 mod listener;

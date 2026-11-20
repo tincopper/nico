@@ -1,10 +1,11 @@
-//! The bootstrap shapes that give an `http.listeners[]` entry a TLS identity.
+//! The bootstrap shapes that give a listener a TLS identity.
 //!
-//! A listener's identity is a block on its entry, not a section-level knob, so the two shapes here
-//! differ only in what the `http` section lists: one TLS entry, or one plaintext entry next to one
-//! TLS entry. Both name the fixture CA as the **upstream** trust root, so `serve_with`'s startup
-//! probe never depends on the host's certificate store — while an entry's `tls` block is the
-//! identity this process *presents*, which is the opposite direction and a separate field.
+//! A listener's identity is a block on the listener, not a section-level knob, so the shapes here
+//! differ only in what the `http` and `metrics` sections say: one TLS entry, one plaintext entry
+//! next to one TLS entry, or a TLS-terminating self-reporting listener beside a plaintext data
+//! plane. All of them name the fixture CA as the **upstream** trust root, so `serve_with`'s startup
+//! probe never depends on the host's certificate store — while a `tls` block is the identity this
+//! process *presents*, which is the opposite direction and a separate field.
 //!
 //! `h2c` is an argument of the dual shape rather than a constant: the section-level flag applies to
 //! the plaintext entries, and combining it with a TLS entry is exactly what the previous schema
@@ -24,7 +25,7 @@ pub(crate) fn write_bootstrap_tls(
     key_file: &Path,
 ) -> BootstrapConfig {
     let listeners = format!("  listeners:\n{}", tls_entry(port, cert_file, key_file));
-    write_and_load(directory, &render(directory, &listeners))
+    write_and_load(directory, &render(directory, &listeners, ""))
 }
 
 /// Writes a bootstrap with one plaintext listener and one TLS listener, in that order.
@@ -44,14 +45,41 @@ pub(crate) fn write_bootstrap_dual(
         "  h2c: {h2c}\n  listeners:\n    - listen: 127.0.0.1:{plain_port}\n{}",
         tls_entry(tls_port, cert_file, key_file)
     );
-    write_and_load(directory, &render(directory, &listeners))
+    write_and_load(directory, &render(directory, &listeners, ""))
 }
 
-/// Renders the whole file, with `listeners` as the body of the `http` section.
+/// Writes a bootstrap whose data plane is one plaintext listener and whose `metrics` section
+/// terminates TLS on `metrics_port` with the same fixture identity.
 ///
-/// One renderer for both shapes: the preamble — a local source, a zero debounce, one worker thread,
+/// The data plane stays plaintext on purpose: the scenario is about the self-reporting surface's
+/// transport, and a second TLS listener would make a failure ambiguous between the two.
+pub(crate) fn write_bootstrap_metrics_tls(
+    directory: &Path,
+    port: u16,
+    metrics_port: u16,
+    cert_file: &Path,
+    key_file: &Path,
+) -> BootstrapConfig {
+    let listeners = format!("  listeners:\n    - listen: 127.0.0.1:{port}\n");
+    let metrics = format!(
+        "metrics:
+  listen: 127.0.0.1:{metrics_port}
+  tls:
+    cert_file: \"{cert}\"
+    key_file: \"{key}\"
+",
+        cert = cert_file.display(),
+        key = key_file.display(),
+    );
+    write_and_load(directory, &render(directory, &listeners, &metrics))
+}
+
+/// Renders the whole file, with `listeners` as the body of the `http` section and `metrics` as the
+/// self-reporting section (empty when the fixture does not enable the surface).
+///
+/// One renderer for every shape: the preamble — a local source, a zero debounce, one worker thread,
 /// a short drain and the fixture CA — is a fact of the harness, not something a TLS scenario varies.
-fn render(directory: &Path, listeners: &str) -> String {
+fn render(directory: &Path, listeners: &str, metrics: &str) -> String {
     format!(
         "\
 config_source:
@@ -71,7 +99,7 @@ proxy:
   tls:
     ca_file: \"{ca}\"
 http:
-{listeners}",
+{listeners}{metrics}",
         document = directory.join("resources.yaml").display(),
         cache = directory.join("cache").display(),
         ca = fixture_ca().display(),

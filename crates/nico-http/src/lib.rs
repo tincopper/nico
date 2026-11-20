@@ -16,7 +16,10 @@
 //! - [llm] — the byte-level seam an LLM front-end implements: where a provider route goes, how its two
 //!   bodies are translated, and the per-response transform that does it.
 //! - [proxy] — the Pingora hook contract that ties the above together, and [mod@service] — the
-//!   process-level assembly (server configuration, listener).
+//!   process-level assembly (server configuration, listener). The same module publishes
+//!   [`listener_tls`]: one inbound TLS policy, consumed by the data plane's TLS entries and by the
+//!   self-reporting listener in `nico-server`, which differ only in the [`ListenerAlpn`] they ask
+//!   for.
 //! - [settings] — the validated `http` section (listeners, plaintext HTTP/2) and the shared
 //!   listener-address rule; [server_settings] — the validated `runtime` section (threads, shutdown
 //!   windows).
@@ -126,7 +129,7 @@ pub use plugin::{
 pub use proxy::HttpApp;
 pub use route::match_route;
 pub use server_settings::{ServerSettings, ServerSettingsError};
-pub use service::{ServiceBuildError, server_conf, service};
+pub use service::{ListenerAlpn, ServiceBuildError, listener_tls, server_conf, service};
 pub use settings::{HttpSettings, HttpSettingsError, Listener, validate_listen};
 pub use state::{
     BufferedRoutes, HttpState, HttpStateHandle, PublishedChains, ResponseRewrites, RouteChains,

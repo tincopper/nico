@@ -94,5 +94,14 @@ http:
 # Optional self-reporting listener. The whole section may be omitted, which is the default: no second
 # listener and no recorder. A present section must name an address that differs from every listener
 # under `http.listeners`.
+#
+# A `tls` block makes that socket terminate TLS — the same block, read by the same code, as an
+# `http.listeners[]` entry: both files are required when the block is present, they are read and
+# paired at startup, and a bad pair refuses to start. The listener offers HTTP/1.1 only (scrapers and
+# probes speak nothing else), and a certificate change takes a restart. Omitted, the surface is
+# plaintext, which is what a loopback scrape needs.
 # metrics:
 #   listen: 127.0.0.1:9090
+#   tls:
+#     cert_file: /etc/nico/tls/fullchain.pem
+#     key_file: /etc/nico/tls/key.pem

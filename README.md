@@ -170,6 +170,10 @@ proxy:                   # 可选；省略整段 = 使用平台证书库
 
 metrics:                 # 可选；省略整段 = 不监听、不装 recorder
   listen: 127.0.0.1:9090
+  # 写上 `tls` 块即只经 TLS 提供（单证书、启动期加载、只协商 http/1.1）。
+  # tls:
+  #   cert_file: /etc/nico/tls/fullchain.pem
+  #   key_file: /etc/nico/tls/key.pem
 ```
 
 要点：
@@ -191,6 +195,9 @@ metrics:                 # 可选；省略整段 = 不监听、不装 recorder
 - `metrics` 整段省略即关闭自报面（默认）。写出来后 `listen` 必填；与任一 `http.listeners[]` 地址
   同址、端口为 0、或端口无法绑定都会让启动失败 —— 一个存在但渲染不出东西的自报面是运维最难排查
   的形态。
+- 自报面可选终止 TLS：`metrics.tls` 与 `http.listeners[].tls` 形状相同、读取与配对同一份实现。
+  写了 `tls:` 就必须给齐两个文件（空块是配置错误，不会退回明文），ALPN 只声明 `http/1.1`（抓取器
+  和探针不需要 h2），证书/私钥在启动期定型、换证书要重启；省略 `tls` 仍是明文。
 - `proxy.tls.ca_file` 是**完整信任根集合，整体替换平台证书库，不是追加**。要同时信任公网与私有 CA，
   请把两者拼进同一个文件。省略整段即用平台库；`SSL_CERT_FILE` / `SSL_CERT_DIR` 仍由底层 TLS
   provider 读取，属部署手段，不是本网关的配置项。
@@ -673,8 +680,8 @@ cargo build -p nico-server --no-default-features --features traffic   # 仅流�
 
 ## 可观测性
 
-进程有一个**默认关闭**的自报面，在 bootstrap 的 `metrics.listen` 上独立监听。它不在数据面端口上，
-所以配置文档里的任何路由都无法遮蔽它。
+进程有一个**默认关闭**的自报面，在 bootstrap 的 `metrics.listen` 上独立监听，并可选在那个地址上
+终止 TLS（`metrics.tls`）。它不在数据面端口上，所以配置文档里的任何路由都无法遮蔽它。
 
 | 端点 | 应答 |
 |---|---|

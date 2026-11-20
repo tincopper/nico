@@ -1,14 +1,17 @@
 //! Process-level assembly of the HTTP data plane.
 //!
-//! Two things live here, and each of them is the only copy of its decision:
+//! Three things live here, and each of them is the only copy of its decision:
 //!
 //! - [`server_conf`] turns the validated runtime settings and the upstream trust roots into Pingora's
 //!   `ServerConf`, so a drain window, a thread count or the retry policy is never spelled out
 //!   anywhere else.
 //! - [`service`] builds the proxy service: one `HttpProxy` over [`HttpApp`], and every listener the
 //!   settings name — plaintext entries as TCP, TLS entries as rustls endpoints.
+//! - [`listener_tls`] is what a TLS listener *is*: the identity read, paired and handed to rustls as
+//!   a static resolver, plus the ALPN offer the caller picked. The self-reporting surface terminates
+//!   TLS through the same function, so protocol versions and resolver policy have one definition.
 //!
-//! Neither touches the process: the runtime, the signals and the shutdown token belong to the
+//! None of them touches the process: the runtime, the signals and the shutdown token belong to the
 //! binary that assembles them (`nico`, built by the `nico-server` crate), which is what keeps this crate a servable
 //! library — it can be embedded in a test or a second front-end without installing a signal
 //! handler as a side effect of being linked.
@@ -19,6 +22,7 @@ use nico_core::MAX_ATTEMPTS_PER_ROUTE;
 use pingora::{
     apps::HttpServerOptions,
     listeners::tls::TlsSettings,
+    protocols::tls::ALPN,
     proxy::{HttpProxy, ProxyServiceBuilder},
     server::configuration::ServerConf,
     services::listening::Service,
@@ -114,7 +118,7 @@ pub fn service(
         match listener {
             Listener::Plain { listen } => service.add_tcp(listen),
             Listener::Tls { listen, tls } => {
-                let tls = tls_settings(tls)?;
+                let tls = listener_tls(tls, ListenerAlpn::Http2Or1)?;
                 service.add_tls_with_settings(listen, None, tls);
             }
         }
@@ -162,9 +166,45 @@ pub enum ServiceBuildError {
     },
 }
 
-/// Builds Pingora's TLS listener settings from a validated identity.
-fn tls_settings(inbound: &InboundTls) -> Result<TlsSettings, ServiceBuildError> {
-    let (certificate, key) = read_identity(inbound).map_err(|error| match error {
+/// Which protocols a TLS listener offers over ALPN.
+///
+/// The choice is the listener's, not the process's: the data plane wants a second protocol on the
+/// wire, and the self-reporting surface does not. A boolean would be the wrong shape — `enable_h2()`
+/// (offer `h2` and `http/1.1`) and "declare no ALPN at all" are different results, so one flag
+/// could only express the second as "the first, with something switched off", which no test could
+/// tell apart from forgetting to declare anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListenerAlpn {
+    /// HTTP/1.1 only — the self-reporting surface, whose clients are scrapers and probes.
+    Http1,
+    /// HTTP/2 preferred, HTTP/1.1 allowed — the data plane.
+    Http2Or1,
+}
+
+/// Builds Pingora's TLS listener settings from an already-configured inbound identity.
+///
+/// This is the one definition of the inbound TLS policy — protocol versions, the static resolver,
+/// the ALPN offer — and both listeners of a process go through it: the data plane's TLS entries and
+/// the self-reporting surface. A caller decides *whether* a listener terminates TLS and *which*
+/// protocols it offers; it never assembles TLS parameters of its own.
+///
+/// The files are read and paired again here even though the bootstrap already did it, because
+/// Pingora's path-based settings would load them during `build()` and panic on a pair that changed
+/// in between. Handing rustls a resolver built from these bytes means `build()` performs no file
+/// I/O, and a post-check change is this error instead of an abort inside the framework.
+///
+/// The returned value is a Pingora type because it is Pingora that consumes it; the caller hands it
+/// straight to `add_tls_with_settings` and needs no framework type in its own signatures.
+///
+/// # Errors
+/// Returns [`ServiceBuildError`] when a file cannot be read, when the two are not a usable identity,
+/// when a path is not UTF-8, or when Pingora rejects the TLS settings. A caller must treat every
+/// variant as a startup failure; no listener may serve with the identity silently ignored.
+pub fn listener_tls(
+    identity: &InboundTls,
+    alpn: ListenerAlpn,
+) -> Result<TlsSettings, ServiceBuildError> {
+    let (certificate, key) = read_identity(identity).map_err(|error| match error {
         crate::inbound::IdentityReadError::Certificate { source } => {
             ServiceBuildError::CertificateRead { source }
         }
@@ -172,18 +212,24 @@ fn tls_settings(inbound: &InboundTls) -> Result<TlsSettings, ServiceBuildError> 
     })?;
     validate_server_identity(&certificate, &key)
         .map_err(|source| ServiceBuildError::Identity { source })?;
-    let identity = certified_key(&certificate, &key)
+    let certified = certified_key(&certificate, &key)
         .map_err(|source| ServiceBuildError::Identity { source })?;
 
-    let cert_path = inbound
+    let cert_path = identity
         .cert_file()
         .to_str()
         .ok_or(ServiceBuildError::Path)?;
-    let key_path = inbound.key_file().to_str().ok_or(ServiceBuildError::Path)?;
+    let key_path = identity
+        .key_file()
+        .to_str()
+        .ok_or(ServiceBuildError::Path)?;
     let mut settings = TlsSettings::intermediate(cert_path, key_path)
         .map_err(|source| ServiceBuildError::Tls { source: *source })?;
-    settings.set_cert_resolver(Arc::new(StaticCertResolver::new(identity)));
-    settings.enable_h2();
+    settings.set_cert_resolver(Arc::new(StaticCertResolver::new(certified)));
+    match alpn {
+        ListenerAlpn::Http1 => settings.set_alpn(ALPN::H1),
+        ListenerAlpn::Http2Or1 => settings.enable_h2(),
+    }
     Ok(settings)
 }
 

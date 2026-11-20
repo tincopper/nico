@@ -58,8 +58,9 @@ nginx 的 `reload` 起新 worker、老 worker 继续服务到连接结束。nico
 | `access_log` / `log_format` | 无对应 | 结构化日志（`tracing`，stderr）始终输出，形状不可配；请求日志默认 `debug` |
 | `error_log` 级别 | `RUST_LOG` | 环境变量，不是文档字段 |
 
-`metrics` 段是可选的独立监听（`/health/live`、`/health/ready`、`/metrics`），明文，地址不能与任何
-数据面 listener 重合。
+`metrics` 段是可选的独立监听（`/health/live`、`/health/ready`、`/metrics`），默认明文；写上 `tls`
+块（与 `http.listeners[].tls` 同形状、同一份读取与配对实现）即只经 TLS 提供，ALPN 只声明
+`http/1.1`，证书变更要重启。地址不能与任何数据面 listener 重合。
 
 ## 3. 逐项对应表
 
@@ -244,7 +245,7 @@ nginx 里把某个 `if`/`location` 注释掉只影响那一处。nico 的插件�
 | CIDR allow/deny | 无 | 前置代理或防火墙 |
 | 通用请求/响应缓冲旋钮 | 部分 | 请求侧用 `buffers_body`；响应侧只有 convert 非流式 |
 | 任意请求/响应头改写 | 无 | 上游自己处理；或在 nico 之前/之后加一层 |
-| SNI 多证书 / mTLS / 证书热加载 | 无（单证书、启动期加载） | 前面放一层做 TLS 终止的代理 |
+| SNI 多证书 / mTLS / 证书热加载 | 无（单证书、启动期加载；数据面与 `metrics` 监听同一套规则） | 需要这些能力时前面放一层做 TLS 终止的代理；单纯给自报面加密写 `metrics.tls` 即可 |
 | 同一端口自动识别明文与 TLS | 无 | 拆成两个 listener |
 | 上游连接池调优 | 无公开参数 | — |
 | 动态 DNS（多地址、TTL、权重） | 每次请求解析取首个结果 | 用稳定的单地址（如负载均衡 VIP） |

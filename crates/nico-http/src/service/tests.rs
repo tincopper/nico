@@ -1,8 +1,13 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use pingora::services::Service as ServiceApi;
+use rustls::{ClientConfig, RootCertStore, pki_types::ServerName};
+use tokio_rustls::TlsConnector;
 
-use super::{ServiceBuildError, server_conf, service};
+use super::{ListenerAlpn, ServiceBuildError, listener_tls, server_conf, service};
 use crate::{
     InboundTls, Listener, ServerSettings, TlsPolicy, settings::HttpSettings,
     state::HttpStateHandle, test_support::tls_bundle,
@@ -287,5 +292,84 @@ fn an_unreadable_tls_identity_is_a_service_error_not_a_panic() {
     assert!(
         matches!(error, ServiceBuildError::CertificateRead { .. }),
         "the first unreadable file is reported, got {error:?}"
+    );
+}
+
+/// Returns the trust root that signed the workspace's `localhost` fixture.
+fn localhost_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../nico-server/tests/fixtures/tls")
+        .join("test-root.pem")
+}
+
+/// Offers `http/2` and `http/1.1` to a listener built for `alpn`, and returns what it selected.
+///
+/// Both protocols are offered on purpose: that is the only offer that tells a listener declaring
+/// HTTP/1.1 apart from one declaring nothing at all (no ALPN extension, so the client selects no
+/// protocol either), and it is what a scraper's TLS stack advertises in practice.
+async fn negotiated_alpn(alpn: ListenerAlpn) -> Option<Vec<u8>> {
+    let settings = listener_tls(&localhost_identity(), alpn)
+        .expect("the workspace fixture identity is readable and valid");
+    let acceptor = settings.build();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("an ephemeral port is available");
+    let address = listener.local_addr().expect("the bind has an address");
+    let server = tokio::spawn(async move {
+        let (stream, _peer) = listener.accept().await.expect("the client connects");
+        acceptor.acceptor.accept(stream).await.map(drop)
+    });
+
+    let mut roots = RootCertStore::empty();
+    let mut reader = std::io::BufReader::new(
+        std::fs::File::open(localhost_root()).expect("the root is readable"),
+    );
+    for certificate in rustls_pemfile::certs(&mut reader) {
+        roots
+            .add(certificate.expect("the fixture root parses"))
+            .expect("the fixture root is a certificate");
+    }
+    let mut config = ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    let connector = TlsConnector::from(Arc::new(config));
+    let name = ServerName::try_from("localhost").expect("a DNS name");
+    let stream = tokio::net::TcpStream::connect(address)
+        .await
+        .expect("the listener accepts the TCP connection");
+    let stream = connector
+        .connect(name, stream)
+        .await
+        .expect("the fixture root verifies the listener");
+    let negotiated = stream.get_ref().1.alpn_protocol().map(<[u8]>::to_vec);
+    drop(stream);
+    server
+        .await
+        .expect("the handshake task does not panic")
+        .expect("the server side completes the handshake");
+    negotiated
+}
+
+#[tokio::test]
+async fn the_self_reporting_alpn_offer_is_http_1_only() {
+    let negotiated = negotiated_alpn(ListenerAlpn::Http1).await;
+
+    assert_eq!(
+        negotiated.as_deref(),
+        Some(&b"http/1.1"[..]),
+        "a listener built for HTTP/1.1 must select it from an h2-capable offer, which also proves \
+         it declared a protocol instead of none"
+    );
+}
+
+#[tokio::test]
+async fn the_data_planes_alpn_offer_still_prefers_http_2() {
+    let negotiated = negotiated_alpn(ListenerAlpn::Http2Or1).await;
+
+    assert_eq!(
+        negotiated.as_deref(),
+        Some(&b"h2"[..]),
+        "the data plane keeps the behaviour it had before the builder gained a second caller"
     );
 }

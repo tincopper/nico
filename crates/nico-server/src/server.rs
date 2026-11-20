@@ -132,14 +132,29 @@ pub fn serve_with(
                 return ExitCode::from(FAILURE_EXIT_CODE);
             }
         };
-        server.add_service(crate::metrics::service(
+        let metrics_service = match crate::metrics::service(
             metrics_settings,
             registry,
             Arc::clone(&snapshot),
             Arc::clone(&state),
-        ));
+        ) {
+            Ok(service) => service,
+            Err(error) => {
+                // The same exit as a failed data-plane listener: a surface whose certificate cannot
+                // be read has nothing to serve, and starting without it would leave the operator
+                // with no way to see the process at all.
+                tracing::error!(
+                    error = %error,
+                    "the self-reporting listener could not be built; refusing to start instead of \
+                     serving plaintext where the bootstrap asked for TLS"
+                );
+                return ExitCode::from(FAILURE_EXIT_CODE);
+            }
+        };
+        server.add_service(metrics_service);
         tracing::info!(
             metrics.listen = metrics_settings.listen(),
+            metrics.tls = metrics_settings.tls().is_some(),
             "metrics surface enabled"
         );
     } else {

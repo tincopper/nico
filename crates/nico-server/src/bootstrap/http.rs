@@ -15,9 +15,7 @@
 use nico_http::{HttpSettings, HttpSettingsError, Listener, TlsPolicy, validate_listen};
 use serde::Deserialize;
 
-use super::BootstrapError;
-
-mod listener;
+use super::{BootstrapError, inbound_tls};
 
 /// The `http` section exactly as written, before validation.
 #[derive(Debug, Deserialize)]
@@ -41,8 +39,8 @@ pub(super) struct RawHttp {
 struct RawListener {
     listen: String,
     // Present-but-empty is an error: an operator who wrote `tls:` meant TLS, not plaintext.
-    #[serde(default, deserialize_with = "listener::section")]
-    tls: Option<listener::RawTlsIdentity>,
+    #[serde(default, deserialize_with = "inbound_tls::section")]
+    tls: Option<inbound_tls::RawTlsIdentity>,
 }
 
 impl RawHttp {
@@ -78,7 +76,7 @@ impl RawHttp {
             listeners.push(match &raw.tls {
                 Some(identity) => Listener::Tls {
                     listen: raw.listen.clone(),
-                    tls: identity.resolve(index)?,
+                    tls: identity.resolve(&format!("http.listeners[{index}].tls"))?,
                 },
                 None => Listener::Plain {
                     listen: raw.listen.clone(),

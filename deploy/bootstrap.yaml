@@ -36,8 +36,16 @@ http:
 
 # Self-reporting surface. /health/live answers from the process, /health/ready answers 200 once a
 # snapshot reached service. Exposed on 9090 in the sample compose file.
+#
+# A `tls` block (`cert_file` + `key_file`, exactly the shape an `http.listeners[]` entry takes) would
+# serve the same three endpoints over TLS only, HTTP/1.1 over ALPN, certificates read at startup. The
+# sample stays plaintext because this image ships no certificate to present; mount one and uncomment
+# the block in a deployment that must not expose the surface in the clear.
 metrics:
   listen: 0.0.0.0:9090
+  # tls:
+  #   cert_file: /etc/nico/tls/fullchain.pem
+  #   key_file: /etc/nico/tls/key.pem
 
 # Upstream TLS uses the platform roots installed in the runtime image. A deployment with a private
 # CA mounts a bundle and uncomments this section; the file is read once at startup, so changing it
