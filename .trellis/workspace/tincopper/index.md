@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 14
+- **Total Sessions**: 15
 - **Last Active**: 2026-11-20
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~560 | Active |
+| `journal-1.md` | ~607 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 15 | 2026-11-20 | Session 15: nginx 迁移文档、全局限流 E2E 与 metrics 监听 TLS 终止 | `712586a`, `1bc3e1c`, `25c5df8`, `0d44834` | `main` |
 | 14 | 2026-11-20 | 审查结论落地：文档语义修正与无消费者字段收口 | `5373487`, `83ca9fc` | `main` |
 | 13 | 2026-11-18 | 资源配置 nginx 对齐审查：19 项对应、9 个反例与后续边界 | `e1c1fc3` | `main` |
 | 12 | 2026-11-18 | bootstrap 配置对齐 nginx：runtime / listeners[] / proxy.tls 落地并归档 | `785fab0`, `c8e998d`, `8ec1fd3` | `main` |

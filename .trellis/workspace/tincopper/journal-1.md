@@ -558,3 +558,50 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 ### Next Steps
 
 - G1—G4（rewrite/入口隔离、traffic 同请求 failover、共享限额与可信代理、通用缓冲与 header）等项目需要真实部署场景驱动；已发布但仅由调用链推出的 global auth→subject 限流可先用一个 E2E 钉住
+
+
+## Session 15: nginx 迁移文档、全局限流 E2E 与 metrics 监听 TLS 终止
+<!-- trellis-session: v=2 fp=06869f97c17a90ed -->
+
+**Date**: 2026-11-20
+**Task**: nginx 迁移文档、全局限流 E2E 与 metrics 监听 TLS 终止
+**Branch**: `main`
+
+### Summary
+
+三件事按推荐顺序落地：先补 docs/nginx-migration.md 把上轮审查结论变成可操作的迁移对照与陷阱清单；再用一个新的 E2E 钉住全局 auth→subject 分桶与两个作用域的叠加计费；最后为 bootstrap 的 metrics 段加上可选 tls 块，让自报面与数据面共用同一份入站身份读取与 TlsSettings 构建。
+
+### Main Changes
+
+- docs/nginx-migration.md：三处结构差异、38 行逐项对应表、T1–T15 陷阱（host 不隔离入口、字节前缀、无 URI 替换、重复规则拒绝、策略/健康语义差、限流与 0 的方向、ttft 是每次读、realip 缺席）、无对应能力替代表、10 步检查清单与完整 nginx→nico 示例；README 末尾加入口。示例 YAML 用真实 Document::parse 校验通过（临时测试已删除），期间修正了 Host 带端口与必填节两处误导。
+- 新增 crates/nico-server/tests/plugins_limit_global.rs：一个 server 四步——无凭证 401（全局认证先于路由）、同一 subject 跨三条路由共享全局桶、第二个 subject 在被拒路由上仍 200（证明按 subject 而非 peer 分桶）、global+route 两作用域叠加且用 plugin=route-quota / edge-quota 的拒绝顺序证明各自计费一次。
+- metrics TLS：新增 bootstrap/inbound_tls.rs 承载 tls 块的解析与配对（resolve 收字段前缀，http.listeners[N].tls 与 metrics.tls 各报各的字段），删除 bootstrap/http/listener.rs；nico-http 把私有 tls_settings 变成 pub listener_tls(identity, ListenerAlpn)，数据面传 Http2Or1（行为不变）、自报面传 Http1，nico-server 不再直接使用任何 Pingora TLS 类型。
+- metrics 装配：service() 可失败，有 tls 时 add_tls_with_settings、否则 add_tcp；server.rs 把构建失败并入 FAILURE_EXIT_CODE 出口并记录 metrics.tls；新增 E2E tests/metrics_tls.rs 钉住 TLS 抓取 /metrics 与 /health/ready、h2+h1 客户端协商到 http/1.1、明文探针拿不到任何 HTTP 响应，以及证书在 bootstrap 之后被删时的启动失败用例。
+- 文档与 spec 同步：README（示例/要点/可观测性）、config/bootstrap.yaml、deploy/bootstrap.yaml（样例保持明文）、docs/nginx-migration.md；spec 四件（directory-structure 的 bootstrap 清单、logging-guidelines 的自报面契约、pingora-guidelines 的签名与 ALPN 表、error-handling 的启动错误字段）。
+- 依赖：nico-http 增加 dev-dependency tokio-rustls（工作区已固定、已在依赖图中，Cargo.lock 只多一条边），用来用真实握手断言 ALPN，而不是对 set_alpn 的注释断言。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `712586a` | docs(config): map nginx onto nico's resources and name the behaviour changes |
+| `1bc3e1c` | test(plugins): pin the global bucket's subject key and the layered scopes |
+| `25c5df8` | feat(metrics): terminate TLS on the self-reporting listener |
+| `0d44834` | docs(spec): record the shared inbound TLS builder and the metrics transport |
+
+### Testing
+
+- [OK] 本地完整 pre-push 闸门在本树通过：nightly fmt、clippy -D warnings（workspace/all-targets/all-features）、cargo test --workspace --all-features（2023 passed / 2 ignored）、doc -D warnings、feature matrix、cargo deny check；提交时 pre-commit 闸门 475s 通过。
+- [OK] 定向：cargo test -p nico-server --test metrics_tls（1）、tls_inbound（2）、ops_surface（1）、metrics_startup（3）、deploy_config（3）；cargo test -p nico-http --lib（395，含两个真实 ALPN 握手测试）；bootstrap lib 测试 79。
+- [OK] 变异验证：ListenerAlpn 两分支互换 → 两个握手测试失败；metrics 改回 add_tcp → E2E 在握手阶段失败；server.rs 失败分支返回 SUCCESS → 启动失败测试失败；用于证明新增测试不是空转。
+- [OK] 独立 check agent 逐条核 AC1–AC6：发现并修掉两处问题（碰撞顺序测试原本用有效证书、无论顺序都会通过；E2E 头注释数字不符），修复后定向复跑与我本人复核均绿；遗留报告项：服务构建二次读失败的 ServiceBuildError 不带字段名/路径，与数据面一致。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 入站 TLS 仍无证书热加载、mTLS、SNI 多证书、同端口明文/TLS 自动识别；数据面与 metrics 同一套限制，需要时前面放代理。
+- G1–G4（rewrite/入口隔离、traffic 同请求 failover、共享限额与可信代理、通用缓冲与 header）需要真实部署场景驱动。
+- etcd 源的 TLS/认证凭据仍未暴露；DNS 每次请求只取首个解析结果、不展开多成员。
