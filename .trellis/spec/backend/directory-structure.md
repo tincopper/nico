@@ -42,11 +42,11 @@ nico/
     │   │   ├── main.rs         # thin: parse args, call lib::run, map error to exit code
     │   │   ├── lib.rs          # //! doc + pub fn run(...); makes wiring integration-testable
     │   │   ├── bootstrap.rs
-    │   │   ├── bootstrap/      # http.rs (the listener list), http/listener.rs (one entry's identity, read + paired), proxy.rs (upstream trust roots), runtime.rs (the process knobs), source.rs (the acquisition subsystem), metrics.rs (collision against the address set), tls.rs (root source + bundle check)
+    │   │   ├── bootstrap/      # http.rs (the listener list), inbound_tls.rs (one `tls` block: read + paired, the single implementation behind both a listener entry and the metrics section), proxy.rs (upstream trust roots), runtime.rs (the process knobs), source.rs (the acquisition subsystem), metrics.rs (the address, the collision against the data plane's set, and the optional TLS transport), tls.rs (root source + bundle check)
     │   │   ├── reload.rs       # watch loop, debounce, single flight, one publication
     │   │   ├── reload/         # error.rs, pacing.rs, publish.rs, startup.rs (one concern each)
     │   │   ├── metrics.rs      # transport: port preflight, recorder install, the assembly step
-    │   │   ├── metrics/        # app.rs (ServeHttp adapter), listener.rs (one Pingora service)
+    │   │   ├── metrics/        # app.rs (ServeHttp adapter), listener.rs (one Pingora service: plaintext, or TLS built by nico-http's listener_tls with an http/1.1-only ALPN offer)
     │   │   ├── llm.rs          # the LLM plan one document compiles into
     │   │   └── llm/            # credentials.rs (a `credential_ref` read once per publication), error.rs (LlmBuildError), plan.rs (per-route front-ends, the phase/mode checks), runtime.rs (registries + resolver, created once per process)
     │   └── tests/              # integration tests reach the wiring through lib.rs

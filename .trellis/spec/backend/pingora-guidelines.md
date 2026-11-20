@@ -66,6 +66,13 @@ pub fn validate_server_identity(cert_pem: &[u8], key_pem: &[u8])
     -> Result<(), ServerIdentityError>;
 pub enum ServiceBuildError { /* read, identity, TLS settings */ }
 
+// nico-http::service — the one inbound TLS policy. Two listeners go through it: the data plane's TLS
+// entries and the self-reporting surface. They differ only in the ALPN offer, and neither assembles
+// TLS parameters of its own.
+pub enum ListenerAlpn { Http1, Http2Or1 }
+pub fn listener_tls(identity: &InboundTls, alpn: ListenerAlpn)
+    -> Result<TlsSettings, ServiceBuildError>;
+
 // nico-http — the one published value the request path reads
 pub struct HttpState {
     /* snapshot, and the plan compiled from its document: global chain, per-route chains, buffered routes */
@@ -223,16 +230,18 @@ type, no I/O), `upstream/tls/adapter.rs` (the only writer of Pingora's TLS confi
 
 ### Inbound TLS
 
-A `tls` block on an `http.listeners[]` entry turns **that** listener into a rustls endpoint. It is the
-listener's identity, not the upstream trust roots: `proxy.tls.ca_file` governs outbound handshakes
-only, and the two are different fields of different sections because they are different directions.
+A `tls` block on an `http.listeners[]` entry — or on the `metrics` section — turns **that** listener
+into a rustls endpoint. It is the listener's identity, not the upstream trust roots:
+`proxy.tls.ca_file` governs outbound handshakes only, and the two are different fields of different
+sections because they are different directions.
 
 | Fact | Consequence |
 |---|---|
 | an entry with a `tls` block is `Listener::Tls`; an entry without one is `Listener::Plain` | the variant **is** the transport decision, so "one listener, one transport" is a type-level fact rather than a rule a resolver has to remember. `h2c` applies to the plaintext variants and cannot reach a TLS one |
-| bootstrap reads both files and calls `validate_server_identity` before the listener exists | an unreadable, unparseable or mismatched pair is a startup refusal naming `http.listeners[N].tls.cert_file` / `.key_file`, never the first request's failure. `N` is the entry's position: it is the only name a listener has before it is bound |
+| bootstrap reads both files and calls `validate_server_identity` before the listener exists | an unreadable, unparseable or mismatched pair is a startup refusal naming `http.listeners[N].tls.cert_file` / `.key_file` — or `metrics.tls.cert_file` / `.key_file` for the metrics section — never the first request's failure. `N` is the entry's position: it is the only name a listener has before it is bound |
 | `service()` returns `Result`; for every TLS entry it re-reads and re-validates the pair, then hands Pingora a `StaticCertResolver` holding the already-built `CertifiedKey` | Pingora's `TlsSettings::build` would load paths again and `panic!` on a changed/mismatched pair. The resolver means `build` performs no file I/O; a post-check change is a clean `ServiceBuildError`. One broken entry fails the whole assembly, because a process that bound half its listeners is not a smaller version of itself |
-| `TlsSettings::enable_h2()` per TLS entry | ALPN offers `h2` and `http/1.1`; TLS 1.2/1.3 are the rustls defaults with `tls12` enabled. There is no TLS 1.0/1.1 |
+| the ALPN offer is the listener's: `ListenerAlpn::Http2Or1` (data plane) calls `enable_h2()`, `ListenerAlpn::Http1` (self-reporting surface) calls `set_alpn(ALPN::H1)` | the data plane offers `h2` and `http/1.1`; the metrics listener offers `http/1.1` only, because scrapers and probes need nothing else. TLS 1.2/1.3 are the rustls defaults with `tls12` enabled; there is no TLS 1.0/1.1 |
+| the same block and the same builder serve the `metrics` section | `metrics.tls` makes the self-reporting socket terminate TLS through `listener_tls(.., ListenerAlpn::Http1)`; an omitted block keeps it plaintext, and a written-but-unusable one is a startup refusal — never a plaintext fallback. Its refusals name `metrics.tls.cert_file` / `.key_file`; a failure at service build exits with `FAILURE_EXIT_CODE` like the data plane |
 | one certificate per entry, no client auth, SNI ignored | `StaticCertResolver` returns the same identity for every ClientHello. SNI-based selection and mTLS are separate features |
 | certificate/key changes | restart required; there is no file watcher or hot swap |
 | `x-forwarded-proto` comes from the connection: `session.digest().ssl_digest.is_some()` decides `https` vs `http`, and an existing client value is neither replaced nor appended to | a process-level flag would be a lie the moment two listeners have two transports. `Digest::ssl_digest` is written when the connection is established (`v1/server.rs:170`), and the immutable `digest()` is `Some` on both protocols (H1 `protocols/http/server.rs:849`, H2 `v2/server.rs:939-941`); a `None` digest — the subrequest/custom path this build does not use — is defended as plaintext |
@@ -367,7 +376,7 @@ streaming response's declared length either.
 | upstream host does not resolve | `502 upstream_unreachable` |
 | `scheme: https` and the handshake fails (certificate not trusted, hostname mismatch, protocol error) | `502 upstream_unreachable` — refused, never a plaintext downgrade; the typed cause stays in the request record |
 | a TLS handshake that spends the connect deadline (`TLSHandshakeTimedout`, or `ConnectTimedout` raised on the handshake) | `504 upstream_timeout`, the same path as every other timeout |
-| a `http.listeners[N].tls` block whose `cert_file`/`key_file` is missing, unreadable or not a matching identity | startup refusal naming `http.listeners[N].tls.cert_file` / `.key_file`; no listener is bound |
+| a `http.listeners[N].tls` or `metrics.tls` block whose `cert_file`/`key_file` is missing, unreadable or not a matching identity | startup refusal naming that block's `.cert_file` / `.key_file`; no listener is bound |
 | `http.h2c: true` with no plaintext entry | startup refusal with `http.h2c`: the flag applies to plaintext listeners and there is none |
 | TLS identity changes after bootstrap validation | `service()` returns `ServiceBuildError`; the process exits with `FAILURE_EXIT_CODE`, no panic |
 | plaintext request to a TLS listener | TLS handshake failure/close; no HTTP response, no request record |

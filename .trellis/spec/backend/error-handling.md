@@ -309,12 +309,15 @@ status). `nico-core` must never contain `StatusCode` or any wire-level detail.
 An inbound listener's certificate and key are a **startup configuration fact**, not a request path
 failure. `nico-http::validate_server_identity` returns `ServerIdentityError` (certificate PEM, key
 PEM, empty chain, missing/unsupported key, pair mismatch); `nico-server` maps it to
-`BootstrapError::InvalidField` under `http.listeners[N].tls.cert_file` or
-`http.listeners[N].tls.key_file`. `N` is the entry's position in the section: before it is bound, a
-listener's only name is where the operator wrote it. The data plane repeats the read and check in
-`service()`, for every `Listener::Tls` entry, because Pingora's path-based TLS loader would panic on
-a file that changed after the bootstrap check; a failed repeat is `ServiceBuildError` and the process
-exits with `FAILURE_EXIT_CODE`.
+`BootstrapError::InvalidField` under `http.listeners[N].tls.cert_file` / `.key_file`, or under
+`metrics.tls.cert_file` / `.key_file`. `N` is the entry's position in the section: before it is bound,
+a listener's only name is where the operator wrote it; the `metrics` section has one socket and no
+index. Both blocks are parsed by the same code and resolved with the block's own dotted path, so a
+present-but-empty block names a missing file instead of degrading to plaintext. The service that
+binds the socket repeats the read and check — `service()` for every `Listener::Tls` entry, and the
+metrics listener's own `service()` — because Pingora's path-based TLS loader would panic on a file
+that changed after the bootstrap check; a failed repeat is `ServiceBuildError` and the process
+refuses to start (`FAILURE_EXIT_CODE`).
 
 Rules:
 

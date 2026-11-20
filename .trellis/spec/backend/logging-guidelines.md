@@ -295,7 +295,17 @@ an unconfigured process behaves exactly as it did before the surface existed.
 ```yaml
 metrics:                # optional; omitting the section keeps the surface off
   listen: 127.0.0.1:9090
+  # tls:                # optional; present means this socket terminates TLS and serves nothing else
+  #   cert_file: /etc/nico/tls/fullchain.pem
+  #   key_file: /etc/nico/tls/key.pem
 ```
+
+The socket is plaintext by default. A `tls` block — the same block an `http.listeners[]` entry
+carries, read by the same code — makes it terminate TLS with one certificate loaded at startup,
+offering `http/1.1` only over ALPN: scrapers and probes need nothing else, and a second protocol would
+be an untested path on the surface whose job is to answer reliably. The TLS parameters are built by
+`nico_http::listener_tls`, the one definition both surfaces share; `nico-server` decides only whether
+a socket terminates TLS and with which ALPN offer.
 
 | Endpoint | Answer |
 |---|---|
@@ -361,8 +371,13 @@ volume — but it does mean a series lives for the process lifetime.
   is the worst answer an operator can be given.
 - A `metrics` section without `listen`, an unparseable address, or one equal to any
   `http.listeners[]` address is a startup failure naming `metrics.listen`.
-- The assembly logs one line either way — the address when enabled, `metrics surface disabled` when
-  not — so nobody has to guess why a scrape fails.
+- A written `tls` block whose certificate or key is missing, unreadable, unparseable or not a pair is
+  a startup failure naming `metrics.tls.cert_file` / `metrics.tls.key_file`. An empty block is that
+  failure, never a fallback to plaintext, and the identity is read again when the listener is built —
+  so a file that changed between the bootstrap check and the bind is the same refusal, not a panic
+  inside Pingora's loader.
+- The assembly logs one line either way — the address and `metrics.tls` when enabled,
+  `metrics surface disabled` when not — so nobody has to guess why a scrape fails.
 - Per-request access logging is deliberately absent: a probe every few seconds would be a self-
   inflicted flood. Only a failure is logged.
 - LLM usage metrics count only **provider-reported** token buckets, never a gateway estimate: the
