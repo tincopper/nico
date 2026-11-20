@@ -32,7 +32,7 @@ use super::{
     upstream::Upstream,
 };
 
-/// Inclusive upper bound for a route-level or provider-level `timeout_ms`.
+/// Inclusive upper bound for a route-level `timeout_ms`.
 const MAX_TIMEOUT_MS: u32 = 600_000;
 
 /// Inclusive upper bound for `routes[].ttft_timeout_ms`.
@@ -162,9 +162,6 @@ fn validate_provider(provider: &Provider) -> Result<(), DocumentError> {
         ));
     }
 
-    if let Some(timeout_ms) = provider.timeout_ms() {
-        validate_timeout("providers[].timeout_ms", timeout_ms)?;
-    }
     if provider.max_output_tokens() == Some(0) {
         return Err(DocumentError::LimitOutOfRange {
             field: "providers[].max_output_tokens",
@@ -337,7 +334,7 @@ fn validate_path_prefix(prefix: &str) -> Result<(), DocumentError> {
     Ok(())
 }
 
-/// Checks a route-level or provider-level timeout.
+/// Checks a route-level timeout.
 fn validate_timeout(field: &'static str, timeout_ms: u32) -> Result<(), DocumentError> {
     validate_timeout_bound(field, timeout_ms, MAX_TIMEOUT_MS)
 }

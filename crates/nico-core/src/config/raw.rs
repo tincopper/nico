@@ -66,7 +66,6 @@ pub(super) struct RawProvider {
     /// imposes none; `0` is refused by semantic validation, because a ceiling of zero is not a
     /// ceiling. A request that sets its own limit always wins.
     pub(super) max_output_tokens: Option<u32>,
-    pub(super) timeout_ms: Option<u32>,
     /// The endpoint's failure budget. Absent and partially written entries take the built-in
     /// defaults; a `failure_threshold` of `0` is the one spelling for "never break this provider",
     /// so the section cannot mean "absent" and mean that too.

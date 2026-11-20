@@ -79,7 +79,6 @@ pub struct Provider {
     pub(super) model_allowlist: Vec<String>,
     pub(super) model_map: BTreeMap<String, String>,
     pub(super) max_output_tokens: Option<u32>,
-    pub(super) timeout_ms: Option<u32>,
     pub(super) circuit_breaker: CircuitBreaker,
 }
 
@@ -129,8 +128,8 @@ impl Provider {
     ///
     /// A caller writes the left-hand name; the provider adapter sends the right-hand name. An empty
     /// map means the caller's name is sent unchanged. The map renames only: anything else that
-    /// differs between two endpoints (base URL, credential, timeouts) is a second provider entry,
-    /// because those are properties of the endpoint rather than of one request.
+    /// differs between two endpoints (base URL, credential) is a second provider entry, because
+    /// those are properties of the endpoint rather than of one request.
     #[must_use]
     pub fn model_map(&self) -> &BTreeMap<String, String> {
         &self.model_map
@@ -146,12 +145,6 @@ impl Provider {
     #[must_use]
     pub const fn max_output_tokens(&self) -> Option<u32> {
         self.max_output_tokens
-    }
-
-    /// Returns the provider-level timeout in milliseconds, when the document sets one.
-    #[must_use]
-    pub const fn timeout_ms(&self) -> Option<u32> {
-        self.timeout_ms
     }
 
     /// Returns the endpoint's circuit-breaker parameters.

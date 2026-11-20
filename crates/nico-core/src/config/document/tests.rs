@@ -107,7 +107,6 @@ routes:
             provider.model_map().is_empty(),
             "without a map the caller's model name is sent unchanged"
         );
-        assert_eq!(provider.timeout_ms(), None);
         assert_eq!(
             provider.max_output_tokens(),
             None,

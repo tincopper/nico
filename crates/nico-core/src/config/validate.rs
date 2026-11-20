@@ -82,7 +82,6 @@ pub(super) fn assemble(
             model_allowlist: raw.model_allowlist.unwrap_or_default(),
             model_map: raw.model_map.unwrap_or_default(),
             max_output_tokens: raw.max_output_tokens,
-            timeout_ms: raw.timeout_ms,
             // Every provider carries a breaker: an absent or partially written section takes the
             // built-in defaults, and an explicit `failure_threshold` of `0` disables it. The default
             // is materialized here rather than left to the consumer, so "what a provider that wrote

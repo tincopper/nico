@@ -138,3 +138,32 @@ routes: []
     assert_eq!(breaker.failure_threshold(), 5);
     assert_eq!(breaker.cooldown_ms(), 60_000);
 }
+
+#[test]
+fn parse_refuses_a_provider_level_timeout() {
+    // No endpoint timeout is served: the attempt budget belongs to the route and the request, so a
+    // provider entry cannot tighten it. The field is refused here rather than accepted and ignored —
+    // an operator who wrote a limit must not be told, by a successful publication, that it is in
+    // force.
+    let document = "\
+apiVersion: gateway/v1
+request:
+  max_body_bytes: 1048576
+  timeout_ms: 30000
+plugins: []
+providers:
+  - name: openai-primary
+    kind: openai
+    base_url: https://api.openai.com
+    credential_ref: env:OPENAI_API_KEY
+    timeout_ms: 5000
+upstreams: []
+routes: []
+";
+    let error = Document::parse(document.as_bytes(), ParseLimits::new(4096))
+        .expect_err("a provider-level timeout has no consumer");
+    assert!(
+        matches!(error, DocumentError::Yaml { .. }),
+        "expected Yaml error for the unknown field, got {error:?}"
+    );
+}

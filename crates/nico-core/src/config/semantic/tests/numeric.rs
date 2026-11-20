@@ -37,26 +37,6 @@ fn a_route_timeout_above_ten_minutes_is_rejected() {
 }
 
 #[test]
-fn a_zero_provider_timeout_is_rejected() {
-    let providers = format!(
-        "{}    timeout_ms: 0\n",
-        provider_entry("https://api.openai.com", "env:OPENAI_API_KEY")
-    );
-    let error = parse(&document(&providers, NO_ENTRIES, NO_ENTRIES))
-        .expect_err("a zero timeout is not a timeout");
-    assert!(
-        matches!(
-            error,
-            DocumentError::LimitOutOfRange {
-                field: "providers[].timeout_ms",
-                value: 0
-            }
-        ),
-        "expected LimitOutOfRange for providers[].timeout_ms, got {error:?}"
-    );
-}
-
-#[test]
 fn a_zero_provider_max_output_tokens_is_rejected() {
     // A ceiling of zero is not a ceiling: it would ask the endpoint for answers it cannot produce.
     // The request path already carries the value as a `NonZeroU32`, so this is the only place the
