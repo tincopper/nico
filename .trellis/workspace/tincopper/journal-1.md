@@ -523,3 +523,38 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 ### Next Steps
 
 - 按报告 D1/D2 修正 config/resources.yaml 的 30000/120000 示例与全局身份措辞，再补 D3 策略矩阵；另列 provider timeout 消费核查
+
+
+## Session 14: 审查结论落地：文档语义修正与无消费者字段收口
+<!-- trellis-session: v=2 fp=171073e86ada49d3 -->
+
+**Date**: 2026-11-20
+**Task**: 审查结论落地：文档语义修正与无消费者字段收口
+**Branch**: `main`
+
+### Summary
+
+把 nginx 资源审查的文档类建议落成代码库事实：README 与 config/resources.yaml 按 D1—D6 修正（总预算与路由超时的 clamp/拒绝之分、平面路由不靠顺序覆盖、listener 不参与选择、前缀不剥离、策略是否消费 weight、插件作用域与 enabled、限流桶键与跨路由共享、buffers_body 只扣 body、convert 非流式缓冲、api_key 显式 authorization 语义）。随后按方案 A 收口 providers[].timeout_ms：该字段被解析和范围校验却无运行时消费者，现从 schema 移除，改为发布期未知字段拒绝，并补解析期负例测试。
+
+### Main Changes
+
+- docs(config)：README 与 config/resources.yaml 语义修正；fix(config)：nico-core 删除 RawProvider/Provider.timeout_ms、validate 搬运、semantic 校验与访问器，document/tests/providers.rs 新增 parse_refuses_a_provider_level_timeout
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5373487` | docs(config): state the real limits, routing and plugin scope |
+| `83ca9fc` | fix(config): refuse the provider-level timeout that no consumer served |
+
+### Testing
+
+- [OK] cargo test --workspace --all-features --locked：2010 passed / 2 ignored / 77 suites；fmt、clippy -D warnings、cargo doc -D warnings、--all-features 与 --no-default-features check、role_traffic 3 passed
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- G1—G4（rewrite/入口隔离、traffic 同请求 failover、共享限额与可信代理、通用缓冲与 header）等项目需要真实部署场景驱动；已发布但仅由调用链推出的 global auth→subject 限流可先用一个 E2E 钉住

@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 13
-- **Last Active**: 2026-11-18
+- **Total Sessions**: 14
+- **Last Active**: 2026-11-20
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~525 | Active |
+| `journal-1.md` | ~560 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 14 | 2026-11-20 | 审查结论落地：文档语义修正与无消费者字段收口 | `5373487`, `83ca9fc` | `main` |
 | 13 | 2026-11-18 | 资源配置 nginx 对齐审查：19 项对应、9 个反例与后续边界 | `e1c1fc3` | `main` |
 | 12 | 2026-11-18 | bootstrap 配置对齐 nginx：runtime / listeners[] / proxy.tls 落地并归档 | `785fab0`, `c8e998d`, `8ec1fd3` | `main` |
 | 11 | 2026-11-17 | 入站 TLS 收尾：rustls 终止落地并归档 | `c35a379` | `main` |
