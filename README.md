@@ -797,3 +797,6 @@ scripts/gates/       git hook 背后的检查
   ALPN h2+h1），证书/私钥变更需重启；明文条目与 TLS 条目可以在同一份配置里并存（即 nginx
   `listen 443 ssl` 的形状）。证书热加载/轮换、mTLS、SNI 多证书、同一端口上自动识别明文与 TLS
   暂未实现；需要这些能力时仍在前面放代理。上游方向直接支持 `https`（见 `proxy.tls.ca_file`）。
+
+从 nginx 迁移的逐项对照、会改变请求行为的写法和检查清单见
+[`docs/nginx-migration.md`](docs/nginx-migration.md)。
