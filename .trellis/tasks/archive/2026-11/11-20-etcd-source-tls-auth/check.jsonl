@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "quality gates and the file budget the checker enforces"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "error field names, category and secret-leak rules to verify"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "config-source semantics that must be unchanged by the new transport"}
+{"file": ".trellis/tasks/11-20-etcd-source-tls-auth/prd.md", "reason": "acceptance criteria verified item by item"}
+{"file": ".trellis/tasks/11-20-etcd-source-tls-auth/design.md", "reason": "invariants and contracts to check against the diff"}

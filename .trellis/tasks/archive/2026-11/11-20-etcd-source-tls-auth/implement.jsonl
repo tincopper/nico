@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "the config-store contract: source protocol, revision/watch semantics and the LKG cache rules this change must not disturb"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "startup error field naming, category mapping and the no-secrets-in-Display rule"}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "module boundaries for the bootstrap split, nico-config-etcd ownership, and the file budget"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "toolchain gates, testing conventions and the feature-matrix requirement this task must satisfy"}
+{"file": ".trellis/tasks/11-20-etcd-source-tls-auth/design.md", "reason": "the chosen schema, scheme matrix, API shape and rejected alternatives"}
+{"file": ".trellis/tasks/11-20-etcd-source-tls-auth/implement.md", "reason": "ordered execution steps with their validation commands"}
