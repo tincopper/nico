@@ -45,7 +45,10 @@ use crate::{
     llm::{LlmRoute, LlmRoutes},
     plugin::PluginChain,
     quota::{BudgetStore, InProcessBudgetStore},
-    upstream::pools::{SelectionTable, UpstreamPools},
+    upstream::{
+        dns::ExpandedMembers,
+        pools::{SelectionTable, UpstreamPools},
+    },
 };
 
 /// The configuration one generation serves requests from.
@@ -219,18 +222,25 @@ impl HttpStateHandle {
     /// guessed. A document with no provider route compiles to an empty plan, not to a missing one —
     /// which is why there is no two-argument overload that supplies
     /// [`NoLlmRoutes`](crate::llm::NoLlmRoutes) for you.
+    ///
+    /// `members` is the publication's DNS expansion ([`expand_members_with`](crate::expand_members_with)),
+    /// resolved for `snapshot`'s document before this call: a hostname endpoint contributes one
+    /// member per resolved address. Publishing a member list from another publication's resolution
+    /// would pair a route table with machines that do not belong to it, which is the same
+    /// cross-generation mistake this method exists to prevent.
     pub fn publish_with_llm(
         &self,
         snapshot: Arc<RuntimeSnapshot>,
         chains: PublishedChains,
         llm: Arc<dyn LlmRoutes>,
+        members: &ExpandedMembers,
     ) {
-        // The member table is built from the same document, before the state is stored, so the
-        // generation a request reads is never missing the members it names. A request that read the
-        // previous generation keeps selecting from its own list: that table is still alive through
-        // its `HttpState`, which is what makes an in-flight selection and its document one
-        // generation.
-        let selection = self.pools.publish(snapshot.document());
+        // The member table is built from the same document and the same expansion, before the state
+        // is stored, so the generation a request reads is never missing the members it names. A
+        // request that read the previous generation keeps selecting from its own list: that table is
+        // still alive through its `HttpState`, which is what makes an in-flight selection and its
+        // document one generation.
+        let selection = self.pools.publish(snapshot.document(), members);
         self.current.store(Some(Arc::new(HttpState {
             snapshot,
             policies: chains,

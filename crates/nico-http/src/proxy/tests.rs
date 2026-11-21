@@ -27,7 +27,7 @@ use crate::{
     context::HttpContext,
     error::HttpError,
     test_support::{document_with, request_to, snapshot},
-    upstream::{self, Destination, pools::UpstreamPools},
+    upstream::{self, Destination, dns::ExpandedMembers, pools::UpstreamPools},
 };
 
 const ROUTE: &str = concat!(
@@ -66,7 +66,9 @@ fn started(snapshot: Arc<RuntimeSnapshot>, path: &str) -> (HttpContext, Instant)
     ctx.begin(&snapshot, &request_to("example.test", path), now);
     // The publication a request reads also carries the members its upstreams select from; a test
     // context built from a snapshot alone gets the one-member list that document describes.
-    ctx.set_selection(UpstreamPools::default().publish(snapshot.document()));
+    ctx.set_selection(
+        UpstreamPools::default().publish(snapshot.document(), &ExpandedMembers::default()),
+    );
     ctx.bind_route(route);
     (ctx, now)
 }
@@ -150,7 +152,10 @@ fn an_upstream_with_no_published_member_is_refused_rather_than_guessed() {
     // A generation that published no member for the upstream the route names. Unreachable through a
     // document — an empty `endpoints` list is refused — and the answer is still the refusal, not an
     // attempt against an address nothing named.
-    ctx.set_selection(UpstreamPools::default().publish(&document_with("  []", "  []")));
+    ctx.set_selection(
+        UpstreamPools::default()
+            .publish(&document_with("  []", "  []"), &ExpandedMembers::default()),
+    );
 
     let error = destination(&mut ctx).expect_err("nothing is available to select");
 

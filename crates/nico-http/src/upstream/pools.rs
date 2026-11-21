@@ -47,7 +47,7 @@ use std::{
 use nico_core::{Document, Ejection, Scheme, Strategy, Upstream};
 use nico_lb::{Members, Picker, View};
 
-use super::Destination;
+use super::{Destination, dns::ExpandedMembers};
 
 pub(crate) mod health;
 pub(crate) mod member;
@@ -70,16 +70,27 @@ pub(crate) struct UpstreamPools {
 impl UpstreamPools {
     /// Builds the table one publication serves from, inheriting state by member identity.
     ///
-    /// Called once per successful publication, on the publishing thread. It is the only writer of the
-    /// store, which is why a plain lock is enough and why the returned table can be immutable.
-    pub(crate) fn publish(&self, document: &Document) -> Arc<SelectionTable> {
+    /// `expanded` is the publication's resolved hostname members (see
+    /// [`dns`](super::dns)): a hostname endpoint contributes one member per resolved address, a
+    /// literal endpoint keeps its own. Called once per successful publication, on the publishing
+    /// thread. It is the only writer of the store, which is why a plain lock is enough and why the
+    /// returned table can be immutable.
+    pub(crate) fn publish(
+        &self,
+        document: &Document,
+        expanded: &ExpandedMembers,
+    ) -> Arc<SelectionTable> {
         let mut previous = self.lock();
         let mut history = HashMap::with_capacity(document.upstreams().len());
         let mut table = HashMap::with_capacity(document.upstreams().len());
         for upstream in document.upstreams() {
             let key: Arc<str> = Arc::from(upstream.name());
             let inherited = previous.get(&key).map(Arc::clone);
-            let state = Arc::new(UpstreamState::inherit(upstream, inherited.as_deref()));
+            let state = Arc::new(UpstreamState::inherit(
+                upstream,
+                inherited.as_deref(),
+                expanded,
+            ));
             history.insert(Arc::clone(&key), Arc::clone(&state));
             table.insert(key, state);
         }
@@ -182,31 +193,56 @@ impl UpstreamState {
     /// Builds the state one publication serves from, inheriting the previous state where it may.
     ///
     /// Inheritance is decided per member, on the whole identity: the shared [`MemberState`] comes with
-    /// a member whose identity is unchanged and starts fresh otherwise. The picker is carried across
-    /// by its own rule ([`Picker::inherit`]), which is the same decision seen from the strategy's side
-    /// — but only when the strategy itself is unchanged, because a picker of one kind cannot inherit
-    /// the state of another.
-    fn inherit(upstream: &Upstream, previous: Option<&Self>) -> Self {
+    /// a member whose identity is unchanged and starts fresh otherwise. A hostname endpoint's
+    /// expansion contributes one member per resolved address — same name and weight, address is the
+    /// machine — so a name that resolves differently between publications inherits per machine, and
+    /// an address that stopped resolving leaves the rotation with its member. The picker is carried
+    /// across by its own rule ([`Picker::inherit`]), which is the same decision seen from the
+    /// strategy's side — but only when the strategy itself is unchanged, because a picker of one kind
+    /// cannot inherit the state of another.
+    fn inherit(upstream: &Upstream, previous: Option<&Self>, expanded: &ExpandedMembers) -> Self {
         let endpoints = upstream.endpoints();
         let previous_members = previous.map_or(&[][..], |state| state.members.list());
-        let mut members = Vec::with_capacity(endpoints.len());
-        for endpoint in endpoints {
-            let id = MemberId::of(endpoint);
+        // One spec per *member*, not per endpoint: the expansion's address list is what decides the
+        // member count, and a literal endpoint is its own single member.
+        let specs: Vec<(MemberId, u16)> = endpoints
+            .iter()
+            .flat_map(
+                |endpoint| match expanded.addresses(upstream.name(), endpoint.name()) {
+                    Some(addresses) => addresses
+                        .iter()
+                        .map(|address| {
+                            (
+                                MemberId::new(
+                                    Arc::from(endpoint.name()),
+                                    Arc::clone(address),
+                                    endpoint.port(),
+                                ),
+                                endpoint.weight(),
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                    None => vec![(MemberId::of(endpoint), endpoint.weight())],
+                },
+            )
+            .collect();
+        let mut members = Vec::with_capacity(specs.len());
+        for (id, weight) in &specs {
             let inherited = previous_members
                 .iter()
-                .position(|member| member.state().id() == &id);
+                .position(|member| member.state().id() == id);
             let state = match inherited {
                 Some(old) => Arc::clone(&previous_members[old].state),
-                None => Arc::new(MemberState::new(id)),
+                None => Arc::new(MemberState::new(id.clone())),
             };
             members.push(Member {
                 state,
-                weight: endpoint.weight(),
+                weight: *weight,
             });
         }
-        let names: Vec<Arc<str>> = endpoints
+        let names: Vec<Arc<str>> = specs
             .iter()
-            .map(|endpoint| Arc::from(endpoint.name()))
+            .map(|(id, _weight)| Arc::clone(id.name_handle()))
             .collect();
         let picker = Self::inherit_picker(upstream.strategy(), previous, &names);
         Self {

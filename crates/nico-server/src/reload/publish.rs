@@ -25,7 +25,7 @@ use nico_config::{CacheMeta, ConfigVersion};
 use nico_core::{
     ConfigDigest, ErrorCategory, Generation, Revision, RevisionOrdering, RuntimeSnapshot,
 };
-use nico_http::PublishedChains;
+use nico_http::{ExpandedMembers, PublishedChains, expand_members_with};
 
 use super::{Reloader, pacing::unix_now};
 use crate::reload::LlmFrontEnds;
@@ -179,6 +179,17 @@ impl Reloader {
             Err(outcome) => return Ok(outcome),
         };
 
+        // The member addresses are resolved outside the compile histogram: DNS is I/O, not CPU, and
+        // an operator tuning `config_compile_seconds` should not be pointed at a resolver. A
+        // hostname that cannot be answered refuses the candidate with its field named, and the
+        // last-known-good snapshot keeps serving — the same shape as every other stage refusal.
+        let members = match expand_members_with(&document, &self.member_dns).await {
+            Ok(members) => members,
+            Err(error) => {
+                return Ok(self.refuse(&error, error.category(), "members", &version));
+            }
+        };
+
         let generation = self.generation.next()?;
         let llm_routes = llm.route_count();
         self.publish_state(
@@ -191,6 +202,7 @@ impl Reloader {
             )),
             plan,
             llm,
+            &members,
         );
         self.handle.mark_ready();
         // `mark_ready` clears `degraded`, which a stale snapshot must keep; it does not clear
@@ -224,8 +236,9 @@ impl Reloader {
     /// `plan` and `llm` are compiled from `snapshot`'s document; passing a plan from another generation
     /// would pair a route table with policies that do not belong to it, which is the one thing
     /// [`HttpStateHandle`] exists to prevent. `plan` carries the global chain, the per-route chains and
-    /// the buffered route set together, `llm` the front-ends of every provider route, so the request
-    /// path can never read one of them from an older publication.
+    /// the buffered route set together, `llm` the front-ends of every provider route, and `members`
+    /// the document's resolved hostname members, so the request path can never read one of them from
+    /// an older publication.
     ///
     /// [`HttpStateHandle`]: nico_http::HttpStateHandle
     pub(super) fn publish_state(
@@ -233,12 +246,14 @@ impl Reloader {
         snapshot: Arc<RuntimeSnapshot>,
         plan: PublishedChains,
         llm: Arc<dyn LlmFrontEnds>,
+        members: &ExpandedMembers,
     ) {
         self.handle.store(Arc::clone(&snapshot));
         // Keep a handle on the plan so the report can be emitted after the store, which is the only
         // point at which "published" is true.
         let report = Arc::clone(&llm);
-        self.state.publish_with_llm(snapshot, plan, llm.routes());
+        self.state
+            .publish_with_llm(snapshot, plan, llm.routes(), members);
         report.log_published();
     }
 

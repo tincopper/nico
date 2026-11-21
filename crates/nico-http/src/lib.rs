@@ -136,5 +136,9 @@ pub use state::{
 };
 pub use upstream::{
     Destination,
+    dns::{
+        ExpandedMembers, MemberAnswer, MemberExpansionError, MemberResolver, expand_members_with,
+        resolver,
+    },
     tls::{BundleError, TlsPolicy, TrustRootsError, ensure_usable, validate_bundle},
 };

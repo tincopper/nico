@@ -12,6 +12,7 @@
 use std::sync::Arc;
 
 use nico_core::{ConfigDigest, Document, ErrorCategory, Generation, Revision, RuntimeSnapshot};
+use nico_http::expand_members_with;
 
 use super::{ReloadError, Reloader, publish::PublishOutcome};
 
@@ -112,6 +113,24 @@ impl Reloader {
             }
         };
 
+        // The cached document's hostname members are resolved like any other publication's: a
+        // remembered document can never be served with a member list the resolver cannot produce.
+        // The failure has no degraded form — startup is the one phase with nothing to fall back on —
+        // so the field the resolver could not answer stops the process, named.
+        let members = match expand_members_with(&document, &self.member_dns).await {
+            Ok(members) => members,
+            Err(error) => {
+                let category = error.category();
+                tracing::warn!(
+                    source = self.source.name(),
+                    error = %error,
+                    error.category = ?category,
+                    "cached configuration document has an unresolvable member address"
+                );
+                return Err(ReloadError::NotReady { category });
+            }
+        };
+
         // The generation continues where the cache left off, so a restart does not look like a
         // rollback to every observer of the status.
         let generation = Generation::new(cached.meta().generation());
@@ -135,6 +154,7 @@ impl Reloader {
             )),
             plan,
             llm,
+            &members,
         );
         self.handle.mark_stale();
         self.handle.mark_degraded(category);

@@ -39,6 +39,7 @@ use pingora::upstreams::peer::HttpPeer;
 
 use crate::error::HttpError;
 
+pub(crate) mod dns;
 pub(crate) mod pools;
 pub(crate) mod tls;
 

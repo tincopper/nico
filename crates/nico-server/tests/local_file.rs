@@ -15,11 +15,11 @@
 
 mod support;
 
-use std::{path::Path, time::Duration};
+use std::{future::Future, io, net::IpAddr, path::Path, pin::Pin, sync::Arc, time::Duration};
 
 use nico_config::{LocalConfig, LocalFileSource, WatchMode};
 use nico_core::{ConfigStatus, ParseLimits, SnapshotHandle};
-use nico_http::HttpStateHandle;
+use nico_http::{HttpStateHandle, MemberResolver};
 use nico_server::{Publication, ReloadError, ReloadLimits, ReloadSettings, Reloader};
 use tokio_util::sync::CancellationToken;
 
@@ -253,4 +253,127 @@ async fn a_missing_document_prevents_the_first_publish() {
         "a failed startup must not publish anything"
     );
     assert!(!handle.status().ready);
+}
+
+// --- DNS expansion: a hostname member is resolved once, at publication -----------------------
+
+/// A document whose one member is a hostname: what the resolver answers becomes the member list.
+const HOSTNAME_DOC: &[u8] = b"\
+apiVersion: gateway/v1
+request:
+  max_body_bytes: 1024
+  timeout_ms: 1000
+plugins: []
+providers: []
+upstreams:
+  - name: api-backend
+    scheme: http
+    host: api.example.test
+    port: 8080
+    endpoints:
+      - name: web
+        address: localhost
+routes: []
+";
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_hostname_member_resolves_at_publication() {
+    // The runner's resolver answers `localhost` with one address or two; this test does not care
+    // which, because either way the expansion produced a member list and the document published.
+    // A refused resolution would show up as `degraded` instead of a served generation.
+    let directory = tempfile::TempDir::new().expect("temporary directory");
+    let path = directory.path().join("resources.yaml");
+    write(&path, HOSTNAME_DOC);
+
+    let source = LocalFileSource::new(
+        LocalConfig::new(&path)
+            .with_max_bytes(4096)
+            .with_watch_mode(WatchMode::Notify),
+    )
+    .expect("the source configuration is valid");
+    let handle = SnapshotHandle::new();
+    let shutdown = CancellationToken::new();
+    let reloader = Reloader::new(
+        std::sync::Arc::new(source),
+        Publication::new(std::sync::Arc::clone(&handle), HttpStateHandle::new()),
+        std::sync::Arc::new(nico_plugins::PluginRuntime::new()),
+        ReloadSettings::new(
+            None,
+            ReloadLimits::new(DEBOUNCE, MAX_WAIT),
+            ParseLimits::new(4096),
+            false,
+            shutdown.clone(),
+        ),
+    );
+    let task = tokio::spawn(reloader.run());
+
+    let status = wait_for(&handle, |status| status.ready, WAIT).await;
+    assert_eq!(status.generation, 1);
+    assert!(
+        !status.degraded,
+        "a resolvable hostname member publishes, whatever the address count: {status:?}"
+    );
+
+    task.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_hostname_the_resolver_cannot_answer_refuses_the_document_and_keeps_serving() {
+    // The resolver is injected, so the refusal is a stated fact rather than a wager on what the
+    // host's resolver does with a name nobody owns: a fake-ip resolver answers every name, and
+    // would turn "unresolvable" into a published member pointing nowhere.
+    let directory = tempfile::TempDir::new().expect("temporary directory");
+    let path = directory.path().join("resources.yaml");
+    write(&path, DOC_A);
+
+    let source = LocalFileSource::new(
+        LocalConfig::new(&path)
+            .with_max_bytes(4096)
+            .with_watch_mode(WatchMode::Notify),
+    )
+    .expect("the source configuration is valid");
+    let handle = SnapshotHandle::new();
+    let shutdown = CancellationToken::new();
+    let refusing: MemberResolver = Arc::new(|_host: String, _port: u16| {
+        Box::pin(async {
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "the injected resolver answers nothing",
+            ))
+        }) as Pin<Box<dyn Future<Output = io::Result<Vec<IpAddr>>> + Send>>
+    });
+    let reloader = Reloader::new(
+        std::sync::Arc::new(source),
+        Publication::new(std::sync::Arc::clone(&handle), HttpStateHandle::new()),
+        std::sync::Arc::new(nico_plugins::PluginRuntime::new()),
+        ReloadSettings::new(
+            None,
+            ReloadLimits::new(DEBOUNCE, MAX_WAIT),
+            ParseLimits::new(4096),
+            false,
+            shutdown.clone(),
+        ),
+    )
+    .with_member_dns(refusing);
+    let task = tokio::spawn(reloader.run());
+
+    // DOC_A names no upstream, so the idle resolver is never consulted.
+    let status = wait_for(&handle, |status| status.ready, WAIT).await;
+    assert_eq!(status.generation, 1);
+
+    // A member the resolver cannot answer refuses the whole candidate: the generation does not
+    // move, and the last-known-good snapshot keeps serving its own member list.
+    replace_atomically(&path, HOSTNAME_DOC);
+    let status = wait_for(&handle, |status| status.degraded, WAIT).await;
+    assert_eq!(
+        status.generation, 1,
+        "a refused document is not a new generation"
+    );
+    assert_eq!(
+        body_limit(&handle),
+        1024,
+        "DOC_A is still the snapshot in service"
+    );
+
+    task.abort();
 }

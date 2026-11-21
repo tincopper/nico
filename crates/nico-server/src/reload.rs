@@ -40,7 +40,7 @@ use llm::builtin_llm;
 pub use llm::{LlmCompileError, LlmCompiler, LlmFrontEnds};
 use nico_config::{CacheStore, ConfigSource, ConfigSourceError, ConfigVersion, ConfigWatch};
 use nico_core::{ConfigDigest, ErrorCategory, Generation, ParseLimits, Revision, SnapshotHandle};
-use nico_http::HttpStateHandle;
+use nico_http::{HttpStateHandle, MemberResolver};
 use nico_plugins::PluginRuntime;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -158,6 +158,12 @@ pub struct Reloader {
     /// hold configuration, and a key is re-read on each publication. The traffic role supplies the
     /// no-op implementation, which refuses every provider route.
     llm: Arc<dyn LlmCompiler>,
+    /// The DNS the member expansion consults, shared by every generation for the same reason: a
+    /// publication resolves its hostname members through the same resolver the last one did. The
+    /// production value is Tokio's blocking-pool lookup; a test injects one that answers with the
+    /// addresses it states, because a resolver that wildcard-answers every name would make a
+    /// real-DNS refusal undeterminable.
+    member_dns: MemberResolver,
     cache: Option<CacheStore>,
     limits: ReloadLimits,
     parse_limits: ParseLimits,
@@ -193,6 +199,17 @@ impl Reloader {
         Self::with_llm(source, publication, runtime, builtin_llm(), settings)
     }
 
+    /// Sets the DNS the member expansion consults.
+    ///
+    /// The one seam a test needs to make a publication's resolution a stated fact: a resolver that
+    /// answers, refuses, or answers twice with one address, all without depending on what the
+    /// host's resolver does with a name nobody owns.
+    #[must_use]
+    pub fn with_member_dns(mut self, member_dns: MemberResolver) -> Self {
+        self.member_dns = member_dns;
+        self
+    }
+
     /// Creates a reloader that compiles LLM routes with `llm`.
     ///
     /// The registries and the resolver are process-wide state, so the process creates them once and
@@ -218,6 +235,7 @@ impl Reloader {
             state: requests,
             runtime,
             llm,
+            member_dns: nico_http::resolver(),
             cache,
             limits,
             parse_limits,

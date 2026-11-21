@@ -17,7 +17,12 @@ use super::{
 /// Publishes a generation that serves no LLM route, which is what an upstream-only document compiles
 /// to. The production path always has a plan; a test that wants the empty one says so.
 fn publish(handle: &HttpStateHandle, snapshot: Arc<RuntimeSnapshot>, chains: PublishedChains) {
-    handle.publish_with_llm(snapshot, chains, Arc::new(NoLlmRoutes));
+    handle.publish_with_llm(
+        snapshot,
+        chains,
+        Arc::new(NoLlmRoutes),
+        &ExpandedMembers::default(),
+    );
 }
 use crate::{
     Plugin, PluginChain, PluginEntry, PluginInfo,
@@ -27,6 +32,7 @@ use crate::{
         FakeLlmRoute, FakeLlmRoutes, LlmCalls, document, llm_context, llm_snapshot, route,
         snapshot, snapshot_with_plugins,
     },
+    upstream::dns::ExpandedMembers,
 };
 
 /// A plugin with no behaviour: only its name matters here.
@@ -341,7 +347,12 @@ fn a_provider_route_without_a_published_front_end_is_refused() {
 #[test]
 fn a_provider_route_is_served_by_the_front_end_its_generation_published() {
     let handle = HttpStateHandle::new();
-    handle.publish_with_llm(llm_snapshot(), PublishedChains::empty(), llm_plan());
+    handle.publish_with_llm(
+        llm_snapshot(),
+        PublishedChains::empty(),
+        llm_plan(),
+        &ExpandedMembers::default(),
+    );
     let state = handle.current().expect("the state is published");
 
     let front_end = llm_for_route(&state, route(state.snapshot().document(), "ai"))
@@ -382,13 +393,19 @@ fn publish_stores_no_front_end() {
 #[test]
 fn a_held_state_keeps_the_front_ends_its_generation_published() {
     let handle = HttpStateHandle::new();
-    handle.publish_with_llm(llm_snapshot(), PublishedChains::empty(), llm_plan());
+    handle.publish_with_llm(
+        llm_snapshot(),
+        PublishedChains::empty(),
+        llm_plan(),
+        &ExpandedMembers::default(),
+    );
     let held = handle.current().expect("the first state is published");
 
     handle.publish_with_llm(
         llm_snapshot(),
         PublishedChains::empty(),
         FakeLlmRoutes::empty(),
+        &ExpandedMembers::default(),
     );
 
     assert!(

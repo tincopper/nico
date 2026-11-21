@@ -342,6 +342,7 @@ upstreams:
 | 事实 | 说明 |
 |---|---|
 | 连接目标 vs 身份 | 连接去 `address:port`，`Host` 与 SNI 用 `host`。同一 vhost 背后多台机器、或同 host 多端口，都能通过证书校验 |
+| 域名成员 | `address` 写域名时，**发布期解析一次**，每个解析地址都是独立成员（逐地址健康、least_conn 与 failover）；名字与权重被每个成员继承，流量份额 ∝ 地址数 × weight。解析失败、或展开结果与其它成员撞 `address:port`，都会拒绝发布（LKG 保持服务）。请求路径不做域名查询，DNS 变更随下一次 reload 生效 |
 | endpoint 不带 `scheme` | 一个 upstream 只有一种传输方式；混协议是两台不同的服务，写两条 upstream |
 | `weight: 0` 被拒绝 | 流量层没有“只兜底”的语义，0 权重等于永不选中但它看起来像个权重 |
 | 成员数上限 | `schema_bounds.max_endpoints`（默认 64），只约束单个 upstream |
@@ -839,6 +840,9 @@ scripts/gates/       git hook 背后的检查
   等用户名密码之外的鉴权、以及配置文件热加载。tonic/hyper 栈由 feature 门控：产品二进制（默认与
   `traffic` 角色）不链接，测试构建经 dev-dependencies 使用协议替身。
 - **路由匹配**：线性扫描，无编译索引；`path_prefix` 是字节前缀，不做路径归一化。
+- **上游成员解析**：endpoint 的 `address` 写域名时，发布期解析一次并展开为逐地址成员（逐地址健康与
+  故障转移）；解析结果不做 TTL 后台重解析，DNS 变更随下一次 reload 生效。LLM provider 的 `base_url`
+  不展开——provider 目标仍是每请求首个解析地址。
 - **入站 TLS**：`http.listeners[]` 中带 `tls` 块的条目终止 TLS——单证书、启动期加载（TLS 1.2/1.3，
   ALPN h2+h1），证书/私钥变更需重启；明文条目与 TLS 条目可以在同一份配置里并存（即 nginx
   `listen 443 ssl` 的形状）。证书热加载/轮换、mTLS、SNI 多证书、同一端口上自动识别明文与 TLS

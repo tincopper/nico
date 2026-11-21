@@ -104,7 +104,7 @@ nginx 的 `reload` 起新 worker、老 worker 继续服务到连接结束。nico
 | `proxy_buffering on` | 无 | 无 | 普通响应逐 chunk 转发；只有 convert 非流式应答整体缓冲 |
 | `proxy_read_timeout 60s` | `request.timeout_ms` + route `timeout_ms` / `ttft_timeout_ms` | 条件 | nico 是"总预算 + 每次读上限"，不是"两次读之间"的独立计时 |
 | `proxy_connect_timeout` | 总预算内 | 无（字段） | 连接超时取本次请求的剩余预算 |
-| `resolver` / 动态 DNS | 每次请求解析一次，取首个结果 | 无（字段） | 不展开多地址、不做权重解析、不复用 TTL |
+| `resolver` / 动态 DNS | 发布期解析一次，展开为逐地址成员 | TTL 后台重解析、权重解析 | 逐地址健康与 failover；地址集合随 reload 更新，请求路径不做域名查询 |
 | `upstream ... keepalive 32;` | 无 | 无 | 连接复用由数据平面管理，没有公开参数 |
 | `proxy_http_version 2;` | 无 | 无 | 上游固定 HTTP/1.1 |
 | `ssl_verify_client`（mTLS） | 无 | 无 | 只有 TLS 终止 |
@@ -248,7 +248,7 @@ nginx 里把某个 `if`/`location` 注释掉只影响那一处。nico 的插件�
 | SNI 多证书 / mTLS / 证书热加载 | 无（单证书、启动期加载；数据面与 `metrics` 监听同一套规则） | 需要这些能力时前面放一层做 TLS 终止的代理；单纯给自报面加密写 `metrics.tls` 即可 |
 | 同一端口自动识别明文与 TLS | 无 | 拆成两个 listener |
 | 上游连接池调优 | 无公开参数 | — |
-| 动态 DNS（多地址、TTL、权重） | 每次请求解析取首个结果 | 用稳定的单地址（如负载均衡 VIP） |
+| 动态 DNS（TTL 后台重解析） | 不做：发布期解析一次，DNS 变更随 reload 生效 | 用稳定的单地址（如负载均衡 VIP） |
 | 上游 error_page 统一页面 | 无 | 调用方侧处理 |
 | 日志格式定制 | 无 | 采集 stderr 结构化日志后自行转换 |
 

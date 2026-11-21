@@ -17,10 +17,14 @@ use std::{
 
 use nico_core::{Document, Scheme};
 
+mod expansion;
 mod health;
 
 use super::*;
-use crate::test_support::{API_BACKEND, document_with};
+use crate::{
+    test_support::{API_BACKEND, document_with},
+    upstream::dns::ExpandedMembers,
+};
 
 /// A document whose upstreams are `upstreams` and whose routes are empty.
 fn published(upstreams: &str) -> Document {
@@ -136,7 +140,7 @@ fn upstream(table: &SelectionTable) -> &Arc<UpstreamState> {
 #[test]
 fn a_single_address_upstream_selects_its_only_member() {
     let pools = UpstreamPools::default();
-    let table = pools.publish(&published(API_BACKEND));
+    let table = pools.publish(&published(API_BACKEND), &ExpandedMembers::default());
 
     let selected = select(upstream(&table));
 
@@ -153,7 +157,7 @@ fn a_single_address_upstream_selects_its_only_member() {
 #[test]
 fn a_member_is_addressed_by_the_upstreams_logical_host() {
     let pools = UpstreamPools::default();
-    let table = pools.publish(&published(THREE_MEMBERS));
+    let table = pools.publish(&published(THREE_MEMBERS), &ExpandedMembers::default());
 
     let selected = select(upstream(&table));
 
@@ -172,7 +176,7 @@ fn a_member_is_addressed_by_the_upstreams_logical_host() {
 #[test]
 fn round_robin_walks_the_members_in_document_order() {
     let pools = UpstreamPools::default();
-    let table = pools.publish(&published(THREE_MEMBERS));
+    let table = pools.publish(&published(THREE_MEMBERS), &ExpandedMembers::default());
     let state = upstream(&table);
 
     let hosts: Vec<String> = (0..4)
@@ -185,7 +189,7 @@ fn round_robin_walks_the_members_in_document_order() {
 #[test]
 fn weighted_round_robin_follows_the_document_weights() {
     let pools = UpstreamPools::default();
-    let table = pools.publish(&published(WEIGHTED_MEMBERS));
+    let table = pools.publish(&published(WEIGHTED_MEMBERS), &ExpandedMembers::default());
     let state = upstream(&table);
 
     let hosts: Vec<String> = (0..5)
@@ -202,7 +206,7 @@ fn weighted_round_robin_follows_the_document_weights() {
 #[test]
 fn least_conn_moves_away_from_a_member_that_is_still_serving() {
     let pools = UpstreamPools::default();
-    let table = pools.publish(&published(TWO_MEMBERS));
+    let table = pools.publish(&published(TWO_MEMBERS), &ExpandedMembers::default());
     let state = upstream(&table);
 
     let first = select(state);
@@ -220,7 +224,7 @@ fn least_conn_moves_away_from_a_member_that_is_still_serving() {
 #[test]
 fn dropping_a_selection_releases_its_in_flight_count() {
     let pools = UpstreamPools::default();
-    let table = pools.publish(&published(TWO_MEMBERS));
+    let table = pools.publish(&published(TWO_MEMBERS), &ExpandedMembers::default());
     let state = upstream(&table);
 
     let selected = select(state);
@@ -237,7 +241,7 @@ fn dropping_a_selection_releases_its_in_flight_count() {
 #[test]
 fn ip_hash_keeps_one_caller_on_one_member() {
     let pools = UpstreamPools::default();
-    let table = pools.publish(&published(HASHED_MEMBERS));
+    let table = pools.publish(&published(HASHED_MEMBERS), &ExpandedMembers::default());
     let state = upstream(&table);
     let caller = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7));
 
@@ -255,7 +259,7 @@ fn ip_hash_keeps_one_caller_on_one_member() {
 #[test]
 fn ip_hash_spreads_different_callers_across_the_members() {
     let pools = UpstreamPools::default();
-    let table = pools.publish(&published(HASHED_MEMBERS));
+    let table = pools.publish(&published(HASHED_MEMBERS), &ExpandedMembers::default());
     let state = upstream(&table);
 
     let reached: BTreeSet<String> = (1..=32)
@@ -275,10 +279,10 @@ fn ip_hash_spreads_different_callers_across_the_members() {
 #[test]
 fn a_member_that_kept_its_identity_keeps_its_state() {
     let pools = UpstreamPools::default();
-    let first_table = pools.publish(&published(THREE_MEMBERS));
+    let first_table = pools.publish(&published(THREE_MEMBERS), &ExpandedMembers::default());
     let held = select(upstream(&first_table));
 
-    let second_table = pools.publish(&published(THREE_MEMBERS));
+    let second_table = pools.publish(&published(THREE_MEMBERS), &ExpandedMembers::default());
     let inherited = upstream(&second_table);
 
     assert!(
@@ -299,10 +303,10 @@ fn a_member_that_kept_its_identity_keeps_its_state() {
 #[test]
 fn a_member_whose_address_changed_starts_from_zero() {
     let pools = UpstreamPools::default();
-    let first_table = pools.publish(&published(THREE_MEMBERS));
+    let first_table = pools.publish(&published(THREE_MEMBERS), &ExpandedMembers::default());
     let held = select(upstream(&first_table));
 
-    let second_table = pools.publish(&published(MOVED_FIRST_MEMBER));
+    let second_table = pools.publish(&published(MOVED_FIRST_MEMBER), &ExpandedMembers::default());
     let moved = upstream(&second_table);
 
     assert!(
@@ -330,8 +334,8 @@ fn a_member_whose_address_changed_starts_from_zero() {
 #[test]
 fn a_removed_member_is_forgotten() {
     let pools = UpstreamPools::default();
-    pools.publish(&published(THREE_MEMBERS));
-    pools.publish(&published(API_BACKEND));
+    pools.publish(&published(THREE_MEMBERS), &ExpandedMembers::default());
+    pools.publish(&published(API_BACKEND), &ExpandedMembers::default());
 
     assert_eq!(
         pools
@@ -345,10 +349,10 @@ fn a_removed_member_is_forgotten() {
 #[test]
 fn an_added_member_starts_at_zero_while_the_others_are_inherited() {
     let pools = UpstreamPools::default();
-    let first_table = pools.publish(&published(TWO_MEMBERS));
+    let first_table = pools.publish(&published(TWO_MEMBERS), &ExpandedMembers::default());
     let held = select(upstream(&first_table));
 
-    let second_table = pools.publish(&published(THREE_MEMBERS));
+    let second_table = pools.publish(&published(THREE_MEMBERS), &ExpandedMembers::default());
     let grown = upstream(&second_table);
 
     assert!(
@@ -369,11 +373,11 @@ fn an_added_member_starts_at_zero_while_the_others_are_inherited() {
 #[test]
 fn the_rotation_position_survives_a_publication() {
     let pools = UpstreamPools::default();
-    let first_table = pools.publish(&published(THREE_MEMBERS));
+    let first_table = pools.publish(&published(THREE_MEMBERS), &ExpandedMembers::default());
     let first = select(upstream(&first_table));
     let second = select(upstream(&first_table));
 
-    let second_table = pools.publish(&published(THREE_MEMBERS));
+    let second_table = pools.publish(&published(THREE_MEMBERS), &ExpandedMembers::default());
     let next = select(upstream(&second_table));
 
     assert_eq!(first.destination.host(), "10.0.0.1");
@@ -388,7 +392,7 @@ fn the_rotation_position_survives_a_publication() {
 #[test]
 fn a_generation_with_no_upstream_selects_nothing() {
     let pools = UpstreamPools::default();
-    let table = pools.publish(&published("  []"));
+    let table = pools.publish(&published("  []"), &ExpandedMembers::default());
 
     assert_eq!(table.len(), 0);
     assert!(table.upstream("api-backend").is_none());
@@ -401,11 +405,11 @@ fn changing_the_strategy_starts_the_new_one_from_its_own_initial_state() {
     // Written as the first choice of each strategy, which differ for these three members: a rotation
     // opens at the first, the smooth rotation opens at the heaviest.
     let pools = UpstreamPools::default();
-    let first_table = pools.publish(&published(THREE_MEMBERS));
+    let first_table = pools.publish(&published(THREE_MEMBERS), &ExpandedMembers::default());
     let _ = select(upstream(&first_table));
     let _ = select(upstream(&first_table));
 
-    let second_table = pools.publish(&published(WEIGHTED_MEMBERS));
+    let second_table = pools.publish(&published(WEIGHTED_MEMBERS), &ExpandedMembers::default());
     let next = select(upstream(&second_table));
 
     assert_eq!(

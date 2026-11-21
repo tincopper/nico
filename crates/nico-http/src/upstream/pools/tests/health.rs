@@ -12,7 +12,10 @@
 use std::time::{Duration, Instant};
 
 use super::*;
-use crate::upstream::pools::{MemberFailure, MemberOutcome};
+use crate::upstream::{
+    dns::ExpandedMembers,
+    pools::{MemberFailure, MemberOutcome},
+};
 
 /// [`THREE_MEMBERS`] with a short cooldown, so a test can step past it without arithmetic on the
 /// default thirty seconds.
@@ -38,7 +41,7 @@ const COOLDOWN: Duration = Duration::from_millis(1000);
 /// Returns the fixture's published state, at a fixed instant the test steps forward from.
 fn budgeted() -> (Arc<UpstreamState>, Instant) {
     let pools = UpstreamPools::default();
-    let table = pools.publish(&published(BUDGETED_MEMBERS));
+    let table = pools.publish(&published(BUDGETED_MEMBERS), &ExpandedMembers::default());
     (Arc::clone(upstream(&table)), Instant::now())
 }
 
@@ -292,7 +295,7 @@ fn zero_max_fails_disables_ejection() {
     // `max_fails: 0` is the document's spelling for "never eject": the members are not
     // interchangeable endpoints but a fixed assignment, so no streak may take one out.
     let fixture = BUDGETED_MEMBERS.replace("max_fails: 2", "max_fails: 0");
-    let table = pools.publish(&published(&fixture));
+    let table = pools.publish(&published(&fixture), &ExpandedMembers::default());
     let state = upstream(&table);
     let now = Instant::now();
 
@@ -328,7 +331,7 @@ fn every_member_ejected_selects_nothing() {
 #[test]
 fn a_failure_streak_survives_a_publication_and_is_judged_by_the_new_budget() {
     let pools = UpstreamPools::default();
-    let first = pools.publish(&published(BUDGETED_MEMBERS));
+    let first = pools.publish(&published(BUDGETED_MEMBERS), &ExpandedMembers::default());
     let now = Instant::now();
     fail(upstream(&first), 0, now);
 
@@ -337,7 +340,7 @@ fn a_failure_streak_survives_a_publication_and_is_judged_by_the_new_budget() {
     // outcome rather than retroactively — a member is ejected by a failure, never by a reload, so a
     // document that lowers the threshold does not take a serving machine out of rotation by itself.
     let tightened = BUDGETED_MEMBERS.replace("max_fails: 2", "max_fails: 1");
-    let second = pools.publish(&published(&tightened));
+    let second = pools.publish(&published(&tightened), &ExpandedMembers::default());
     let inherited = upstream(&second);
 
     assert_eq!(
@@ -364,14 +367,14 @@ fn a_failure_streak_survives_a_publication_and_is_judged_by_the_new_budget() {
 #[test]
 fn a_member_whose_address_changed_starts_healthy() {
     let pools = UpstreamPools::default();
-    let first = pools.publish(&published(BUDGETED_MEMBERS));
+    let first = pools.publish(&published(BUDGETED_MEMBERS), &ExpandedMembers::default());
     let now = Instant::now();
     for _ in 0..2 {
         fail(upstream(&first), 0, now);
     }
 
     let moved = BUDGETED_MEMBERS.replace("10.0.0.1", "10.0.0.9");
-    let second = pools.publish(&published(&moved));
+    let second = pools.publish(&published(&moved), &ExpandedMembers::default());
     let replaced = upstream(&second);
 
     assert_eq!(

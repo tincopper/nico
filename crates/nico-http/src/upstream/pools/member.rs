@@ -52,6 +52,16 @@ impl MemberId {
         }
     }
 
+    /// Builds the identity of one *expanded* member: a hostname endpoint's member keeps the
+    /// endpoint's name and port, and its address is one machine the name resolved to.
+    pub(super) fn new(name: Arc<str>, address: Arc<str>, port: u16) -> Self {
+        Self {
+            name,
+            address,
+            port,
+        }
+    }
+
     /// Returns the member's name, unique within its upstream.
     pub(crate) fn name(&self) -> &str {
         &self.name
