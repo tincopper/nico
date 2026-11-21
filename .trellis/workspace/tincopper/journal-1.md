@@ -629,3 +629,26 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 ### Status
 
 [OK] **Completed**
+
+
+## Session 17: upstream 域名成员的 DNS 多成员展开
+<!-- trellis-session: v=2 fp=1f97b6dec4c03419 -->
+
+**Date**: 2026-11-21
+**Task**: upstream 域名成员的 DNS 多成员展开
+**Branch**: `main`
+
+### Summary
+
+新任务 11-21-dns-member-expansion:endpoint address 写域名时发布期解析一次、逐地址展开为池成员(逐地址健康/least_conn/failover),请求路径不再做域名查询。nico-http 新增 upstream/dns.rs(MemberResolver seam、Unresolved=Upstream / Collision=Client 两类拒绝,点名 endpoints 字段);pools.publish 接收展开视图,同 IP 跨发布精确继承健康;Reloader 携带 member_dns(with_member_dns 注入,镜像 with_llm),publish_candidate 与 start_from_cache 在 compile 计时窗口外 await 展开,失败分别 keep-LKG 与 NotReady。实现中发现本机 resolver 为 fake-ip(解析 *.invalid),真实 DNS 失败测试不可判定——这正是注入 seam 的原因。测试 26 个新增(展开 8/池继承 2/管线 2),变异抽查(跳过碰撞检查、丢 weight 继承)均被咬住。README/nginx-migration/directory-structure 同步。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8f105cd` | feat(upstream): expand hostname members into per-address pool members |
+| `c1c2126` | docs(spec): record the member DNS expansion in the nico-http upstream tree |
+
+### Status
+
+[OK] **Completed**
