@@ -89,9 +89,9 @@ pub(crate) fn free_port() -> u16 {
 /// runner is often exactly such a host. Naming a bundle makes the root set a fact of the fixture
 /// instead — and it is the same root the TLS scenarios sign their listeners' certificates with.
 ///
-/// See `tests/fixtures/tls/README.md` for what the files are and how they were produced.
+/// See the workspace's `fixtures/tls/README.md` for what the files are and how they were produced.
 pub(crate) fn fixture_ca() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tls/test-root.pem")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/tls/test-root.pem")
 }
 
 /// Writes a bootstrap file that listens on `port` and returns the parsed configuration.

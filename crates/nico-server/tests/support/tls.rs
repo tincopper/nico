@@ -10,9 +10,9 @@
 //! security scenario state "the refusal happened during verification" instead of guessing it from a
 //! status code: a `502` could also mean the peer was never reachable.
 //!
-//! The certificate files are static fixtures (`tests/fixtures/tls/`, described in their README), so
-//! no scenario depends on a certificate-synthesis library, on the wall clock or on the host's trust
-//! store.
+//! The certificate files are static fixtures (the workspace's `fixtures/tls/`, described in their
+//! README), so no scenario depends on a certificate-synthesis library, on the wall clock or on the
+//! host's trust store.
 
 use std::{
     fs::File,
@@ -34,7 +34,7 @@ use tokio_rustls::{TlsAcceptor, rustls::ServerConfig};
 /// Returns the path of one file in the TLS fixture directory.
 pub(crate) fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/tls")
+        .join("../../fixtures/tls")
         .join(name)
 }
 

@@ -19,18 +19,24 @@
 //!   caller sees.
 
 use bytes::Bytes;
-use etcd_client::{Client, GetOptions, WatchOptions};
+use etcd_client::{
+    Certificate, Client, ConnectOptions, GetOptions, Identity, TlsOptions, WatchOptions,
+};
 use tokio::sync::Mutex;
 
 use crate::{
-    client::{EtcdClient, EtcdError, KvEntry, WatchEvent, WatchOutcome, WatchStream},
+    client::{
+        EtcdClient, EtcdError, KvEntry, WatchEvent, WatchOutcome, WatchStream,
+        options::EtcdConnectOptions,
+    },
     source::WATCH_CAPACITY,
 };
 
 /// The real client: one multiplexed connection to the etcd endpoints.
 ///
-/// TLS and endpoint failover are the client's own configuration — beneath this seam, exactly where
-/// the adapter contract wants them.
+/// Endpoint failover is the client's own configuration — beneath this seam, exactly where the
+/// adapter contract wants it. TLS material and credentials arrive as [`EtcdConnectOptions`] and are
+/// applied once, at connect: this build has no way to change either without a restart.
 pub struct GrpcEtcdClient {
     client: Mutex<Client>,
 }
@@ -47,23 +53,58 @@ impl std::fmt::Debug for GrpcEtcdClient {
 impl GrpcEtcdClient {
     /// Connects to the etcd endpoints and returns a client speaking the seam.
     ///
+    /// The options are applied as given: TLS with the material's own trust root (never the platform
+    /// store), and credentials only when the caller supplied them. [`EtcdConnectOptions::default`]
+    /// is the plaintext, anonymous client.
+    ///
     /// # Errors
-    /// Returns [`EtcdError::Connect`] when an endpoint is not a valid address, or the server cannot
-    /// be reached.
-    pub async fn connect(endpoints: &[String]) -> Result<Self, EtcdError> {
-        let client = Client::connect(endpoints, None).await.map_err(classify)?;
+    /// Returns [`EtcdError::Connect`] when an endpoint is not a valid address or the server cannot
+    /// be reached, and [`EtcdError::Auth`] when the server refuses the credentials — the
+    /// authentication is part of connecting, so a bad password never reaches a read.
+    pub async fn connect(
+        endpoints: &[String],
+        options: EtcdConnectOptions,
+    ) -> Result<Self, EtcdError> {
+        let client = Client::connect(endpoints, Some(wire_options(&options)))
+            .await
+            .map_err(classify)?;
         Ok(Self {
             client: Mutex::new(client),
         })
     }
 }
 
+/// Turns the seam's options into the wire client's.
+///
+/// Both halves are optional and independent: TLS is configured only when trust material was given —
+/// an absent TLS configuration is a cleartext channel, never a client that trusts the host — and a
+/// user is presented only when credentials were given, because etcd's anonymous access and an empty
+/// user name are not the same request.
+fn wire_options(options: &EtcdConnectOptions) -> ConnectOptions {
+    let mut wire = ConnectOptions::new();
+    if let Some(tls) = options.tls() {
+        let mut config = TlsOptions::new().ca_certificate(Certificate::from_pem(tls.ca_pem()));
+        if let Some((certificate, key)) = tls.identity() {
+            config = config.identity(Identity::from_pem(certificate, key));
+        }
+        if let Some(domain_name) = tls.domain_name() {
+            config = config.domain_name(domain_name.to_owned());
+        }
+        wire = wire.with_tls(config);
+    }
+    if let Some(credentials) = options.credentials() {
+        wire = wire.with_user(credentials.user(), credentials.password());
+    }
+    wire
+}
+
 /// Maps one client failure to the seam's two reasons: cannot reach, or refused.
 ///
-/// A gRPC status carries the code that tells them apart: the server rejecting the caller is auth,
-/// anything else about the transport is a connection failure. Application errors the server sent
-/// inside a well-formed response (key not found, for instance) do not arrive here — those are
-/// responses, and the adapter interprets them.
+/// A gRPC status carries the code that tells them apart: the server rejecting the caller is auth —
+/// whether that is a refused password at connect or a permitted-less read later — anything else
+/// about the transport is a connection failure, which is where a TLS handshake that cannot verify
+/// the server lands. Application errors the server sent inside a well-formed response (key not
+/// found, for instance) do not arrive here — those are responses, and the adapter interprets them.
 fn classify(error: etcd_client::Error) -> EtcdError {
     use etcd_client::Error as Wire;
 

@@ -39,9 +39,9 @@ fn free_port() -> u16 {
 ///
 /// Every bootstrap in this suite names one: the assembly refuses to start when the upstream trust
 /// roots cannot be read, and a test runner is often a host whose platform store cannot be. The files
-/// and their provenance are described in `tests/fixtures/tls/README.md`.
+/// and their provenance are described in the workspace's `fixtures/tls/README.md`.
 fn fixture_ca() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tls/test-root.pem")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/tls/test-root.pem")
 }
 
 /// Returns a bootstrap file that listens on `port` and drains as fast as the settings allow.

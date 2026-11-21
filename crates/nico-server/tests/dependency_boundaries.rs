@@ -30,6 +30,10 @@ const NICO_CORE: &str = include_str!("../../nico-core/Cargo.toml");
 /// shape is a promise (`directory-structure.md`, "Upstream TLS: two layers inside `nico-http`").
 const TLS_POLICY: &str = include_str!("../../nico-http/src/upstream/tls/policy.rs");
 
+/// The optional etcd client's manifest: the one place the TLS stack may enter the graph, and the one
+/// switch that would put a second trust store in it.
+const NICO_CONFIG_ETCD: &str = include_str!("../../nico-config-etcd/Cargo.toml");
+
 /// Returns the crate names a manifest's `[dependencies]` section actually declares.
 ///
 /// Only dependency **lines** are read, never the section text: the manifests document their edges in
@@ -53,6 +57,19 @@ fn dependencies(manifest: &str) -> Vec<String> {
         .filter_map(|line| line.split(['=', '.']).next())
         .map(|name| name.trim().to_owned())
         .collect()
+}
+
+/// Returns a manifest's declaring lines, with its comments removed.
+///
+/// The manifests explain what they deliberately avoid by *naming* it in a comment ("`tls-roots`
+/// stays off because ..."), so a substring search has to read the declarations and not the prose
+/// that documents them.
+fn declarations(manifest: &str) -> String {
+    manifest
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Asserts `deps` names none of `forbidden`, with a message that states the rule it would break.
@@ -130,5 +147,30 @@ fn the_tls_policy_layer_names_no_framework() {
     assert!(
         TLS_POLICY.contains("fn validate_bundle") && TLS_POLICY.contains("enum RootSource"),
         "the policy source was not read: it must define `RootSource` and `validate_bundle`"
+    );
+}
+
+#[test]
+fn the_etcd_client_links_tls_and_never_the_platform_store() {
+    let declarations = declarations(NICO_CONFIG_ETCD);
+    // The client feature is what a build that can connect at all ships, so TLS has to be on it: a
+    // separate switch would keep a "connects but cannot speak https" build alive.
+    assert!(
+        declarations.contains("etcd-client/tls"),
+        "the `client` feature must enable `etcd-client/tls`; without it an https endpoint has no TLS"
+    );
+    // `tls-roots` would put a second `rustls-native-certs` in the graph (0.8 beside the 0.7.3
+    // `nico-http` pins) and make etcd's trust root a property of the host instead of
+    // `config_source.tls.ca_file`.
+    for forbidden in ["tls-roots", "tls-webpki-roots"] {
+        assert!(
+            !declarations.contains(forbidden),
+            "{forbidden} must not be enabled: it would let etcd's trust root come from the host"
+        );
+    }
+    let deps = dependencies(NICO_CONFIG_ETCD);
+    assert!(
+        !deps.iter().any(|dep| dep == "rustls-native-certs"),
+        "the etcd client must not read a platform trust store. Declared set: {deps:?}"
     );
 }

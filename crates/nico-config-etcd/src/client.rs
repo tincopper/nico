@@ -105,6 +105,8 @@ pub trait EtcdClient: Send + Sync {
 #[cfg(all(feature = "client", any(test, feature = "mock-server")))]
 pub(crate) mod mock_server;
 #[cfg(feature = "client")]
+pub(crate) mod options;
+#[cfg(feature = "client")]
 mod proto;
 #[cfg(feature = "client")]
 pub(crate) mod real;

@@ -12,7 +12,13 @@ default = ["client"]
 # The real gRPC client. The adapter semantics do not need it; enabling it links the tonic/hyper
 # stack the roadmap flagged as a second network stack beside pingora's. The stack check lives in
 # this crate's docs: it is documented, gated out of the product binary, and verified per release.
-client = ["dep:etcd-client", "dep:tonic"]
+#
+# `etcd-client/tls` is on with the client rather than behind a feature of its own: TLS is how a
+# production etcd is reached, so a build that can connect at all is a build that can connect
+# encrypted. `tls-roots` stays off deliberately — it would pull a second `rustls-native-certs` into
+# the graph (0.8 beside the 0.7.3 `nico-http` pins) and make etcd's trust root a property of the host
+# instead of `config_source.tls.ca_file`.
+client = ["dep:etcd-client", "dep:tonic", "etcd-client/tls"]
 # The in-process etcd server for integration tests in dependent crates (the protocol double).
 # Never enabled by a production target: it exists so `nico-server`'s tests can run the whole
 # bootstrap-to-source wiring over a real gRPC wire without an etcd environment.
@@ -21,8 +27,10 @@ mock-server = ["client", "dep:prost", "dep:tokio-stream"]
 [dependencies]
 etcd-client = { version = "0.14", default-features = false, optional = true }
 # The real client classifies gRPC statuses into the seam's two failure reasons; the crate already
-# links tonic through etcd-client, so naming it directly adds no new stack.
-tonic = { version = "0.12", default-features = false, optional = true, features = ["codegen", "transport", "prost"] }
+# links tonic through etcd-client, so naming it directly adds no new stack. `tls` is named because
+# this crate builds a TLS *server* for the mock and a TLS *client* for the real client; the feature
+# is already on through `etcd-client/tls`, and naming it keeps that edge honest rather than implicit.
+tonic = { version = "0.12", default-features = false, optional = true, features = ["codegen", "transport", "prost", "tls"] }
 # Generated-protocol support for the mock server; test-only through the `mock-server` feature.
 prost = { version = "0.13", optional = true }
 tokio-stream = { version = "0.1", features = ["net", "sync"], optional = true }

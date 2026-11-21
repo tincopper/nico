@@ -1,5 +1,11 @@
 # TLS fixtures
 
+Workspace-shared test material, referenced from several crates (`nico-http`'s inbound-TLS tests,
+`nico-config-etcd`'s real-wire tests, and `nico-server`'s bootstrap and end-to-end suites), which
+is why it lives above any one of them. Include it as
+`include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/tls/<file>"))`, or resolve it
+at runtime from the same path.
+
 Two certificate authorities, two leaf certificates and the keys that go with them. **The private
 keys here are test-only**: they exist so a loopback listener can complete a real handshake, and
 nothing in this repository ever presents them to a peer that matters.

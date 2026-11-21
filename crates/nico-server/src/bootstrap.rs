@@ -47,8 +47,12 @@ mod source;
 mod tls;
 
 pub use metrics::MetricsSettings;
+#[cfg(feature = "etcd")]
+pub(crate) use source::MAX_TLS_MATERIAL_BYTES;
 pub use source::SourceSelection;
 use source::parse_source;
+#[cfg(feature = "etcd")]
+pub use source::{EtcdAuth, EtcdTls};
 
 /// A validated bootstrap configuration.
 ///

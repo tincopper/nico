@@ -273,7 +273,10 @@ mod tests {
 
     #[test]
     fn a_certificate_without_a_key_is_refused() {
-        let certificate = include_bytes!("../../nico-server/tests/fixtures/tls/localhost.pem");
+        let certificate = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/tls/localhost.pem"
+        ));
         let error = validate_server_identity(certificate, b"").expect_err("no key");
         assert!(matches!(
             error,

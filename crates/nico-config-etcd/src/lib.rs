@@ -10,7 +10,11 @@
 //! The real etcd client lives behind the default-on `client` feature: a tonic/gRPC stack — a second
 //! network stack beside pingora's — so the product binary keeps it gated (`nico-server`'s `etcd`
 //! feature is off by default) and the gating is verified per release. It implements the same seam,
-//! and none of this crate's adapter logic depends on which client drives it.
+//! and none of this crate's adapter logic depends on which client drives it. What it is configured
+//! with is [`EtcdConnectOptions`] — TLS material and credentials as bytes and values, never paths:
+//! where a process keeps a certificate, and whether it re-checks it before connecting, belongs to the
+//! caller. No trust root is inherited from the platform store, and no credential is presented unless
+//! one was given.
 //!
 //! # Semantics
 //!
@@ -37,7 +41,9 @@ mod source;
 mod tests;
 
 #[cfg(feature = "mock-server")]
-pub use client::mock_server::{MockServer, StoreState};
+pub use client::mock_server::{MockServer, MockServerBuilder, StoreState};
+#[cfg(feature = "client")]
+pub use client::options::{EtcdConnectOptions, EtcdCredentials, EtcdTlsOptions};
 #[cfg(feature = "client")]
 pub use client::real::GrpcEtcdClient;
 pub use client::{EtcdClient, EtcdError, KvEntry, WatchEvent, WatchOutcome, WatchStream};

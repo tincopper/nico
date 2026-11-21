@@ -13,15 +13,15 @@ use bytes::Bytes;
 use nico_config::{ConfigEvent, ConfigSource, ConfigSourceError};
 
 use crate::{
-    GrpcEtcdClient,
+    EtcdConnectOptions, GrpcEtcdClient,
     client::{EtcdClient, EtcdError, WatchEvent, WatchOutcome, mock_server::MockServer},
     mock::{MAX_BYTES, MOCK_KEY},
     source::EtcdConfigSource,
 };
 
-/// Connects a real client to a fresh mock server.
+/// Connects a real client to a fresh mock server, with no TLS and no credentials.
 async fn connected(server: &MockServer) -> GrpcEtcdClient {
-    GrpcEtcdClient::connect(&[server.endpoint()])
+    GrpcEtcdClient::connect(&[server.endpoint()], EtcdConnectOptions::new())
         .await
         .expect("the real client connects to the mock server")
 }
@@ -327,7 +327,9 @@ async fn a_dead_endpoint_in_the_list_does_not_break_the_client() {
             .build()
             .expect("the client runtime builds");
         let client = runtime
-            .block_on(async { GrpcEtcdClient::connect(&[dead, live]).await })
+            .block_on(async {
+                GrpcEtcdClient::connect(&[dead, live], EtcdConnectOptions::new()).await
+            })
             .expect("connect succeeds with a dead endpoint listed");
         let _ = sender.send(client);
         // Drive the runtime forever: the client's transports depend on it.

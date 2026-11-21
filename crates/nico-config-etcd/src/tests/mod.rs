@@ -456,3 +456,6 @@ async fn the_client_is_asked_for_the_right_key_and_start() {
 // The real client over the real wire, against the in-process etcd mock server.
 #[cfg(feature = "client")]
 mod e2e;
+// The transport a production cluster asks for: TLS, a client identity, and credentials.
+#[cfg(feature = "client")]
+mod tls;

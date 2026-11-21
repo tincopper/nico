@@ -36,10 +36,10 @@ config_source:
     )
 }
 
-/// Returns one file of the repository's TLS fixture set.
+/// Returns one file of the workspace's shared TLS fixture set (`fixtures/tls/`).
 fn fixture(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/tls")
+        .join("../../fixtures/tls")
         .join(name)
 }
 

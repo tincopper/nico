@@ -14,10 +14,10 @@ use nico_http::{InboundTls, Listener};
 
 use super::*;
 
-/// Returns one file of the repository's TLS fixture set.
+/// Returns one file of the workspace's shared TLS fixture set (`fixtures/tls/`).
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/tls")
+        .join("../../fixtures/tls")
         .join(name)
 }
 

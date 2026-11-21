@@ -41,7 +41,7 @@ fn settings(listens: &[&str], h2c: bool) -> HttpSettings {
 
 /// The `localhost` identity the workspace's shared TLS fixtures hold, as real files on disk.
 fn localhost_identity() -> InboundTls {
-    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../nico-server/tests/fixtures/tls");
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/tls");
     InboundTls::from_bootstrap(
         fixtures.join("localhost.pem"),
         fixtures.join("localhost.key"),
@@ -298,7 +298,7 @@ fn an_unreadable_tls_identity_is_a_service_error_not_a_panic() {
 /// Returns the trust root that signed the workspace's `localhost` fixture.
 fn localhost_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../nico-server/tests/fixtures/tls")
+        .join("../../fixtures/tls")
         .join("test-root.pem")
 }
 

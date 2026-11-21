@@ -130,7 +130,7 @@ curl -sS http://127.0.0.1:8080/v1/chat/completions \
 
 ```yaml
 config_source:
-  type: local            # 当前唯一支持的类型
+  type: local            # local | etcd（etcd 需编译时开 `--features etcd`）
   path: ./config/resources.yaml
   max_bytes: 1048576
   watch: notify+signal   # notify | signal | notify+signal
@@ -204,6 +204,43 @@ metrics:                 # 可选；省略整段 = 不监听、不装 recorder
 - 信任根在**构建 service 时定型**：改 CA 需要重启，reload 只换文档快照。启动时会先读一次这个来源
   （平台库或 `ca_file`），读不到、为空、或不是证书集合都会让进程拒绝启动，而不是带着空信任集服务。
 - 证书校验与主机名校验始终开启，文档无法关掉。
+
+### config_source：etcd
+
+`type: etcd` 把同一个 key 当作一份完整文档，多端点之间的故障转移由 client 自己做：
+
+```yaml
+config_source:
+  type: etcd
+  endpoints:
+    - https://etcd-0.internal:2379
+    - https://etcd-1.internal:2379
+  key: /nico/resources.yaml
+  max_bytes: 1048576
+
+  tls:                                 # 可选；出现即 TLS
+    ca_file: /etc/nico/etcd-ca.pem     # 块存在时必填：信任根，整体替换平台库
+    # cert_file: /etc/nico/etcd-client.pem      # 可选，与 key_file 成对
+    # key_file: /etc/nico/etcd-client-key.pem
+    # domain_name: etcd.internal                # 可选；证书校验名，缺省取端点主机名
+
+  auth:                                # 可选；出现即鉴权
+    user: nico
+    password_ref: env:ETCD_PASSWORD    # 只接受 env: / file: 引用，不写明文
+```
+
+- 传输方式在启动期定型：`https://` 端点**必须**配 `tls` 块，`tls` 块**只能**配 `https://` 端点，
+  一份列表不能混用两种 scheme —— 猜 scheme 要么把配置文档明文送上网，要么连不上。不带 `tls` 时
+  `http://` 与裸 `host:port` 照旧可用。
+- 信任根**只来自 `ca_file`**，平台证书库不参与：信任根是启动事实，不是「跑在哪台机器上」的推断。
+  换 CA 或换客户端证书需要重启，客户端证书不做热加载。
+- 三个文件在校验期读一次、在构建 source 时再读一次：读不到、不是证书集合、证书与私钥不配对，
+  都是点名 `config_source.tls.*` 的启动错误（两次读取之间被换掉也算）。
+- `password_ref` 只写引用，值在构建 source 时读一次；`file:` 逐字节读，`echo` 留下的换行同样是
+  口令的一部分。
+- `domain_name` 对该 client 的全部端点生效（一个 client 只校验一个名字）；逐端点的证书名本版不支持。
+- 口令错误或端点拒绝凭据是 `EtcdError::Auth`，端点不可达或 TLS 握手失败是 `EtcdError::Connect`；
+  两者都没有降级成明文或匿名访问的形态，进程直接拒绝启动。
 
 ### resources.yaml
 
@@ -796,8 +833,10 @@ scripts/gates/       git hook 背后的检查
 - **配置源**：`type: local` 与 `type: etcd`（`etcd` feature，默认关）都可用。etcd 源是一个 key
   一份完整文档（inclusive 起点、compaction/fragment 折叠 resync、auth 失败与 key 删除都是
   Unavailable 而非空配置）；真实 client 用 `etcd-client` crate 实现，在进程内 etcd v3 mock
-  server（官方 rpc.proto 协议替身）上端到端验证。etcd 源的 TLS/认证凭据尚未暴露（`etcd-client`
-  支持，接入是 bootstrap schema 的纯增量）。tonic/hyper 栈由 feature 门控：产品二进制（默认与
+  server（官方 rpc.proto 协议替身）上端到端验证，TLS 连接与用户名/密码认证也在覆盖范围内。
+  etcd 已支持 `tls`（含可选客户端证书）与 `auth`（用户名 + `env:`/`file:` 口令引用），见上面的
+  `config_source：etcd` 一节；仍**未**支持的是：平台证书库回退、逐端点的证书校验名、token/OIDC
+  等用户名密码之外的鉴权、以及配置文件热加载。tonic/hyper 栈由 feature 门控：产品二进制（默认与
   `traffic` 角色）不链接，测试构建经 dev-dependencies 使用协议替身。
 - **路由匹配**：线性扫描，无编译索引；`path_prefix` 是字节前缀，不做路径归一化。
 - **入站 TLS**：`http.listeners[]` 中带 `tls` 块的条目终止 TLS——单证书、启动期加载（TLS 1.2/1.3，
