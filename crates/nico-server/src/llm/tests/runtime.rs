@@ -51,6 +51,24 @@ impl<'a> MakeWriter<'a> for Capture {
 /// A scoped subscriber rather than a global one: the log is this test's subject, and installing a
 /// process-wide subscriber would decide what every other test in the binary can log.
 fn captured(body: impl FnOnce()) -> String {
+    // A callsite's dispatch is registered on its first firing, under a process-wide lock that two
+    // threads can race to take. Two tests that both capture `log_registries` fire those callsites
+    // for the first time concurrently, and a lost race leaves the callsite cached as disabled -
+    // permanently, because nothing here rebuilds the cache. Warming them once, serialized, moves
+    // the registration out of the race: what the two tests then measure is only the log content.
+    static WARMED: std::sync::Once = std::sync::Once::new();
+    WARMED.call_once(|| {
+        let (protocols, providers) = nico_llm::builtin_registry();
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture)
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            super::super::runtime::log_registries(&protocols, &providers);
+        });
+    });
+
     let capture = Capture::default();
     let subscriber = tracing_subscriber::fmt()
         .with_writer(capture.clone())
