@@ -605,3 +605,27 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 - 入站 TLS 仍无证书热加载、mTLS、SNI 多证书、同端口明文/TLS 自动识别；数据面与 metrics 同一套限制，需要时前面放代理。
 - G1–G4（rewrite/入口隔离、traffic 同请求 failover、共享限额与可信代理、通用缓冲与 header）需要真实部署场景驱动。
 - etcd 源的 TLS/认证凭据仍未暴露；DNS 每次请求只取首个解析结果、不展开多成员。
+
+
+## Session 16: etcd 配置源 TLS 与认证:复查、加固与提交
+<!-- trellis-session: v=2 fp=a373c58f3a1f340f -->
+
+**Date**: 2026-11-21
+**Task**: etcd 配置源 TLS 与认证:复查、加固与提交
+**Branch**: `main`
+
+### Summary
+
+复查 11-20-etcd-source-tls-auth 的实现(门禁全绿、符合 backend spec),按评审结论加固:TLS fixture 上移到工作区根 fixtures/tls/(nico-http/nico-config-etcd 不再引用 nico-server 测试目录);bootstrap 与 source_build 的 TLS 材料读取经 read_bounded 且共用 MAX_TLS_MATERIAL_BYTES(1 MiB);env: 口令与 file: 同受 MAX_PASSWORD_BYTES 约束(收口 accepted);endpoints.rs 清理死分支。加固后 source_build/etcd.rs 超预算,按 foo.rs+foo/ 拆出 etcd/tests.rs。design/database-guidelines/directory-structure/quality-guidelines 同步。分三笔提交:feat(实现)、docs(spec)、test(llm 的 callsite 注册竞态修复,单独点名)。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4033c08` | feat(config-source): reach etcd over TLS and authenticate |
+| `a7573ac` | docs(spec): record the etcd source's transport, credentials and startup errors |
+| `571a2bc` | test(llm): warm log callsites once before the capture tests race |
+
+### Status
+
+[OK] **Completed**
