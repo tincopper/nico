@@ -110,8 +110,10 @@ nico/
     │       ├── llm.rs          # the byte-level LLM seam: LlmRoutes/LlmRoute/ResponseTransform
     │       ├── llm/            # request.rs, response.rs, routes.rs: one data structure per file
     │       ├── upstream.rs     # crate-private: Destination → HttpPeer; `host` connects, `authority` names
-    │       └── upstream/       # pools.rs (inheritance store, one generation's table, the selection
-    │                           #   metric), pools/picker.rs (Strategy → Picker, exhaustive),
+    │       └── upstream/       # dns.rs (a publication resolves its hostname members once; the
+    │                           #   addresses are the generation's members), pools.rs (inheritance
+    │                           #   store, one generation's table, the selection metric),
+    │                           #   pools/picker.rs (Strategy → Picker, exhaustive),
     │                           #   pools/health.rs (ejection: streak, cooldown, one probe),
     │                           #   pools/member.rs (identity, in-flight count, ConnectionGuard),
     │                           #   tls/: policy.rs (roots, no framework, no I/O) + adapter.rs (ServerConf)
@@ -263,6 +265,7 @@ vocabulary.
 |---|---|---|
 | `nico-lb/src/picker.rs` | the `Picker` trait (`pick` + `inherit`), the `Members`/`View` accessors a rule may read, and the ordinal strategies with the state each of them keeps | know a `Destination`, an `HttpContext`, a `Strategy`, or how a member is reached. A new strategy is implementable without touching either consumer |
 | `nico-lb/src/weighted.rs`, `source.rs` | the two distribution strategies (`IpHash`, `WeightedRandom`) and the injected randomness `Source` | count tokens or know a provider |
+| `upstream/dns.rs` | the publication's member expansion: one member per resolved address, the machine-collision refusal, the `MemberResolver` seam the reload pipeline carries | resolve anything on the request path, or touch the selection state: the expansion is publication-time I/O, and the member list it produces is what `pools` builds from |
 | `upstream/pools/picker.rs` | `build`: the one exhaustive `Strategy → impl` match | be duplicated in the selection crate: the document vocabulary belongs to the crate that owns it |
 | `upstream/pools.rs` | the process-level inheritance store, the `SelectionTable` one generation serves from, member weights, and the selection counter | know any strategy's state layout: it holds `Arc<dyn Picker>` and passes facts in |
 | `upstream/pools/health.rs` | the ejection machine: streak, cooldown, the single probe | know an upstream's name, log anything, or emit a metric |
