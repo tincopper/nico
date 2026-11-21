@@ -43,9 +43,10 @@ cargo test -p nico-server --no-default-features --features traffic
 `nico-server` declares the first features in the workspace: `llm`, on by default, and `traffic`, which
 is additive in the Cargo sense — it removes nothing, it simply does not compile `nico-llm`, so the role
 a build serves is a property of the artifact rather than a runtime flag. The optional config centers
-(`config-etcd`, `config-nacos`) arrive as their own crates behind their own feature. A line naming a
-feature nothing declares is a gate nobody can run, so a feature adds its lines in the same change that
-declares it — and removes none while it exists.
+arrive as their own crates behind their own feature: `etcd` gates `nico-config-etcd` (whose own
+`client` feature is what links the gRPC stack), and `config-nacos` will gate the later
+`nico-config-nacos`. A line naming a feature nothing declares is a gate nobody can run, so a feature
+adds its lines in the same change that declares it — and removes none while it exists.
 
 The traffic build carries the last line for a second reason: its integration tests are
 `#![cfg(not(feature = "llm"))]`, so under `--all-features` they compile to nothing and pass without

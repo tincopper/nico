@@ -34,17 +34,63 @@ Rules:
   covered by tests for atomic rename, symlink swap, half-write, deletion/recreation and SIGHUP.
   The LKG cache is written after every successful publish and read only when
   `allow_bootstrap_cache: true`.
-- `etcd-client` (etcd v3 via tonic/prost) is the **etcd milestone** candidate, not a phase-1
-  dependency. The exact version is pinned in `Cargo.lock` only when that milestone starts; the
-  re-verification checklist lives in the phase-0 capability report §8.
-- Before adopting a version, verify by compilation: Watch RPC fields (`created`, `canceled`,
-  `compact_revision`, `events`, `fragment`), Auth, TLS, and endpoint failover behavior.
+- `etcd-client` (etcd v3 via tonic/prost) is pinned in `Cargo.lock` and lives in
+  `nico-config-etcd` behind that crate's `client` feature, which `nico-server`'s `etcd` feature
+  (default **off**) gates out of the product binary. It is never a default dependency.
+- Before bumping it, verify by compilation: Watch RPC fields (`created`, `canceled`,
+  `compact_revision`, `events`, `fragment`), Auth (the token exchange, not a header), TLS, and
+  endpoint failover behavior.
 - Run `cargo tree -d` and check for a second `tonic`/`hyper`/TLS stack conflicting with Pingora's.
   A duplicate heavy stack is a design problem, not a lockfile nuisance.
 - Single key holds one complete document (e.g. `/gateway/prod/resources.yaml`). Multi-key
   consistency is a later milestone with its own acceptance criteria.
 - `bootstrap.max_bytes` must stay below the server's `max-request-bytes` (etcd 3.5 default ≈ 1.5 MiB);
   phase-1 budget is ≤ 1 MiB. Compress the route document before raising any server limit.
+
+---
+
+## The etcd Source: Transport and Credentials
+
+The etcd source is infrastructure, so everything about *how* it is reached is a startup fact of the
+bootstrap file. A reload replaces the document; it never changes the transport, the identity or the
+credential.
+
+| Field | Rules |
+|---|---|
+| `endpoints` | One or more. `https://` and plaintext (`http://` or bare `host:port`) may not be mixed: one client serves one transport, so a mixed list has no meaning. Shape (whitespace, host, numeric non-zero port) is unchanged. |
+| `tls` | Optional block. Presence *is* TLS. Requires `https://` endpoints and refuses plaintext ones; an `https://` endpoint without the block is refused naming its index. `ca_file` is required inside it. |
+| `tls.ca_file` | The **complete** trust root, replacing any platform store. There is no platform fallback and no `tonic/tls-roots`: the trust root must be a fact of the configuration, not of the host. |
+| `tls.cert_file` / `tls.key_file` | Optional and paired: one half alone is refused under `tls.key_file`. The pair must form one signing identity. |
+| `tls.domain_name` | Optional. One name is verified for **every** endpoint of the client; per-endpoint certificate names are out of scope. Validated with `nico_core::validate_host`. |
+| `auth.user` / `auth.password_ref` | Required together. `password_ref` is an `env:`/`file:` reference (`nico_core::is_secret_ref`); a literal password is a startup error, never accepted. |
+
+Rules:
+
+- **No secrets in a validated bootstrap.** `EtcdTls` carries paths; `EtcdAuth` carries the reference.
+  Neither carries key material or the password, so neither can leak one through `Debug`, `Clone` or a
+  log line.
+- **Everything is read twice.** The bootstrap opens `ca_file`, `cert_file` and `key_file` to fail a
+  typo at startup; `source_build` reads them again when it assembles the client. A file swapped in
+  between is a named startup error, not a handshake failure on the first request. This is the same
+  rule inbound TLS follows, for the same reason. Both reads apply the same ceiling
+  (`MAX_TLS_MATERIAL_BYTES`, 1 MiB) through the read itself, so a mis-pointed path cannot load an
+  arbitrary file into the process, and a file the bootstrap read cannot fail the second read on
+  size alone.
+- **The password is resolved once, late.** `password_ref` is checked for shape at bootstrap and read
+  when the source is built (byte-for-byte for `file:`, so a trailing newline is part of it). Its
+  value never enters the validated bootstrap, which is why the password is not in the config a
+  publication carries. The value is bounded at 8 KiB wherever it came from: `file:` at its read,
+  `env:` at the rule both values end at — an environment variable passes no file read, so the
+  terminal rule is what bounds it.
+- **Transport failures are startup failures.** With credentials configured, connecting performs the
+  etcd token exchange, so a refused credential fails the process (`EtcdError::Auth`) instead of
+  becoming a per-request `401`. An unreachable endpoint or a failed handshake is
+  `EtcdError::Connect`. There is no degraded form that silently downgrades to cleartext or to
+  anonymous access.
+- **The protocol double models both.** `MockServer` serves TLS from PEM bytes a test hands over and
+  can require a credential pair, minting a token through the `Authenticate` RPC and checking it as
+  `authorization` metadata — the same exchange `etcd-client` performs. It takes bytes, never paths, so
+  the crate never learns a test directory.
 
 ---
 

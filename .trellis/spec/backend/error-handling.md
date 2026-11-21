@@ -330,6 +330,33 @@ Rules:
   preference: the flag applies to plaintext listeners, and a section that declares only TLS entries
   gives it nothing to apply to. Together with a plaintext entry it is ordinary configuration.
 
+### Configuration-source startup errors
+
+The `config_source` section names its own fields, because that is the section an operator rewrites
+when the process cannot read its configuration. Two layers can refuse it, and the split matters:
+
+| Layer | Type | When |
+|---|---|---|
+| bootstrap parse | `BootstrapError::InvalidField` under `config_source.tls.*` / `config_source.auth.*` | The document is wrong: a missing or unreadable file, a half-written identity, an unusable `domain_name`, a password that is a literal instead of an `env:`/`file:` reference, an endpoint whose scheme disagrees with the `tls` block. |
+| source build | `SourceBuildError::Setting { field, reason }` | The document was right when it was read and the world changed: a trust root removed or replaced since, a reference whose variable is unset or whose file is unreadable. |
+
+Rules:
+
+- **Only paths and references are validated.** `EtcdTls` holds paths and `EtcdAuth` holds the
+  reference, so no key material and no password reaches a validated bootstrap, a log line or a
+  `Debug` rendering. A `Setting` reason names what is wrong (`could not be read`, `is not a usable
+  trust bundle`) and never quotes the file's bytes.
+- **The second read is deliberate.** A file the bootstrap opened is opened again by the construction
+  site; the two reads are two syscalls on a name, and a swap in between must be a startup error with
+  a field name. This mirrors `http.listeners[].tls`.
+- **`Setting` is `ErrorCategory::Client`.** The file is the operator's, not a dependency's, so it
+  classifies like `BootstrapError::InvalidField` and not like `EtcdError`. `SourceBuildError::Etcd`
+  stays `Upstream`: the endpoint did not answer, or refused to.
+- **A refused credential is a startup failure.** With `config_source.auth` configured, connecting
+  performs the etcd token exchange, so `EtcdError::Auth` arrives at `build_source` and the process
+  exits. There is no variant that means "connected anonymously instead": a bootstrap that meant to
+  authenticate and could not must not fall back.
+
 ## Protocol Error Responses
 
 Mapping happens **once**, at the edge layer:

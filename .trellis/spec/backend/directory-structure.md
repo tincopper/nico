@@ -36,15 +36,20 @@ nico/
 ├── config/
 │   ├── bootstrap.yaml          # local-only: config source connection, cache path, limits
 │   └── resources.yaml          # gateway resources when using the local config source
+├── fixtures/                   # workspace-shared test material, above any one crate
+│   └── tls/                    # loopback identities and roots several crates' tests include
 └── crates/
     ├── nico-server/         # the only binary crate (binary `nico`): wiring, reload pipeline
     │   ├── src/
     │   │   ├── main.rs         # thin: parse args, call lib::run, map error to exit code
     │   │   ├── lib.rs          # //! doc + pub fn run(...); makes wiring integration-testable
     │   │   ├── bootstrap.rs
-    │   │   ├── bootstrap/      # http.rs (the listener list), inbound_tls.rs (one `tls` block: read + paired, the single implementation behind both a listener entry and the metrics section), proxy.rs (upstream trust roots), runtime.rs (the process knobs), source.rs (the acquisition subsystem), metrics.rs (the address, the collision against the data plane's set, and the optional TLS transport), tls.rs (root source + bundle check)
+    │   │   ├── bootstrap/      # http.rs (the listener list), inbound_tls.rs (one `tls` block: read + paired, the single implementation behind both a listener entry and the metrics section), proxy.rs (upstream trust roots), runtime.rs (the process knobs), source.rs (the acquisition subsystem's entry: the selection, the reload knobs, the type dispatch), metrics.rs (the address, the collision against the data plane's set, and the optional TLS transport), tls.rs (root source + bundle check)
+    │   │   │   └── source/     # bounds.rs (schema_bounds and its operator ranges), etcd.rs (the `etcd` body: its `tls`/`auth` blocks and the value types that carry paths only), etcd/endpoints.rs (one endpoint's shape and the scheme × `tls` matrix)
     │   │   ├── reload.rs       # watch loop, debounce, single flight, one publication
     │   │   ├── reload/         # error.rs, pacing.rs, publish.rs, startup.rs (one concern each)
+    │   │   ├── source_build.rs # the one place a validated bootstrap becomes a running source
+    │   │   ├── source_build/   # etcd.rs: the material read a second time, the password reference, the runtime the client owns
     │   │   ├── metrics.rs      # transport: port preflight, recorder install, the assembly step
     │   │   ├── metrics/        # app.rs (ServeHttp adapter), listener.rs (one Pingora service: plaintext, or TLS built by nico-http's listener_tls with an http/1.1-only ALPN offer)
     │   │   ├── llm.rs          # the LLM plan one document compiles into
@@ -156,8 +161,12 @@ nico/
     │       ├── local.rs
     │       ├── cache.rs
     │       └── fake.rs
-    ├── nico-config-etcd/    # optional, behind feature `config-etcd`
-    │   └── src/lib.rs
+    ├── nico-config-etcd/    # optional, behind that crate's `client` feature and `nico-server`'s `etcd`
+    │   └── src/
+    │       ├── lib.rs          # //! + the re-exports: the seam, the source, the real client, the options
+    │       ├── source.rs       # the adapter's semantics over the seam (no network)
+    │       ├── client.rs       # the seam: EtcdClient, EtcdError, the typed watch outcomes
+    │       ├── client/         # real.rs (the wire mapping), options.rs (TLS material + credentials as bytes), proto.rs (the generated server contract), mock_server.rs + mock_server/{store,rpc,auth}.rs (the in-process double: history, the two services, the credential exchange)
     ├── nico-config-nacos/   # optional, behind feature `config-nacos` (later milestone)
     │   └── src/lib.rs
     └── nico-plugins/        # built-in HTTP policies: JWT, API key, rate limit
@@ -207,6 +216,22 @@ within the 300–500 line budget (hard cap 500, see `quality-guidelines.md`). Wh
 the cap, keep the parent as the entry point and move cohesive groups into `foo.rs` + `foo/`
 submodules. Name modules after the capability (`debounce`, `publish`, `cache`), never after a layer
 (`utils`, `helpers`, `types`, `common`).
+
+### The config-source split
+
+Two boundaries, both forced by the file budget and both worth keeping:
+
+| File | Owns | Must not |
+|---|---|---|
+| `bootstrap/source.rs` | the selection (`SourceSelection`), the reload knobs and their ranges, the type dispatch, and the keys the reload subsystem removes from the body | parse any one type's body: a new source type adds a child, not an arm with a parser in it |
+| `bootstrap/source/etcd.rs` | the `etcd` body: its blocks, the value types (`EtcdTls`, `EtcdAuth` — paths and references only), and the file reads that fail a typo at startup | carry key material or a password, or decide the endpoint shape |
+| `bootstrap/source/etcd/endpoints.rs` | one endpoint's shape, and the scheme × `tls` matrix | read a file, or know what a `tls` block contains |
+| `bootstrap/source/bounds.rs` | `config_source.schema_bounds` and the operator ranges a written bound must stay within | parse the section around it |
+| `source_build.rs` / `source_build/etcd.rs` | turning a validated selection into a running source, and re-reading the material the client will present | validate a *path* (that is the bootstrap's job) or apply policy to the document |
+
+The split of responsibilities is what makes "configured but not in force" impossible: the bootstrap
+decides whether a value is *acceptable*, and the construction site decides whether it is *still
+there*, with the same field names in both refusals.
 
 ### Where new code goes
 
@@ -293,8 +318,8 @@ nico-server
    ├──> nico-http ──────────> nico-core + pingora + tokio (time/net/rt; never signals)
    ├──> nico-llm ────────────> nico-http + nico-core
    ├──> nico-config ────────> nico-core
-   ├──> nico-config-etcd ───> nico-config     (feature: config-etcd)
-   ├──> nico-config-nacos ──> nico-config     (feature: config-nacos)
+   ├──> nico-config-etcd ───> nico-config     (feature: etcd)
+   ├──> nico-config-nacos ──> nico-config     (feature: config-nacos; later milestone)
    ├──> nico-plugins ───────> nico-http + nico-core
    └──> nico-metrics ───────> nico-core + metrics + metrics-exporter-prometheus
 ```
@@ -364,7 +389,7 @@ groups. This is enforced by `rustfmt.toml` (`group_imports = "StdExternalCrate"`
 | Function | `snake_case`, verb first | `build_snapshot`, `publish` |
 | Constructor | `new` / `with_config`; `try_new` when fallible | `RouteTable::try_new` |
 | Error enum | `<Domain>Error` with `thiserror` | `ConfigSourceError` |
-| Feature | lowercase, domain-scoped | `llm`, `config-etcd` |
+| Feature | lowercase, domain-scoped | `llm`, `etcd` |
 | Async spawn / channel bound | explicit, no `unbounded` in the name | `config_event_channel(capacity)` |
 
 Avoid framework-flavored names (`PluginManager`, `AbstractFactory`, `BaseHandler`, `*ServiceImpl`)
