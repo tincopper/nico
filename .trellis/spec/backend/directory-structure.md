@@ -267,7 +267,7 @@ vocabulary.
 | `nico-lb/src/weighted.rs`, `source.rs` | the two distribution strategies (`IpHash`, `WeightedRandom`) and the injected randomness `Source` | count tokens or know a provider |
 | `upstream/dns.rs` | the publication's member expansion: one member per resolved address, the machine-collision refusal, the `MemberResolver` seam the reload pipeline carries | resolve anything on the request path, or touch the selection state: the expansion is publication-time I/O, and the member list it produces is what `pools` builds from |
 | `upstream/pools/picker.rs` | `build`: the one exhaustive `Strategy → impl` match | be duplicated in the selection crate: the document vocabulary belongs to the crate that owns it |
-| `upstream/pools.rs` | the process-level inheritance store, the `SelectionTable` one generation serves from, member weights, and the selection counter | know any strategy's state layout: it holds `Arc<dyn Picker>` and passes facts in |
+| `upstream/pools.rs` | the process-level inheritance store, the `SelectionTable` one generation serves from, member weights, the selection counter, and a route's upstream pool (which upstream serves, keyed by route id) | know any strategy's state layout: it holds `Arc<dyn Picker>` and passes facts in |
 | `upstream/pools/health.rs` | the ejection machine: streak, cooldown, the single probe | know an upstream's name, log anything, or emit a metric |
 | `upstream/pools/member.rs` | member identity, the in-flight count, and the `ConnectionGuard` that reports an outcome and logs it | decide availability (that is `health`'s verdict) and re-derive a member's name for a label |
 
