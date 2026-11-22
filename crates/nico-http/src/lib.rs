@@ -108,6 +108,7 @@ pub mod server_settings;
 pub mod service;
 pub mod settings;
 pub mod state;
+mod trusted;
 
 pub(crate) mod budget;
 pub(crate) mod upstream;

@@ -40,7 +40,10 @@ use std::sync::{
 use pingora::{http::RequestHeader, proxy::Session};
 
 use self::failure::{write_respond, write_synthetic};
-use crate::{context::HttpContext, error::HttpError, plugin::ResponseData, state::HttpStateHandle};
+use crate::{
+    context::HttpContext, error::HttpError, plugin::ResponseData, state::HttpStateHandle,
+    trusted::Cidr,
+};
 
 /// Largest `x-request-id` this data plane echoes back as a trace id.
 ///
@@ -54,6 +57,9 @@ const MAX_TRACE_ID_BYTES: usize = 128;
 /// concurrent requests cannot observe each other.
 pub struct HttpApp {
     state: Arc<HttpStateHandle>,
+    /// The proxies this deployment trusts to describe the caller. A peer inside the set may speak
+    /// for a client through `X-Forwarded-For`; everyone else is the client.
+    trusted: Arc<[Cidr]>,
     /// Backs the generated trace id. Shared by every worker, so ids are unique per process.
     sequence: AtomicU64,
 }
@@ -61,11 +67,17 @@ pub struct HttpApp {
 impl HttpApp {
     /// Builds the data plane over the one publication handle it reads configuration from.
     #[must_use]
-    pub fn new(state: Arc<HttpStateHandle>) -> Self {
+    pub fn new(state: Arc<HttpStateHandle>, trusted: Arc<[Cidr]>) -> Self {
         Self {
             state,
+            trusted,
             sequence: AtomicU64::new(0),
         }
+    }
+
+    /// Returns the proxies this deployment trusts, for the client-address derivation.
+    pub(crate) fn trusted_proxies(&self) -> &Arc<[Cidr]> {
+        &self.trusted
     }
 
     /// Returns the token-budget table every request and every reload share.

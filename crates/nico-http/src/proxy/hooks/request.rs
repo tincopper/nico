@@ -66,7 +66,17 @@ pub(super) async fn request_filter(
     // Read before the immutable borrow of the request header ends: the peer address is a fact of the
     // connection, so a plugin that keys on the caller reads it from the context instead of from a
     // header the caller controls.
-    let client_ip = peer_ip(session);
+    // The client address is derived, not read: a peer the deployment trusts may describe the
+    // caller in `X-Forwarded-For`, and everyone else is the client whatever their headers claim.
+    let peer_ip = peer_ip(session);
+    let client_ip = peer_ip.map(|peer| {
+        let forwarded_for = session
+            .req_header()
+            .headers
+            .get("x-forwarded-for")
+            .and_then(|value| value.to_str().ok());
+        crate::trusted::real_client_ip(peer, forwarded_for, app.trusted_proxies())
+    });
 
     // `HttpStateHandle::servable` is the named form of this check; this branch takes the snapshot
     // itself, so it reads `current()` once rather than asking the predicate and reading again.

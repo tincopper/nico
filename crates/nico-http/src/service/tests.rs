@@ -36,7 +36,8 @@ fn settings(listens: &[&str], h2c: bool) -> HttpSettings {
             listen: (*listen).to_owned(),
         })
         .collect();
-    HttpSettings::resolve(listeners, Some(h2c), tls()).expect("the fixture listeners are valid")
+    HttpSettings::resolve(listeners, Some(h2c), tls(), &[])
+        .expect("the fixture listeners are valid")
 }
 
 /// The `localhost` identity the workspace's shared TLS fixtures hold, as real files on disk.
@@ -222,7 +223,7 @@ fn a_tls_listener_is_registered_as_a_tls_endpoint() {
         listen: "127.0.0.1:18443".to_owned(),
         tls: identity,
     }];
-    let settings = HttpSettings::resolve(listeners, None, tls())
+    let settings = HttpSettings::resolve(listeners, None, tls(), &[])
         .expect("the fixture listener is a valid section");
     let service = service(
         &server_conf(&ServerSettings::new(), &tls()),
@@ -249,7 +250,7 @@ fn a_plaintext_and_a_tls_listener_coexist() {
             tls: localhost_identity(),
         },
     ];
-    let settings = HttpSettings::resolve(listeners, None, tls())
+    let settings = HttpSettings::resolve(listeners, None, tls(), &[])
         .expect("one listener per transport is the whole point");
     let service = service(
         &server_conf(&ServerSettings::new(), &tls()),
@@ -277,7 +278,7 @@ fn an_unreadable_tls_identity_is_a_service_error_not_a_panic() {
         listen: "127.0.0.1:18443".to_owned(),
         tls: identity,
     }];
-    let settings = HttpSettings::resolve(listeners, None, tls())
+    let settings = HttpSettings::resolve(listeners, None, tls(), &[])
         .expect("the paths are a legal setting; reading them is the service's job");
 
     let error = match service(

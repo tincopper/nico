@@ -14,9 +14,10 @@
 use std::{
     borrow::Cow,
     net::{SocketAddr, ToSocketAddrs},
+    sync::Arc,
 };
 
-use crate::{inbound::InboundTls, upstream::tls::TlsPolicy};
+use crate::{inbound::InboundTls, trusted::Cidr, upstream::tls::TlsPolicy};
 
 /// The fixed reason an address is not a usable listener address.
 ///
@@ -64,6 +65,9 @@ pub struct HttpSettings {
     listeners: Vec<Listener>,
     h2c: bool,
     tls: TlsPolicy,
+    /// The proxies this deployment trusts to describe the caller. Empty (the default) means every
+    /// peer is the client, whatever its headers claim.
+    trusted_proxies: Arc<[Cidr]>,
 }
 
 impl HttpSettings {
@@ -94,6 +98,7 @@ impl HttpSettings {
         listeners: Vec<Listener>,
         h2c: Option<bool>,
         tls: TlsPolicy,
+        trusted_proxies: &[String],
     ) -> Result<Self, HttpSettingsError> {
         if listeners.is_empty() {
             return Err(HttpSettingsError::new(
@@ -102,10 +107,19 @@ impl HttpSettings {
             ));
         }
         pairwise_distinct(&listeners)?;
+        let trusted_proxies = trusted_proxies
+            .iter()
+            .map(|value| {
+                Cidr::parse(value).map_err(|reason| {
+                    HttpSettingsError::with_reason("trusted_proxies", format!("`{value}` {reason}"))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let settings = Self {
             listeners,
             h2c: h2c.unwrap_or(false),
             tls,
+            trusted_proxies: trusted_proxies.into(),
         };
         // The plaintext subset is read through the accessor rather than re-matched here, so "which
         // listeners does `h2c` apply to" has one definition for the rule and for every caller.
@@ -117,6 +131,11 @@ impl HttpSettings {
         }
 
         Ok(settings)
+    }
+
+    /// Returns the proxies this deployment trusts, in declared order.
+    pub(crate) fn trusted_proxies(&self) -> &Arc<[Cidr]> {
+        &self.trusted_proxies
     }
 
     /// Returns the listeners the data plane binds, in the order the section named them.
@@ -180,6 +199,14 @@ pub struct HttpSettingsError {
 impl HttpSettingsError {
     /// Builds an error for a field and a fixed rule.
     fn new(field: &'static str, reason: &'static str) -> Self {
+        Self {
+            field: field.into(),
+            reason: reason.into(),
+        }
+    }
+
+    /// Builds an error whose reason quotes the value it rejected.
+    fn with_reason(field: &'static str, reason: String) -> Self {
         Self {
             field: field.into(),
             reason: reason.into(),

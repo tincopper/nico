@@ -335,7 +335,7 @@ impl RunningServer {
             shutdown,
             thread: Some(thread),
         };
-        server.wait_until_accepting().await;
+        server.wait_until_accepting(&captured).await;
         if wait == Wait::Published {
             server.wait_until_published(&captured).await;
         }
@@ -396,7 +396,7 @@ impl RunningServer {
     }
 
     /// Polls the listen socket until a connection is accepted or [`STARTUP_BUDGET`] is spent.
-    async fn wait_until_accepting(&self) {
+    async fn wait_until_accepting(&self, captured: &Arc<Mutex<Vec<u8>>>) {
         let deadline = Instant::now() + STARTUP_BUDGET;
         loop {
             let probe = timeout(PROBE_BUDGET, TcpStream::connect(self.address)).await;
@@ -405,8 +405,9 @@ impl RunningServer {
             }
             assert!(
                 Instant::now() < deadline,
-                "the server never accepted a connection on {} within {STARTUP_BUDGET:?}",
-                self.address
+                "the server never accepted a connection on {} within {STARTUP_BUDGET:?}; captured:\n{}",
+                self.address,
+                log::text(captured)
             );
             tokio::time::sleep(PROBE_INTERVAL).await;
         }

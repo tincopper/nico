@@ -110,9 +110,12 @@ pub fn service(
     // listener negotiates HTTP/2 through ALPN and is not affected.
     let mut options = HttpServerOptions::default();
     options.h2c = settings.h2c();
-    let mut service = ProxyServiceBuilder::new(conf, HttpApp::new(state))
-        .server_options(options)
-        .build();
+    let mut service = ProxyServiceBuilder::new(
+        conf,
+        HttpApp::new(state, settings.trusted_proxies().clone()),
+    )
+    .server_options(options)
+    .build();
 
     for listener in settings.listeners() {
         match listener {

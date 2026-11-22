@@ -30,7 +30,7 @@ fn tls_listener(listen: &str) -> Listener {
 
 /// Resolves one plaintext listener with `h2c` omitted.
 fn one_plaintext(listen: &str) -> HttpSettings {
-    HttpSettings::resolve(vec![plain(listen)], None, tls())
+    HttpSettings::resolve(vec![plain(listen)], None, tls(), &[])
         .expect("a single plaintext listener is a valid section")
 }
 
@@ -44,7 +44,7 @@ fn one_plaintext_listener_is_resolved_in_the_named_order() {
 
 #[test]
 fn an_empty_listener_list_is_rejected() {
-    let error = HttpSettings::resolve(Vec::new(), None, tls())
+    let error = HttpSettings::resolve(Vec::new(), None, tls(), &[])
         .expect_err("an `http` section without listeners serves nothing");
 
     assert_eq!(error.field(), "listeners");
@@ -57,7 +57,7 @@ fn an_empty_listener_list_is_rejected() {
 
 #[test]
 fn an_address_that_is_not_host_and_port_is_rejected() {
-    let error = HttpSettings::resolve(vec![plain("not-an-address")], None, tls())
+    let error = HttpSettings::resolve(vec![plain("not-an-address")], None, tls(), &[])
         .expect_err("a bare name is not host:port");
 
     assert_eq!(error.field(), "listeners");
@@ -70,7 +70,7 @@ fn an_address_that_is_not_host_and_port_is_rejected() {
 
 #[test]
 fn an_address_without_a_port_is_rejected() {
-    let error = HttpSettings::resolve(vec![plain("0.0.0.0")], None, tls())
+    let error = HttpSettings::resolve(vec![plain("0.0.0.0")], None, tls(), &[])
         .expect_err("a bare address has no port");
 
     assert_eq!(error.field(), "listeners");
@@ -78,7 +78,7 @@ fn an_address_without_a_port_is_rejected() {
 
 #[test]
 fn a_port_of_zero_is_rejected() {
-    let error = HttpSettings::resolve(vec![plain("0.0.0.0:0")], None, tls())
+    let error = HttpSettings::resolve(vec![plain("0.0.0.0:0")], None, tls(), &[])
         .expect_err("port zero asks the kernel to pick");
 
     assert_eq!(error.field(), "listeners");
@@ -103,7 +103,7 @@ fn an_ipv6_literal_is_accepted() {
 fn a_hostname_that_does_not_resolve_is_rejected() {
     // `.invalid` is reserved never to resolve (RFC 2606), so this exercises the resolution failure
     // path deterministically on a machine with or without a resolver.
-    let error = HttpSettings::resolve(vec![plain("nico.invalid:8080")], None, tls())
+    let error = HttpSettings::resolve(vec![plain("nico.invalid:8080")], None, tls(), &[])
         .expect_err("an address the resolver cannot turn into a socket is not usable");
 
     assert_eq!(error.field(), "listeners");
@@ -119,6 +119,7 @@ fn two_listeners_with_different_addresses_are_accepted() {
         vec![plain("127.0.0.1:9000"), plain("127.0.0.1:9001")],
         None,
         tls(),
+        &[],
     )
     .expect("distinct sockets can both bind");
 
@@ -134,6 +135,7 @@ fn two_listeners_on_one_literal_address_are_rejected() {
         vec![plain("0.0.0.0:8080"), plain("0.0.0.0:8080")],
         None,
         tls(),
+        &[],
     )
     .expect_err("two listeners cannot bind one socket");
 
@@ -153,6 +155,7 @@ fn a_literal_and_a_hostname_for_one_socket_are_rejected() {
         vec![plain("127.0.0.1:9000"), plain("localhost:9000")],
         None,
         tls(),
+        &[],
     )
     .expect_err("both spellings resolve to the same socket");
 
@@ -165,6 +168,7 @@ fn a_tls_listener_address_is_checked_and_counted_too() {
         vec![tls_listener("127.0.0.1:9000"), plain("127.0.0.1:9000")],
         None,
         tls(),
+        &[],
     )
     .expect_err("a TLS entry binds a socket just like a plaintext one");
 
@@ -175,7 +179,7 @@ fn a_tls_listener_address_is_checked_and_counted_too() {
 fn h2c_defaults_to_false_and_stays_false_when_written_as_false() {
     assert!(!one_plaintext("0.0.0.0:8080").h2c());
     assert!(
-        !HttpSettings::resolve(vec![plain("0.0.0.0:8080")], Some(false), tls())
+        !HttpSettings::resolve(vec![plain("0.0.0.0:8080")], Some(false), tls(), &[])
             .expect("false is a legal value")
             .h2c()
     );
@@ -183,7 +187,7 @@ fn h2c_defaults_to_false_and_stays_false_when_written_as_false() {
 
 #[test]
 fn h2c_is_accepted_when_a_plaintext_listener_exists() {
-    let settings = HttpSettings::resolve(vec![plain("0.0.0.0:8080")], Some(true), tls())
+    let settings = HttpSettings::resolve(vec![plain("0.0.0.0:8080")], Some(true), tls(), &[])
         .expect("h2c applies to the plaintext listener");
 
     assert!(settings.h2c());
@@ -191,7 +195,7 @@ fn h2c_is_accepted_when_a_plaintext_listener_exists() {
 
 #[test]
 fn h2c_without_a_plaintext_listener_is_rejected() {
-    let error = HttpSettings::resolve(vec![tls_listener("0.0.0.0:8443")], Some(true), tls())
+    let error = HttpSettings::resolve(vec![tls_listener("0.0.0.0:8443")], Some(true), tls(), &[])
         .expect_err("h2c would state a knob with no plaintext listener to apply it to");
 
     assert_eq!(error.field(), "h2c");
@@ -208,6 +212,7 @@ fn h2c_is_accepted_alongside_a_tls_listener() {
         vec![plain("0.0.0.0:8080"), tls_listener("0.0.0.0:8443")],
         Some(true),
         tls(),
+        &[],
     )
     .expect("one listener per transport: h2c serves the plaintext one");
 
@@ -228,6 +233,7 @@ fn the_tls_identity_is_carried_by_its_listener() {
         }],
         None,
         tls(),
+        &[],
     )
     .expect("the identity paths are a valid listener");
 
@@ -236,7 +242,7 @@ fn the_tls_identity_is_carried_by_its_listener() {
 
 #[test]
 fn a_tls_listener_does_not_appear_in_the_plain_addresses() {
-    let settings = HttpSettings::resolve(vec![tls_listener("0.0.0.0:8443")], None, tls())
+    let settings = HttpSettings::resolve(vec![tls_listener("0.0.0.0:8443")], None, tls(), &[])
         .expect("the TLS listener is a valid section");
 
     assert!(
@@ -256,6 +262,7 @@ fn the_listener_addresses_cover_both_transports_in_the_named_order() {
         vec![tls_listener("0.0.0.0:8443"), plain("0.0.0.0:8080")],
         None,
         tls(),
+        &[],
     )
     .expect("one listener per transport is a valid section");
 
@@ -275,7 +282,7 @@ fn the_listener_addresses_cover_both_transports_in_the_named_order() {
 fn the_trust_roots_are_carried_by_the_settings() {
     let bundle = TlsPolicy::from_bootstrap(Some(PathBuf::from("/etc/nico/roots.pem")));
 
-    let settings = HttpSettings::resolve(vec![plain("0.0.0.0:8080")], None, bundle.clone())
+    let settings = HttpSettings::resolve(vec![plain("0.0.0.0:8080")], None, bundle.clone(), &[])
         .expect("defaults are valid");
 
     assert_eq!(
@@ -292,8 +299,9 @@ fn the_trust_roots_are_carried_by_the_settings() {
 
 #[test]
 fn the_error_renders_the_field_and_the_reason() {
-    let error: HttpSettingsError = HttpSettings::resolve(vec![plain("0.0.0.0:0")], None, tls())
-        .expect_err("port zero is rejected");
+    let error: HttpSettingsError =
+        HttpSettings::resolve(vec![plain("0.0.0.0:0")], None, tls(), &[])
+            .expect_err("port zero is rejected");
 
     assert_eq!(
         error.to_string(),

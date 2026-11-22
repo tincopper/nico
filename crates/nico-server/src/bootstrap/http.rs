@@ -22,6 +22,10 @@ use super::{BootstrapError, inbound_tls};
 #[serde(deny_unknown_fields)]
 pub(super) struct RawHttp {
     h2c: Option<bool>,
+    /// The proxies this deployment trusts to describe the caller. Absent or empty means every peer
+    /// is the client, whatever its headers claim.
+    #[serde(default)]
+    trusted_proxies: Vec<String>,
     // A list cannot express "at least one entry", so an empty list is a resolve-time error rather
     // than a parse error — which is also where the entry addresses are checked. `default` is what
     // makes an empty section report that field instead of serde's missing-field message.
@@ -84,11 +88,11 @@ impl RawHttp {
             });
         }
 
-        HttpSettings::resolve(listeners, self.h2c, trust).map_err(|error: HttpSettingsError| {
-            BootstrapError::InvalidField {
+        HttpSettings::resolve(listeners, self.h2c, trust, &self.trusted_proxies).map_err(
+            |error: HttpSettingsError| BootstrapError::InvalidField {
                 field: format!("http.{}", error.field()).into(),
                 reason: error.reason().to_owned().into(),
-            }
-        })
+            },
+        )
     }
 }
