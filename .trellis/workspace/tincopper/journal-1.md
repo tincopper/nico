@@ -719,3 +719,25 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 ### Status
 
 [OK] **Completed**
+
+
+## Session 21: traffic upstream 路由的 URI 前缀改写(G1)
+<!-- trellis-session: v=2 fp=cdbcf84ec78f1e0e -->
+
+**Date**: 2026-11-22
+**Task**: traffic upstream 路由的 URI 前缀改写(G1)
+**Branch**: `main`
+
+### Summary
+
+新任务 11-22-uri-rewrite(nginx 审查 G1 最小形状):routes[].rewrite_prefix 把已匹配的 path_prefix 替换为配置值,匹配仍读客户端原路径,改写发生在 upstream_request_filter 每轮从 ctx.path() 重算(set_raw_path 写回),failover 重试轮天然幂等;query/编码逐字节保留。字面前缀交换语义:空值会把 /api/items 变成 items(非 origin-form),剥离整个前缀写 /——E2E 暴露后修正 PRD/design。provider 路由拒绝(路径由适配器所有)。发布期校验字符集(禁 ?/#/空白/控制字符),转发期重组因此不会失败。测试:schema 6(含 Reply::Path 回显变体与 request_target 解析)、E2E 5(替换/query/深路径/剥离/无改写)。文件预算:semantic.rs 的 timeout 家族归位 semantic/budget.rs(476 行)。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `627438c` | feat(routes): rewrite the matched path prefix when forwarding upstream |
+
+### Status
+
+[OK] **Completed**
