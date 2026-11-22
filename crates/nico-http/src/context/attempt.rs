@@ -6,7 +6,7 @@
 //! flight. They live here so the context's own module stays about the request's facts rather than the
 //! attempt machinery's.
 
-use super::{BodyBuffer, HttpContext};
+use super::{BodyBuffer, HttpContext, walk::TrafficWalk};
 use crate::error::HttpError;
 
 /// How far a failed round got, which decides how much of the retry gate applies.
@@ -53,7 +53,9 @@ impl HttpContext {
     ///   with no body at all, so the failure is answered instead.
     ///
     /// Whether the *walk* holds another attempt is a different question, asked by the caller: it moves
-    /// the walk, and the answer depends on how far this request already got.
+    /// the walk, and the answer depends on how far this request already got. The two walks answer the
+    /// same question with their own vocabularies — the llm attempt's chain, and a traffic route's
+    /// member walk — and exactly one of them can exist for a request.
     pub(crate) fn may_replace_attempt(&mut self, committed: bool, stage: FailureStage) -> bool {
         if committed || self.cancelled {
             return false;
@@ -65,10 +67,11 @@ impl HttpContext {
             }
         };
         replayable
-            && self
+            && (self
                 .llm_mut()
                 .and_then(|llm| llm.attempt_mut())
                 .is_some_and(|attempt| attempt.can_retry())
+                || self.traffic_walk().is_some_and(|walk| walk.can_retry()))
     }
 
     /// Reports whether the attempt in flight carried a first-byte budget of its own.
@@ -82,6 +85,38 @@ impl HttpContext {
             .and_then(|llm| llm.target())
             .and_then(|target| target.ttft())
             .is_some()
+    }
+
+    /// Returns this request's member walk, when its upstream route has one.
+    ///
+    /// The walk exists from the first member selection on; a converting route never has one, because
+    /// its walk is the LLM attempt the front-end owns.
+    pub(crate) fn traffic_walk(&self) -> Option<&TrafficWalk> {
+        self.walk.as_ref()
+    }
+
+    /// Returns this request's member walk for mutation.
+    pub(crate) fn traffic_walk_mut(&mut self) -> Option<&mut TrafficWalk> {
+        self.walk.as_mut()
+    }
+
+    /// Returns how many members this request may walk, from the route's `retry_budget`.
+    pub(crate) fn failover_budget(&self) -> u8 {
+        self.failover_budget
+    }
+
+    /// Ends this request's walk, the way the request's end does.
+    ///
+    /// Only a test calls this: the production walk dies with the context, and a scenario that drives
+    /// several requests through one context must end each walk for the next request to start clean.
+    #[cfg(test)]
+    pub(crate) fn end_walk(&mut self) {
+        self.walk = None;
+    }
+
+    /// Installs the walk a request's first member selection opens.
+    pub(crate) fn begin_traffic_walk(&mut self, walk: TrafficWalk) {
+        self.walk = Some(walk);
     }
 
     /// Replaces an `AttemptRetry` signal with the failure the walk's history holds.
@@ -135,11 +170,12 @@ impl HttpContext {
 
     /// Returns whether the recorded destination belongs to the attempt in flight.
     ///
-    /// True for a route with no walk: an upstream route's destination is its own, resolved once, and no
-    /// later round can invalidate it. False for every converting route, whose destination is the
-    /// attempt's rather than the route's — the walk's recorded target supplies it instead, and a
-    /// resolver query is cheaper than a head written to the endpoint the request just failed on.
+    /// False for every route with a walk, whichever kind: the destination is the attempt's rather
+    /// than the route's — an llm walk's target is the chain member it moved to, and a traffic walk's
+    /// member is the machine the last round selected — so a walk that moved must re-resolve, because
+    /// a resolver query is cheaper than a head written to the endpoint the request just failed on.
+    /// True only for a route whose round cannot move: no walk, one attempt.
     pub(crate) fn destination_still_describes_the_attempt(&self) -> bool {
-        self.llm.is_none()
+        self.llm.is_none() && self.walk.is_none()
     }
 }

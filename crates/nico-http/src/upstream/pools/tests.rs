@@ -120,14 +120,14 @@ fn select(state: &UpstreamState) -> Selected {
 /// Selects one member at `now`.
 fn select_at(state: &UpstreamState, now: Instant) -> Selected {
     state
-        .select(None, now)
+        .select_excluding(&[], None, now)
         .expect("every member of the fixture is available")
 }
 
 /// Selects one member for a caller address.
 fn select_for(state: &UpstreamState, caller: IpAddr) -> Selected {
     state
-        .select(Some(caller), Instant::now())
+        .select_excluding(&[], Some(caller), Instant::now())
         .expect("every member of the fixture is available")
 }
 
@@ -417,5 +417,35 @@ fn changing_the_strategy_starts_the_new_one_from_its_own_initial_state() {
         next.destination.host(),
         "10.0.0.1",
         "the smooth rotation must start from its own initial state, not a carried position"
+    );
+}
+
+#[test]
+fn a_selection_excludes_the_members_a_request_already_met() {
+    let table =
+        UpstreamPools::default().publish(&published(THREE_MEMBERS), &ExpandedMembers::default());
+    let state = upstream(&table);
+
+    let tried: Vec<MemberId> = state.members()[..2]
+        .iter()
+        .map(|member| member.state().id().clone())
+        .collect();
+    let selected = state
+        .select_excluding(&tried, None, Instant::now())
+        .expect("the third member remains");
+    assert_eq!(
+        selected.destination.host(),
+        "10.0.0.3",
+        "the walked request meets each member once"
+    );
+
+    let all: Vec<MemberId> = state
+        .members()
+        .iter()
+        .map(|member| member.state().id().clone())
+        .collect();
+    assert!(
+        state.select_excluding(&all, None, Instant::now()).is_none(),
+        "every member met: nothing is left to select"
     );
 }

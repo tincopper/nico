@@ -57,6 +57,7 @@ mod route_pool;
 /// The failure vocabulary a hook records, re-exported so no caller spells a member's failure as text.
 pub(crate) use health::{Failure as MemberFailure, Outcome as MemberOutcome};
 pub(crate) use member::{ConnectionGuard, MemberId, MemberState};
+use member::{Member, MembersView};
 use route_pool::RoutePoolState;
 
 /// The inheritance store: the members of the last published document, by upstream name.
@@ -330,23 +331,6 @@ impl UpstreamState {
         }
     }
 
-    /// Returns one member for this request, or `None` when none may be contacted.
-    ///
-    /// `now` is the instant the availability verdict is asked at: a member whose cooldown expired is
-    /// only reachable through the clock, and a test that could not pass one would have to sleep to
-    /// observe the difference between `open` and `half-open`.
-    ///
-    /// The candidate list is the whole health decision: a member is asked once, in one place, whether
-    /// it may serve — so an ejected member cannot be chosen by a strategy that happens to prefer it.
-    /// `None` means every member is out of rotation, which the caller answers as
-    /// `502 upstream_unreachable` rather than by retrying a member it just decided against.
-    ///
-    /// Being a candidate is not being admitted: only the member this request is actually sent to
-    /// claims the probe its cooldown produced, so a request that the strategy routes elsewhere leaves
-    /// that probe for the request that reaches the member. A claim lost to a racing request is not a
-    /// failure either — the member is now somebody else's probe, so this request takes the remaining
-    /// candidates instead of a second probe.
-    ///
     /// Reports whether any member of this upstream may serve at `now`.
     ///
     /// The route pool's candidate filter asks this: an upstream whose every member is out of rotation
@@ -359,14 +343,43 @@ impl UpstreamState {
             .any(|member| member.state().available(self.ejection, now))
     }
 
+    /// Returns one member for this request, or `None` when none may be contacted.
+    ///
+    /// `now` is the instant the availability verdict is asked at: a member whose cooldown expired is
+    /// only reachable through the clock, and a test that could not pass one would have to sleep to
+    /// observe the difference between `open` and `half-open`.
+    ///
+    /// The candidate list is the whole health decision: a member is asked once, in one place, whether
+    /// it may serve — so an ejected member cannot be chosen by a strategy that happens to prefer it.
+    /// `None` means every member is out of rotation, which the caller answers as
+    /// `502 upstream_unreachable` rather than by retrying a member it just decided against.
+    ///
+    /// `tried` is the walk's memory: the members this request already met, excluded from the
+    /// candidates so a retry round cannot be sent to the machine that just failed. An empty list is
+    /// a request's first round, which selects freely among the available members.
+    ///
+    /// Being a candidate is not being admitted: only the member this request is actually sent to
+    /// claims the probe its cooldown produced, so a request that the strategy routes elsewhere leaves
+    /// that probe for the request that reaches the member. A claim lost to a racing request is not a
+    /// failure either — the member is now somebody else's probe, so this request takes the remaining
+    /// candidates instead of a second probe.
+    ///
     /// The guard is created here, so a member's in-flight count starts before the connection and is
     /// released only when the request's context is dropped.
-    pub(crate) fn select(&self, client: Option<IpAddr>, now: Instant) -> Option<Selected> {
+    pub(crate) fn select_excluding(
+        &self,
+        tried: &[MemberId],
+        client: Option<IpAddr>,
+        now: Instant,
+    ) -> Option<Selected> {
         let mut candidates: Vec<usize> = (0..self.members.len())
             .filter(|&index| {
                 self.members.list()[index]
                     .state()
                     .available(self.ejection, now)
+                    && !tried
+                        .iter()
+                        .any(|id| id == self.members.list()[index].state().id())
             })
             .collect();
         loop {
@@ -416,72 +429,6 @@ impl UpstreamState {
     #[cfg(test)]
     pub(crate) fn ejection(&self) -> Ejection {
         self.ejection
-    }
-}
-
-/// One member of a published upstream: this generation's weight, and the state that outlives it.
-///
-/// The weight lives here rather than in [`MemberState`] because it is the document's fact: a weight
-/// that changed must take effect on the next publication, while the counters it was inherited with
-/// must not be recreated just because the number changed.
-#[derive(Debug)]
-pub(crate) struct Member {
-    state: Arc<MemberState>,
-    weight: u16,
-}
-
-impl Member {
-    /// Returns the state this member inherited or started with.
-    pub(crate) fn state(&self) -> &Arc<MemberState> {
-        &self.state
-    }
-
-    /// Returns this generation's weight for the member.
-    pub(crate) fn weight(&self) -> u16 {
-        self.weight
-    }
-}
-
-/// One generation's members, read through the accessors a picker may use.
-///
-/// The names are hoisted into their own vector so a picker receives `&str` without the pool having to
-/// hand out its whole member table: a rule may know a member's name and weight, and nothing about how
-/// the gateway reaches it.
-#[derive(Debug)]
-struct MembersView {
-    members: Vec<Member>,
-    names: Vec<Arc<str>>,
-}
-
-impl MembersView {
-    /// Returns the members in document order.
-    fn list(&self) -> &[Member] {
-        &self.members
-    }
-
-    /// Returns every member's name, indexed like [`MembersView::list`].
-    fn names(&self) -> &[Arc<str>] {
-        &self.names
-    }
-}
-
-impl Members for MembersView {
-    fn len(&self) -> usize {
-        self.list().len()
-    }
-
-    fn weight(&self, index: usize) -> u16 {
-        self.list().get(index).map_or(0, Member::weight)
-    }
-
-    fn active(&self, index: usize) -> u32 {
-        self.list()
-            .get(index)
-            .map_or(0, |member| member.state().active_connections())
-    }
-
-    fn name(&self, index: usize) -> &str {
-        self.names.get(index).map_or("", |name| name)
     }
 }
 

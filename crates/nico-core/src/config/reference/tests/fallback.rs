@@ -110,7 +110,7 @@ fn a_fallback_on_an_upstream_route_is_rejected() {
 }
 
 #[test]
-fn a_retry_budget_on_an_upstream_route_is_rejected() {
+fn a_retry_budget_on_an_upstream_route_bounds_its_member_walk() {
     let document = document(
         NO_ENTRIES,
         UPSTREAM,
@@ -121,16 +121,12 @@ fn a_retry_budget_on_an_upstream_route_is_rejected() {
             "    retry_budget: 2\n",
         ),
     );
-    let error = parse(&document).expect_err("an upstream route has no retry to bound");
-    assert!(
-        matches!(
-            error,
-            DocumentError::InvalidField {
-                field: "routes[].retry_budget",
-                ..
-            }
-        ),
-        "expected InvalidField for routes[].retry_budget, got {error:?}"
+    let document = parse(&document).expect("the failover budget is an upstream route's own field");
+    let route = &document.routes()[0];
+    assert_eq!(
+        route.retry_budget(),
+        2,
+        "the budget bounds the members one request may walk, including the first"
     );
 }
 

@@ -70,7 +70,7 @@ fn reachable(state: &UpstreamState, now: Instant, requests: usize) -> Vec<String
     (0..requests)
         .filter_map(|_| {
             state
-                .select(None, now)
+                .select_excluding(&[], None, now)
                 .map(|selected| selected.destination.host().to_owned())
         })
         .collect()
@@ -323,7 +323,7 @@ fn every_member_ejected_selects_nothing() {
     }
 
     assert!(
-        state.select(None, now).is_none(),
+        state.select_excluding(&[], None, now).is_none(),
         "an upstream with no available member answers `None`, which the data plane refuses"
     );
 }

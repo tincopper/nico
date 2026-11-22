@@ -4,11 +4,14 @@
 //! they had. Every test here therefore states an order: which member the walk reaches, and that one
 //! request never draws a member it already gave up on.
 
-use std::sync::Arc;
+use std::{
+    net::{IpAddr, Ipv4Addr},
+    sync::Arc,
+};
 
 use nico_llm::{
     AttemptChain, AttemptSequence, BreakerParams, ChainMember, PoolOrder, TargetIdentity,
-    route::select::{RoundRobin, Source, WeightedRandom},
+    route::select::{IpHash, RoundRobin, Source, WeightedRandom},
 };
 
 use crate::support::{BASE_URL, breakers, exchange};
@@ -170,4 +173,23 @@ fn a_pool_claiming_more_members_than_the_chain_has_is_refused() {
         AttemptChain::with_pool(vec![member], Some(order)).is_err(),
         "a pool of two members over a chain of one would silently be short of members"
     );
+}
+
+#[test]
+fn an_ip_hash_pool_keeps_the_same_caller_first() {
+    // The draw keys on the caller's address: the same caller meets the same member first, however
+    // many times the order is asked. A provider pool without a caller keeps its address-less
+    // behaviour, which the other tests already cover.
+    let pool = PoolOrder::new(Arc::new(IpHash::default()), vec![1, 1]);
+    let caller = Some(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7)));
+    let names = &NAMES[..2];
+
+    let first = pool.order(&[0, 1], names, caller)[0];
+    for _ in 0..9 {
+        assert_eq!(
+            pool.order(&[0, 1], names, caller)[0],
+            first,
+            "the same caller meets the same member first, however many times the order is asked"
+        );
+    }
 }

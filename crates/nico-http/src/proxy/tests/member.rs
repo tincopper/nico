@@ -64,7 +64,11 @@ fn started_on(upstreams: &str) -> (HttpContext, Instant) {
 }
 
 /// Selects the next member of the fixture upstream.
+///
+/// Each call is one request, so the walk the previous request opened ends here — the same death the
+/// production context dies with.
 fn select(ctx: &mut HttpContext) -> Destination {
+    ctx.end_walk();
     destination(ctx).expect("at least one member is available")
 }
 

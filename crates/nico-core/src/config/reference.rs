@@ -226,7 +226,6 @@ fn resolve(
             protocol: protocol.as_deref(),
             mode,
             max_response_bytes,
-            retry_budget: retry_budget.is_some(),
             fallback: raw_fallback.is_some(),
             ttft_timeout: ttft_timeout_ms.is_some(),
             token_budget: raw_token_budget.is_some(),
@@ -368,15 +367,15 @@ fn resolve_pool(
 /// The check is per kind rather than per field list so the error names the field the operator wrote:
 /// an upstream route has nothing to convert, so `protocol`, `mode` and `max_response_bytes` would
 /// otherwise be read as defaults and silently dropped, and a provider route has nothing to route on
-/// without the name of the client protocol. The attempt fields — `retry_budget`, `fallback` — belong
-/// to the same converted exchange: they decide how a *classified* failure is retried, and an upstream
-/// route forwards bytes without ever classifying one.
+/// without the name of the client protocol. `fallback` belongs to the same converted exchange — it
+/// decides where a *classified* failure goes next — and an upstream route forwards bytes without ever
+/// classifying one; `retry_budget` is the one attempt field both kinds own, so it is not gathered
+/// here at all.
 /// The convert-route fields a document may have written, gathered for the target check.
 struct WrittenFields<'a> {
     protocol: Option<&'a str>,
     mode: Option<RouteMode>,
     max_response_bytes: Option<u32>,
-    retry_budget: bool,
     fallback: bool,
     ttft_timeout: bool,
     token_budget: bool,
@@ -388,6 +387,9 @@ fn check_target_fields(
 ) -> Result<(), DocumentError> {
     match target {
         RouteTarget::Upstream(_) => {
+            // `retry_budget` is the one attempt field an upstream route owns: it bounds the members
+            // one request may walk when a member fails. Everything else describes a converted
+            // exchange, which an upstream route has no way to observe.
             let declared = [
                 ("routes[].protocol", written.protocol.is_some()),
                 ("routes[].mode", written.mode.is_some()),
@@ -395,7 +397,6 @@ fn check_target_fields(
                     "routes[].max_response_bytes",
                     written.max_response_bytes.is_some(),
                 ),
-                ("routes[].retry_budget", written.retry_budget),
                 ("routes[].fallback", written.fallback),
                 ("routes[].ttft_timeout_ms", written.ttft_timeout),
                 ("routes[].token_budget", written.token_budget),

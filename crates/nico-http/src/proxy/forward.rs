@@ -20,14 +20,14 @@
 //! why [`Framing`] snapshots the two framing headers before the chains run and restores them
 //! afterwards: framing is the data plane's.
 
-use std::{io, net::IpAddr, time::Instant};
+use std::{io, net::IpAddr, sync::Arc, time::Instant};
 
 use nico_core::RouteTarget;
 use pingora::{http::RequestHeader, proxy::Session};
 
 use super::failure::abort;
 use crate::{
-    context::HttpContext,
+    context::{HttpContext, TrafficWalk},
     error::HttpError,
     upstream::{Destination, pools::Selected},
 };
@@ -171,8 +171,10 @@ pub(super) fn destination(ctx: &mut HttpContext) -> Result<Destination, HttpErro
 /// The target, the generation's member list and the caller's address all come from the context, so the
 /// choice is made against the document the request was routed with — not against whatever the store
 /// holds now. A route that distributes across several upstreams picks the upstream first, from its
-/// own pool; the upstream's member pool then picks the machine.
-fn select_member(ctx: &HttpContext) -> Result<Selected, HttpError> {
+/// own pool, **once per request** — a retry round moves to another member of the same upstream, never
+/// re-draws the pool — and the upstream's member pool then picks the machine among the members this
+/// request has not already met.
+fn select_member(ctx: &mut HttpContext) -> Result<Selected, HttpError> {
     let Some(target) = ctx.target() else {
         return Err(HttpError::NotReady);
     };
@@ -190,23 +192,47 @@ fn select_member(ctx: &HttpContext) -> Result<Selected, HttpError> {
         return Err(HttpError::NotReady);
     };
     let now = Instant::now();
-    // The route's upstream pool chooses *which upstream* serves; the upstream's own member pool
-    // chooses *which machine*. A route without a pool goes straight to its single target.
-    let name = match ctx.route_id().and_then(|route| selection.route_pool(route)) {
-        Some(pool) => {
-            let picked = selection
+
+    // The walk, when this request opened one, holds the upstream its pool chose: sticky for the
+    // walk's lifetime. A request without a walk either has no pool or makes its first round now,
+    // which is when the pool's draw happens — and when a walk without an upstream names its target.
+    let upstream = match ctx.traffic_walk() {
+        Some(walk) => walk.upstream().clone(),
+        None => match ctx.route_id().and_then(|route| selection.route_pool(route)) {
+            Some(pool) => selection
                 .pick_upstream(pool, ctx.client_ip(), now)
-                .ok_or_else(|| no_pooled_member(target))?;
-            picked.as_ref()
+                .ok_or_else(|| no_pooled_member(target))?
+                .clone(),
+            None => Arc::from(name.as_str()),
+        },
+    };
+    let Some(state) = selection.upstream(&upstream) else {
+        return Err(no_member(&upstream));
+    };
+    // The members this request already met are out of the candidates, so a failover round cannot be
+    // sent to the machine that just failed.
+    let tried = ctx
+        .traffic_walk()
+        .map(|walk| walk.tried().to_vec())
+        .unwrap_or_default();
+    let client = ctx.client_ip();
+    let selected = state
+        .select_excluding(&tried, client, now)
+        .ok_or_else(|| no_member(&upstream))?;
+    let member = selected.guard.member_id().clone();
+
+    // The member this round selected joins the walk's tried set, and a request without a walk opens
+    // one here: its first attempt is spent from this moment, which is what makes the route's budget
+    // "including the first".
+    match ctx.traffic_walk_mut() {
+        Some(walk) => walk.record_tried(member),
+        None => {
+            let mut walk = TrafficWalk::new(upstream, ctx.failover_budget());
+            walk.record_tried(member);
+            ctx.begin_traffic_walk(walk);
         }
-        None => name,
-    };
-    let Some(state) = selection.upstream(name) else {
-        return Err(no_member(name));
-    };
-    state
-        .select(ctx.client_ip(), now)
-        .ok_or_else(|| no_member(name))
+    }
+    Ok(selected)
 }
 
 /// Builds the refusal for an upstream with nothing left to select.

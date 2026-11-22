@@ -338,13 +338,24 @@ pub(in crate::proxy) fn retry_admitted(
 /// Used for a failure no hook recorded: the framework's own upstream interaction. A failure the hooks
 /// did record was classified where it happened, because the classification is what decided the
 /// response.
+///
+/// The two walks answer with their own vocabularies: an llm route's attempt speaks in canonical
+/// refusals and chain positions, and a traffic route's member walk only says whether the budget
+/// holds another member. Exactly one walk can exist for a request.
 fn classify_failed(ctx: &mut HttpContext) -> bool {
     let verdict = ctx
         .llm_mut()
         .and_then(|llm| llm.attempt_mut())
         .map(|attempt| attempt.failed(tokio::time::Instant::now()))
         .transpose();
-    matches!(verdict, Ok(Some(crate::llm::AttemptVerdict::Retry)))
+    match verdict {
+        Ok(Some(crate::llm::AttemptVerdict::Retry)) => return true,
+        // The llm walk refused or exhausted: no llm attempt follows, and a traffic walk cannot exist
+        // beside one.
+        Ok(None) => {}
+        _ => return false,
+    }
+    matches!(ctx.traffic_walk_mut().map(|walk| walk.failed()), Some(true))
 }
 
 /// Reports one attempt that failed, whose outcome the walk has already replaced.

@@ -27,6 +27,7 @@ use std::{
 };
 
 use nico_core::{Ejection, Endpoint};
+use nico_lb::Members;
 
 use super::health::{Failure, Health, Outcome, Transition};
 
@@ -54,7 +55,7 @@ impl MemberId {
 
     /// Builds the identity of one *expanded* member: a hostname endpoint's member keeps the
     /// endpoint's name and port, and its address is one machine the name resolved to.
-    pub(super) fn new(name: Arc<str>, address: Arc<str>, port: u16) -> Self {
+    pub(crate) fn new(name: Arc<str>, address: Arc<str>, port: u16) -> Self {
         Self {
             name,
             address,
@@ -176,6 +177,14 @@ impl ConnectionGuard {
         }
     }
 
+    /// Returns the identity of the member this request is using.
+    ///
+    /// The walk collects it: "the members this request already tried" is a set of identities, so a
+    /// retry round can exclude the machine that just failed.
+    pub(crate) fn member_id(&self) -> &MemberId {
+        self.member.id()
+    }
+
     /// Returns the member's name when the upstream has more than one member.
     ///
     /// `None` for a single-member upstream: the request record's `upstream` field already names the
@@ -237,4 +246,70 @@ fn log_ejection(upstream: &str, endpoint: &str, reason: Failure) {
         reason = reason.as_str(),
         "upstream member ejected"
     );
+}
+
+/// One member of a published upstream: this generation's weight, and the state that outlives it.
+///
+/// The weight lives here rather than in [`MemberState`] because it is the document's fact: a weight
+/// that changed must take effect on the next publication, while the counters it was inherited with
+/// must not be recreated just because the number changed.
+#[derive(Debug)]
+pub(crate) struct Member {
+    pub(super) state: Arc<MemberState>,
+    pub(super) weight: u16,
+}
+
+impl Member {
+    /// Returns the state this member inherited or started with.
+    pub(crate) fn state(&self) -> &Arc<MemberState> {
+        &self.state
+    }
+
+    /// Returns this generation's weight for the member.
+    pub(crate) fn weight(&self) -> u16 {
+        self.weight
+    }
+}
+
+/// One generation's members, read through the accessors a picker may use.
+///
+/// The names are hoisted into their own vector so a picker receives `&str` without the pool having to
+/// hand out its whole member table: a rule may know a member's name and weight, and nothing about how
+/// the gateway reaches it.
+#[derive(Debug)]
+pub(super) struct MembersView {
+    pub(super) members: Vec<Member>,
+    pub(super) names: Vec<Arc<str>>,
+}
+
+impl MembersView {
+    /// Returns the members in document order.
+    pub(super) fn list(&self) -> &[Member] {
+        &self.members
+    }
+
+    /// Returns every member's name, indexed like [`MembersView::list`].
+    pub(super) fn names(&self) -> &[Arc<str>] {
+        &self.names
+    }
+}
+
+impl Members for MembersView {
+    fn len(&self) -> usize {
+        self.list().len()
+    }
+
+    fn weight(&self, index: usize) -> u16 {
+        self.list().get(index).map_or(0, Member::weight)
+    }
+
+    fn active(&self, index: usize) -> u32 {
+        self.list()
+            .get(index)
+            .map_or(0, |member| member.state().active_connections())
+    }
+
+    fn name(&self, index: usize) -> &str {
+        self.names.get(index).map_or("", |name| name)
+    }
 }

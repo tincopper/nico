@@ -35,6 +35,8 @@ mod buffer;
 mod identity;
 mod llm;
 mod member;
+mod plugins;
+mod walk;
 
 use std::{
     net::IpAddr,
@@ -47,6 +49,7 @@ pub use identity::Identity;
 use nico_core::{Generation, Route, RouteTarget, RuntimeSnapshot};
 use pingora::http::{Method, RequestHeader};
 
+pub(crate) use self::walk::TrafficWalk;
 use self::{buffer::BodyBuffer, llm::LlmExchange};
 use crate::{
     budget,
@@ -87,6 +90,13 @@ pub struct HttpContext {
     response_limit: Option<u32>,
     body_bytes: u64,
     llm: Option<LlmExchange>,
+    /// One traffic request's walk over its upstream's members, when the route has a failover
+    /// budget. `None` for a converting route (its walk is the LLM attempt) and before the request
+    /// selects its first member.
+    walk: Option<TrafficWalk>,
+    /// How many members one request may walk, from the route's `retry_budget`; `1` until a route is
+    /// bound, which is the shape every route had before failover existed.
+    failover_budget: u8,
     error: Option<HttpError>,
     global: Option<PluginChain>,
     route_chain: Option<PluginChain>,
@@ -120,6 +130,9 @@ impl HttpContext {
         self.deadline = Some(now + budget::document_budget(request));
         self.body_limit = Some(request.max_body_bytes());
         self.snapshot = Some(Arc::clone(snapshot));
+        // One attempt until a route says otherwise: the failover budget is the route's to set, and
+        // the document shape before it binds is the shape every route had before failover existed.
+        self.failover_budget = 1;
     }
 
     /// Records what the request matched, tightening the budget the document set.
@@ -145,6 +158,9 @@ impl HttpContext {
         // The budget is a route fact cached beside the other two: the check at peer time and the
         // charge at record time read the context instead of reaching back into the snapshot.
         self.token_budget = route.token_budget().cloned();
+        // The failover budget is the same kind of route fact: the walk reads the context, not the
+        // snapshot, so a reload mid-request cannot change what this request may walk.
+        self.failover_budget = route.retry_budget().max(1);
         if let Some(started) = self.started {
             self.deadline = Some(started + budget::request_budget(route, request));
         }
@@ -381,61 +397,6 @@ impl HttpContext {
         self.error.as_ref()
     }
 
-    /// Records the two chains this request was admitted by, and how it is framed.
-    ///
-    /// The response and logging stages read them back instead of resolving the route again, so a
-    /// reload that publishes while a request is in flight cannot run a *different* generation's
-    /// plugins against a response the request's own plugins shaped. Both chains come from the same
-    /// `HttpState`, so they are one generation by construction.
-    ///
-    /// `body` and `response` are the framing decisions made while that generation was compiled: the
-    /// body hook runs per chunk and may read them, but may not re-derive them from configuration.
-    /// Only the hooks call this.
-    pub(crate) fn set_chains(&mut self, global: PluginChain, route: Option<PluginChain>) {
-        self.global = Some(global);
-        self.route_chain = route;
-    }
-
-    /// Records that this route's request body is delivered to plugins whole.
-    pub(crate) fn set_buffered(&mut self, buffered: bool) {
-        self.buffered = buffered;
-    }
-
-    /// Records that a plugin rewrites this route's response body.
-    pub(crate) fn set_response_rewrite(&mut self, rewrites: bool) {
-        self.rewrites_response = rewrites;
-    }
-
-    /// Returns the chain every request runs, once the request has been admitted.
-    pub(crate) fn global(&self) -> Option<&PluginChain> {
-        self.global.as_ref()
-    }
-
-    /// Returns the chain this request's route runs, when the route has plugins.
-    pub(crate) fn route_chain(&self) -> Option<&PluginChain> {
-        self.route_chain.as_ref()
-    }
-
-    /// Returns whether this route's request body is buffered whole.
-    pub(crate) fn buffers_body(&self) -> bool {
-        self.buffered
-    }
-
-    /// Returns whether a plugin rewrites this route's response body.
-    pub(crate) fn rewrites_response(&self) -> bool {
-        self.rewrites_response
-    }
-
-    /// Appends one received chunk to the buffered request body.
-    pub(crate) fn push_body(&mut self, chunk: &[u8]) {
-        self.request_buffer.push(chunk);
-    }
-
-    /// Takes the buffered request body, leaving the buffer empty.
-    pub(crate) fn take_body(&mut self) -> Vec<u8> {
-        self.request_buffer.take()
-    }
-
     /// Records the identity an authenticating filter established.
     ///
     /// Only an authentication filter calls this, and only after it verified the credential. The
@@ -455,22 +416,6 @@ impl HttpContext {
     #[must_use]
     pub fn identity(&self) -> Option<&Identity> {
         self.identity.as_ref()
-    }
-
-    /// Records the plugin instance whose stage failed, for the request's one log record.
-    ///
-    /// The chain is the only place that knows both the instance name and the error; the record is the
-    /// only place that reports it. The first failure wins, so a later symptom cannot hide the cause.
-    pub(crate) fn set_failed_plugin(&mut self, name: &str) {
-        if self.failed_plugin.is_none() {
-            self.failed_plugin = Some(Arc::from(name));
-        }
-    }
-
-    /// Returns the plugin instance a failure is attributed to, when one produced it.
-    #[must_use]
-    pub(crate) fn failed_plugin(&self) -> Option<&str> {
-        self.failed_plugin.as_deref()
     }
 
     /// Records the correlation id for this request's log line and error bodies.

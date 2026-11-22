@@ -368,12 +368,12 @@ impl Route {
         &self.plugins
     }
 
-    /// Returns the total attempts this route may make against one provider target, including the
-    /// first.
+    /// Returns the total attempts this route may make against one target, including the first.
     ///
     /// The document's default is `1`, which is the behavior of a route that never names the field:
-    /// one attempt, no retry. The value bounds the retries a failing target absorbs; moving to
-    /// another target is the fallback chain's decision, not this budget's.
+    /// one attempt, no retry. The value bounds what one failing target absorbs; on a provider route
+    /// moving to another target is the fallback chain's decision, not this budget's, and on an
+    /// upstream route it is the member walk's.
     #[must_use]
     pub const fn retry_budget(&self) -> u8 {
         self.retry_budget
