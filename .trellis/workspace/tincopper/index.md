@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 19
+- **Total Sessions**: 20
 - **Last Active**: 2026-11-22
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~699 | Active |
+| `journal-1.md` | ~721 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 20 | 2026-11-22 | traffic 同请求 failover(G2) | `14ca708` | `main` |
 | 19 | 2026-11-22 | 路由池成员数上界与 llm ip_hash 测试 | `e2cee6b` | `main` |
 | 18 | 2026-11-22 | traffic 路由的 upstream 池(灰度分流) | `81a2f33`, `21dcb77` | `main` |
 | 17 | 2026-11-21 | upstream 域名成员的 DNS 多成员展开 | `8f105cd`, `c1c2126` | `main` |

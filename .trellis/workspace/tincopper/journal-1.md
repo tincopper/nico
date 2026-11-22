@@ -697,3 +697,25 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 ### Status
 
 [OK] **Completed**
+
+
+## Session 20: traffic 同请求 failover(G2)
+<!-- trellis-session: v=2 fp=5e8557250d926f04 -->
+
+**Date**: 2026-11-22
+**Task**: traffic 同请求 failover(G2)
+**Branch**: `main`
+
+### Summary
+
+新任务 11-22-traffic-failover(nginx 审查 G2):traffic 路由的同请求 failover。研究发现重试门(hooks/重放事实/响应提交禁令)本就与路由种类无关,缺的只是 walk——classify_failed 只问 llm attempt。实现:TrafficWalk(context/walk.rs,粘住池抽取/已试集合/retry_budget 含首次)、门分流(may_replace_attempt 与 classify_failed 由两个 walk 各自回答)、UpstreamState::select_excluding(可用且未试)、schema 对 upstream 路由开放 retry_budget。失败分类是 traffic 自己的:连接失败/超时/头前断连改试下一个成员;upstream 5xx 透传不替换(照常计入健康 streak);响应已提交永不重试。实现中发现并修复隐藏缺陷:destination_still_describes_the_attempt 对 traffic 恒真,重试轮会复用 round 1 的死目标——修复后任一 walk 存在即目标属于尝试。E2E 4 项(死成员移交/默认预算即答/候选耗尽/5xx 不替换),变异抽查(删 walk 子句/删 tried 过滤)被咬。文件预算:context.rs 拆出 plugins.rs,pools.rs 把 Member/MembersView 归位 member.rs。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `14ca708` | feat(proxy): fail over to the next member within one traffic request |
+
+### Status
+
+[OK] **Completed**
