@@ -105,6 +105,7 @@ nginx 的 `reload` 起新 worker、老 worker 继续服务到连接结束。nico
 | `proxy_read_timeout 60s` | `request.timeout_ms` + route `timeout_ms` / `ttft_timeout_ms` | 条件 | nico 是"总预算 + 每次读上限"，不是"两次读之间"的独立计时 |
 | `proxy_connect_timeout` | 总预算内 | 无（字段） | 连接超时取本次请求的剩余预算 |
 | `resolver` / 动态 DNS | 发布期解析一次，展开为逐地址成员 | TTL 后台重解析、权重解析 | 逐地址健康与 failover；地址集合随 reload 更新，请求路径不做域名查询 |
+| `split_clients` / 按 backend 组加权分流 | `routes[].upstreams` 池（`strategy`: weighted_random / round_robin / ip_hash） | 按请求体或 header 分流 | 路由池选 upstream、upstream 成员池选机器；候选随可用性收敛，池轮转跨 reload 继承 |
 | `upstream ... keepalive 32;` | 无 | 无 | 连接复用由数据平面管理，没有公开参数 |
 | `proxy_http_version 2;` | 无 | 无 | 上游固定 HTTP/1.1 |
 | `ssl_verify_client`（mTLS） | 无 | 无 | 只有 TLS 终止 |

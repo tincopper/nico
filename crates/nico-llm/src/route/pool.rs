@@ -90,8 +90,15 @@ impl PoolOrder {
     /// member the request already gave up on. When it answers with nothing — every remaining member
     /// has no share, which a pool of zero weights reaches — the rest stay in pool order rather than
     /// being dropped: the document named them, so they are still members the route may use.
+    /// `client` is the address an `ip_hash` strategy keys its rendezvous on; `None` means the
+    /// strategy's own address-less behaviour applies.
     #[must_use]
-    pub fn order(&self, untried: &[usize], names: &[&str]) -> Vec<usize> {
+    pub fn order(
+        &self,
+        untried: &[usize],
+        names: &[&str],
+        client: Option<std::net::IpAddr>,
+    ) -> Vec<usize> {
         if untried.is_empty() {
             return Vec::new();
         }
@@ -99,7 +106,7 @@ impl PoolOrder {
             weights: &self.weights,
             names,
         };
-        let chosen = self.picker.pick(&View::new(&facts, untried, None));
+        let chosen = self.picker.pick(&View::new(&facts, untried, client));
         let Some(chosen) = chosen.filter(|index| untried.contains(index)) else {
             return untried.to_vec();
         };

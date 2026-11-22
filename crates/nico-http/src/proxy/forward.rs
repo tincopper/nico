@@ -170,7 +170,8 @@ pub(super) fn destination(ctx: &mut HttpContext) -> Result<Destination, HttpErro
 ///
 /// The target, the generation's member list and the caller's address all come from the context, so the
 /// choice is made against the document the request was routed with — not against whatever the store
-/// holds now.
+/// holds now. A route that distributes across several upstreams picks the upstream first, from its
+/// own pool; the upstream's member pool then picks the machine.
 fn select_member(ctx: &HttpContext) -> Result<Selected, HttpError> {
     let Some(target) = ctx.target() else {
         return Err(HttpError::NotReady);
@@ -188,11 +189,23 @@ fn select_member(ctx: &HttpContext) -> Result<Selected, HttpError> {
     let Some(selection) = ctx.selection() else {
         return Err(HttpError::NotReady);
     };
+    let now = Instant::now();
+    // The route's upstream pool chooses *which upstream* serves; the upstream's own member pool
+    // chooses *which machine*. A route without a pool goes straight to its single target.
+    let name = match ctx.route_id().and_then(|route| selection.route_pool(route)) {
+        Some(pool) => {
+            let picked = selection
+                .pick_upstream(pool, ctx.client_ip(), now)
+                .ok_or_else(|| no_pooled_member(target))?;
+            picked.as_ref()
+        }
+        None => name,
+    };
     let Some(state) = selection.upstream(name) else {
         return Err(no_member(name));
     };
     state
-        .select(ctx.client_ip(), Instant::now())
+        .select(ctx.client_ip(), now)
         .ok_or_else(|| no_member(name))
 }
 
@@ -206,6 +219,20 @@ fn no_member(name: &str) -> HttpError {
     HttpError::UpstreamFailed {
         source: Box::new(io::Error::other(format!(
             "upstream `{name}` has no available member"
+        ))),
+    }
+}
+
+/// Builds the refusal for a pooled route with nothing left to select.
+///
+/// Every upstream the route's pool could name is out of rotation, so the honest answer is the same
+/// `502 upstream_unreachable` row — the message names the route, because there is no single upstream
+/// to blame.
+fn no_pooled_member(target: &RouteTarget) -> HttpError {
+    HttpError::UpstreamFailed {
+        source: Box::new(io::Error::other(format!(
+            "route `{}` has no upstream with an available member",
+            target.name()
         ))),
     }
 }

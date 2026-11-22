@@ -59,5 +59,5 @@ pub use pool::PoolOrder;
 /// The selection vocabulary a pool strategy is built from, re-exported so a caller does not need
 /// `nico-lb` in its own dependency list to name the picker a document's strategy selects.
 pub mod select {
-    pub use nico_lb::{Picker, Random, RoundRobin, Source, WeightedRandom};
+    pub use nico_lb::{IpHash, Picker, Random, RoundRobin, Source, WeightedRandom};
 }

@@ -37,8 +37,11 @@ use super::{
     error::DocumentError,
     plugin::PluginSpec,
     provider::Provider,
-    raw::{RawPoolMember, RawRoute},
-    route::{Pool, PoolMember, PoolStrategy, Route, RouteMode, RouteTarget, TokenBudget},
+    raw::{RawPoolMember, RawRoute, RawUpstreamPoolMember},
+    route::{
+        Pool, PoolMember, PoolStrategy, Route, RouteMode, RouteTarget, TokenBudget, UpstreamPool,
+        UpstreamPoolMember,
+    },
     upstream::Upstream,
 };
 
@@ -147,6 +150,7 @@ fn resolve(
         upstream,
         provider,
         providers: raw_pool,
+        upstreams: raw_upstream_pool,
         strategy,
         timeout_ms,
         ttft_timeout_ms,
@@ -161,43 +165,59 @@ fn resolve(
         fallback: raw_fallback,
     } = raw;
 
-    let (target, pool) = match (upstream, provider, raw_pool) {
-        (None, None, None) => return Err(DocumentError::RouteTargetMissing { id }),
-        // Two ways to name a provider target is ambiguous even when both name the same provider: the
-        // routing decisions differ (one call versus a distribution), so the document must say which.
-        (None, Some(_), Some(_)) => return Err(DocumentError::RouteTargetAmbiguous { id }),
-        (Some(_), Some(_), _) | (Some(_), None, Some(_)) => {
-            return Err(DocumentError::RouteTargetAmbiguous { id });
+    // Exactly one way to name a target: a single upstream, a single provider, a provider pool, or an
+    // upstream pool. Two at once is ambiguous even when both name the same service — the routing
+    // decisions differ (one target versus a distribution) — and none is a route with no target.
+    let named = usize::from(upstream.is_some())
+        + usize::from(provider.is_some())
+        + usize::from(raw_pool.is_some())
+        + usize::from(raw_upstream_pool.is_some());
+    if named == 0 {
+        return Err(DocumentError::RouteTargetMissing { id });
+    }
+    if named > 1 {
+        return Err(DocumentError::RouteTargetAmbiguous { id });
+    }
+
+    let (target, pool, upstream_pool) = if let Some(name) = upstream {
+        ensure_known(upstreams, "upstream", &name)?;
+        // A strategy with no pool chooses among one member, so it is a value nothing reads. The
+        // document is refused rather than silently ignoring it: an operator who wrote it believed
+        // it changed something.
+        if strategy.is_some() {
+            return Err(DocumentError::StrategyWithoutPool { id });
         }
-        (Some(name), None, None) => {
-            ensure_known(upstreams, "upstream", &name)?;
-            // A strategy with no pool chooses among one member, so it is a value nothing reads. The
-            // document is refused rather than silently ignoring it: an operator who wrote it believed
-            // it changed something.
-            if strategy.is_some() {
-                return Err(DocumentError::StrategyWithoutPool { id });
-            }
-            (RouteTarget::Upstream(name), None)
+        (RouteTarget::Upstream(name), None, None)
+    } else if let Some(name) = provider {
+        ensure_known(providers, "provider", &name)?;
+        if strategy.is_some() {
+            return Err(DocumentError::StrategyWithoutPool { id });
         }
-        (None, Some(name), None) => {
-            ensure_known(providers, "provider", &name)?;
-            if strategy.is_some() {
-                return Err(DocumentError::StrategyWithoutPool { id });
-            }
-            (RouteTarget::Provider(name), None)
-        }
-        (None, None, Some(members)) => {
-            let pool = resolve_pool(id.as_str(), members, strategy, providers)?;
-            // The route's single target is the pool's first member, so every rule that already asks
-            // "is this route's target named again in its fallback chain" keeps its meaning for a
-            // pooled route: the head of the chain is the head of the pool.
-            let first = pool
-                .members()
-                .first()
-                .map(|member| member.name().to_owned())
-                .ok_or_else(|| DocumentError::PoolEmpty { id: id.clone() })?;
-            (RouteTarget::Provider(first), Some(pool))
-        }
+        (RouteTarget::Provider(name), None, None)
+    } else if let Some(members) = raw_pool {
+        let pool = resolve_pool(id.as_str(), members, strategy, providers)?;
+        // The route's single target is the pool's first member, so every rule that already asks
+        // "is this route's target named again in its fallback chain" keeps its meaning for a
+        // pooled route: the head of the chain is the head of the pool.
+        let first = pool
+            .members()
+            .first()
+            .map(|member| member.name().to_owned())
+            .ok_or_else(|| DocumentError::PoolEmpty { id: id.clone() })?;
+        (RouteTarget::Provider(first), Some(pool), None)
+    } else {
+        // The count check left this as the one naming form; `unwrap_or_default` only silences the
+        // impossible `None`, and an empty list reaches `resolve_upstream_pool`'s own refusal.
+        let members = raw_upstream_pool.unwrap_or_default();
+        let upstream_pool = resolve_upstream_pool(id.as_str(), members, strategy, upstreams)?;
+        // The same first-member rule as a provider pool: the route's target is the pool's head, so
+        // rules that read a target keep their meaning.
+        let first = upstream_pool
+            .members()
+            .first()
+            .map(|member| member.upstream().to_owned())
+            .ok_or_else(|| DocumentError::PoolEmpty { id: id.clone() })?;
+        (RouteTarget::Upstream(first), None, Some(upstream_pool))
     };
 
     check_target_fields(
@@ -261,7 +281,48 @@ fn resolve(
         token_budget: raw_token_budget
             .map(|raw| TokenBudget::new(raw.limit_tokens, raw.window_seconds)),
         pool,
+        upstream_pool,
     })
+}
+
+/// Resolves one route's `upstreams` list into a pool.
+///
+/// Every member is a declared upstream, listed once, with a weight in `1..=1000` — zero is refused
+/// because a traffic route has one attempt and no fallback chain, so a member that can never be
+/// chosen would be a name without a behaviour. The strategy is the document's or the default; a
+/// `strategy` on a route without a pool is refused by the caller, because a value no code path reads
+/// is a typo rather than configuration.
+fn resolve_upstream_pool(
+    route: &str,
+    raw: Vec<RawUpstreamPoolMember>,
+    strategy: Option<PoolStrategy>,
+    upstreams: &HashSet<&str>,
+) -> Result<UpstreamPool, DocumentError> {
+    if raw.is_empty() {
+        return Err(DocumentError::PoolEmpty {
+            id: route.to_owned(),
+        });
+    }
+    let mut seen = HashSet::with_capacity(raw.len());
+    let mut members = Vec::with_capacity(raw.len());
+    for member in raw {
+        ensure_known(upstreams, "upstream", &member.upstream)?;
+        if !seen.insert(member.upstream.clone()) {
+            return Err(DocumentError::DuplicateId {
+                kind: "route-upstream-pool-member",
+                id: member.upstream,
+            });
+        }
+        let weight = member.weight.unwrap_or(1);
+        if !(1..=MAX_POOL_WEIGHT).contains(&weight) {
+            return Err(DocumentError::LimitOutOfRange {
+                field: "routes[].upstreams[].weight",
+                value: u64::from(weight),
+            });
+        }
+        members.push(UpstreamPoolMember::new(member.upstream, weight));
+    }
+    Ok(UpstreamPool::new(members, strategy.unwrap_or_default()))
 }
 
 /// Resolves one route's `providers` list into a pool.

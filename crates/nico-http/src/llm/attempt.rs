@@ -187,7 +187,11 @@ pub trait LlmAttempt: Send {
     /// Returns the refusal that answers the client when no target could be served at all — an
     /// [`HttpError::LlmRejected`] carrying the client protocol's error document, or the generic failure
     /// the front-end chose.
-    fn select(&mut self, now: tokio::time::Instant) -> Result<AttemptTarget, HttpError>;
+    fn select(
+        &mut self,
+        now: tokio::time::Instant,
+        client: Option<std::net::IpAddr>,
+    ) -> Result<AttemptTarget, HttpError>;
 
     /// Decodes the buffered client body and encodes the current attempt for its target.
     ///

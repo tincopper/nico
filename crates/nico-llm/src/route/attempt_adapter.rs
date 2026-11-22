@@ -64,8 +64,12 @@ impl ConvertAttempt {
 }
 
 impl LlmAttempt for ConvertAttempt {
-    fn select(&mut self, now: tokio::time::Instant) -> Result<AttemptTarget, HttpError> {
-        self.sequence.select_first(now).map_err(|refusal| {
+    fn select(
+        &mut self,
+        now: tokio::time::Instant,
+        client: Option<std::net::IpAddr>,
+    ) -> Result<AttemptTarget, HttpError> {
+        self.sequence.select_first(now, client).map_err(|refusal| {
             let canonical = refusal.error().clone();
             self.reject_canonical(canonical, None)
         })?;

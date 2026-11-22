@@ -52,10 +52,12 @@ use super::{Destination, dns::ExpandedMembers};
 pub(crate) mod health;
 pub(crate) mod member;
 mod picker;
+mod route_pool;
 
 /// The failure vocabulary a hook records, re-exported so no caller spells a member's failure as text.
 pub(crate) use health::{Failure as MemberFailure, Outcome as MemberOutcome};
 pub(crate) use member::{ConnectionGuard, MemberId, MemberState};
+use route_pool::RoutePoolState;
 
 /// The inheritance store: the members of the last published document, by upstream name.
 ///
@@ -65,6 +67,11 @@ pub(crate) use member::{ConnectionGuard, MemberId, MemberState};
 #[derive(Debug, Default)]
 pub(crate) struct UpstreamPools {
     previous: Mutex<HashMap<Arc<str>, Arc<UpstreamState>>>,
+    /// The route pools of the last published document, by route id.
+    ///
+    /// The same lifetime rule as the member history: written only by publication, read to inherit a
+    /// route pool's picker state when the new document names the same route again.
+    previous_route_pools: Mutex<HashMap<Arc<str>, Arc<RoutePoolState>>>,
 }
 
 impl UpstreamPools {
@@ -81,6 +88,7 @@ impl UpstreamPools {
         expanded: &ExpandedMembers,
     ) -> Arc<SelectionTable> {
         let mut previous = self.lock();
+        let mut previous_route_pools = self.lock_route_pools();
         let mut history = HashMap::with_capacity(document.upstreams().len());
         let mut table = HashMap::with_capacity(document.upstreams().len());
         for upstream in document.upstreams() {
@@ -94,12 +102,31 @@ impl UpstreamPools {
             history.insert(Arc::clone(&key), Arc::clone(&state));
             table.insert(key, state);
         }
+        // The route pools: one per route that distributes across upstreams, keyed by the route id the
+        // logs already use. Inheritance is the member history's rule seen from the route's side: a
+        // route the document still names keeps its picker's state, and one it dropped is forgotten.
+        let mut pool_history = HashMap::with_capacity(document.routes().len());
+        let mut route_pools = HashMap::with_capacity(document.routes().len());
+        for route in document.routes() {
+            let Some(pool) = route.upstream_pool() else {
+                continue;
+            };
+            let key: Arc<str> = Arc::from(route.id());
+            let inherited = previous_route_pools.get(&key).map(Arc::clone);
+            let state = Arc::new(RoutePoolState::inherit(pool, inherited.as_deref()));
+            pool_history.insert(Arc::clone(&key), Arc::clone(&state));
+            route_pools.insert(key, state);
+        }
         // Replacing the map is what keeps inheritance bounded: a member the document no longer names
         // is forgotten here, so a document that renames its members on every reload cannot accumulate
         // state for machines that are gone. A member a request in flight is still using stays alive
         // through that generation's table, which is the only reader that still needs it.
         *previous = history;
-        Arc::new(SelectionTable { upstreams: table })
+        *previous_route_pools = pool_history;
+        Arc::new(SelectionTable {
+            upstreams: table,
+            route_pools,
+        })
     }
 
     /// Takes the store's lock, recovering from a poisoned one.
@@ -109,6 +136,14 @@ impl UpstreamPools {
     /// permanently unselectable upstream.
     fn lock(&self) -> MutexGuard<'_, HashMap<Arc<str>, Arc<UpstreamState>>> {
         match self.previous.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    /// Takes the route-pool history's lock, recovering the same way [`Self::lock`] does.
+    fn lock_route_pools(&self) -> MutexGuard<'_, HashMap<Arc<str>, Arc<RoutePoolState>>> {
+        match self.previous_route_pools.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         }
@@ -136,12 +171,34 @@ impl UpstreamPools {
 #[derive(Debug)]
 pub(crate) struct SelectionTable {
     upstreams: HashMap<Arc<str>, Arc<UpstreamState>>,
+    /// The route pools this generation published, by route id. A route the document gave no pool is
+    /// absent, and its selection goes straight to its single target.
+    route_pools: HashMap<Arc<str>, Arc<RoutePoolState>>,
 }
 
 impl SelectionTable {
     /// Returns the state of the upstream named `name`, when this generation published it.
     pub(crate) fn upstream(&self, name: &str) -> Option<&Arc<UpstreamState>> {
         self.upstreams.get(name)
+    }
+
+    /// Returns the route pool this generation published for `route`, when the route has one.
+    pub(crate) fn route_pool(&self, route: &str) -> Option<&Arc<RoutePoolState>> {
+        self.route_pools.get(route)
+    }
+
+    /// Picks the upstream one request is sent to, from `pool`'s members.
+    ///
+    /// The candidates are the pool's members whose upstream still has an available member — the
+    /// upstream-level form of the member pool's own candidate list, so a strategy cannot choose an
+    /// upstream the gateway has just decided against.
+    pub(crate) fn pick_upstream<'a>(
+        &self,
+        pool: &'a RoutePoolState,
+        client: Option<IpAddr>,
+        now: Instant,
+    ) -> Option<&'a Arc<str>> {
+        pool.select(&self.upstreams, client, now)
     }
 
     /// Returns how many upstreams this generation can select from.
@@ -290,6 +347,18 @@ impl UpstreamState {
     /// failure either — the member is now somebody else's probe, so this request takes the remaining
     /// candidates instead of a second probe.
     ///
+    /// Reports whether any member of this upstream may serve at `now`.
+    ///
+    /// The route pool's candidate filter asks this: an upstream whose every member is out of rotation
+    /// is not a candidate, so a pool strategy cannot choose it and a request cannot land on an
+    /// upstream the gateway has just decided against.
+    pub(crate) fn has_available(&self, now: Instant) -> bool {
+        self.members
+            .list()
+            .iter()
+            .any(|member| member.state().available(self.ejection, now))
+    }
+
     /// The guard is created here, so a member's in-flight count starts before the connection and is
     /// released only when the request's context is dropped.
     pub(crate) fn select(&self, client: Option<IpAddr>, now: Instant) -> Option<Selected> {

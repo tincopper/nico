@@ -114,6 +114,12 @@ pub struct AttemptSequence {
     /// step, so asking the strategy again after every failure would let a random draw produce a
     /// different first choice for the same request. The members the request has already tried are
     /// filtered out of it on every walk, which is what keeps one request from repeating a member.
+    /// The caller's address, as the pool strategy keyed its draw.
+    ///
+    /// An `ip_hash` pool makes the same caller meet the same member across requests, so the address
+    /// travels with the walk rather than with one select call: the retry rounds re-draw from the
+    /// model-filtered set and must key on the same caller the first round did.
+    client: Option<std::net::IpAddr>,
     pool_order: Option<Vec<usize>>,
     /// Whether the draw above was made with the model filter active.
     ///
@@ -143,6 +149,7 @@ impl AttemptSequence {
             tried: Vec::new(),
             excluded: Vec::new(),
             classified: false,
+            client: None,
             pool_order: None,
             pool_order_model: None,
         }
@@ -205,12 +212,19 @@ impl AttemptSequence {
     ///
     /// Called before the client's body arrives: target selection needs only the breaker and the
     /// clock, so the data plane learns where attempt 0 is sent while the body is still streaming.
+    /// `client` is the address an `ip_hash` pool keys its draw on, and it stays with the walk: the
+    /// retry rounds re-draw from the model-filtered set and must key on the same caller.
     ///
     /// # Errors
     /// Returns [`SelectionRefused`] when every member was skipped: the canonical error to answer the
     /// client with is the one the failures left behind (the primary target's history, because the
     /// route is *for* it).
-    pub fn select_first(&mut self, now: Instant) -> Result<(), SelectionRefused> {
+    pub fn select_first(
+        &mut self,
+        now: Instant,
+        client: Option<std::net::IpAddr>,
+    ) -> Result<(), SelectionRefused> {
+        self.client = client;
         self.select_from(0, now)
     }
 

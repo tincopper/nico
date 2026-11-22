@@ -132,7 +132,7 @@ fn sequence(chain: Arc<AttemptChain>, budget: u8) -> AttemptSequence {
 /// Runs the sequence to its first attempt.
 fn started(sequence: &mut AttemptSequence) {
     sequence
-        .select_first(Instant::now())
+        .select_first(Instant::now(), None)
         .expect("the chain serves");
     sequence.encode_current().expect("the member encodes");
 }
@@ -305,7 +305,7 @@ fn an_open_target_is_skipped_without_a_plan() {
     state
         .decode(&request_facts(), &body("chat-small", "hello"))
         .expect("the chain serves the body");
-    state.select_first(now).expect("the fallback serves");
+    state.select_first(now, None).expect("the fallback serves");
     state.encode_current().expect("the fallback encodes");
     assert_eq!(state.current(), 1);
     assert_eq!(
@@ -340,7 +340,7 @@ fn all_targets_skipped_refuses_with_the_last_recorded_error() {
         .decode(&request_facts(), &body("chat-small", "hello"))
         .expect("the chain serves the body");
     let refusal = state
-        .select_first(now)
+        .select_first(now, None)
         .expect_err("the sequence refuses what it cannot serve");
     assert_eq!(
         refusal.error().http_status(),

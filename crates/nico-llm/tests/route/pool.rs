@@ -58,7 +58,7 @@ fn a_pool_orders_its_members_by_the_strategy() {
     );
 
     let pool = chain.pool().expect("the chain has a pool");
-    let order = pool.order(&[0, 1], &["provider-0", "provider-1"]);
+    let order = pool.order(&[0, 1], &["provider-0", "provider-1"], None);
 
     assert_eq!(order.len(), 2, "every untried member appears once");
     assert_eq!(
@@ -73,8 +73,8 @@ fn round_robin_pool_order_follows_the_document() {
     let chain = pooled(&[1, 1, 1], Arc::new(RoundRobin::default()));
     let pool = chain.pool().expect("the chain has a pool");
 
-    let first = pool.order(&[0, 1, 2], &["a", "b", "c"]);
-    let second = pool.order(&[0, 1, 2], &["a", "b", "c"]);
+    let first = pool.order(&[0, 1, 2], &["a", "b", "c"], None);
+    let second = pool.order(&[0, 1, 2], &["a", "b", "c"], None);
 
     assert_eq!(
         first,
@@ -95,7 +95,7 @@ fn a_pool_never_names_a_member_it_was_not_offered() {
     let chain = pooled(&[1, 1, 1], Arc::new(RoundRobin::default()));
     let pool = chain.pool().expect("the chain has a pool");
 
-    let order = pool.order(&[1, 2], &["a", "b", "c"]);
+    let order = pool.order(&[1, 2], &["a", "b", "c"], None);
 
     assert_eq!(order.len(), 2);
     assert!(order.iter().all(|index| [1, 2].contains(index)));
@@ -111,11 +111,11 @@ fn a_request_does_not_attempt_the_same_pooled_member_twice() {
     let mut sequence = AttemptSequence::new(Arc::clone(&chain), breakers(), 1);
 
     sequence
-        .select_first(tokio::time::Instant::now())
+        .select_first(tokio::time::Instant::now(), None)
         .expect("the first member admits");
     let first = sequence.current();
     sequence
-        .select_first(tokio::time::Instant::now())
+        .select_first(tokio::time::Instant::now(), None)
         .expect("the walk still has a member left");
 
     assert_ne!(
@@ -135,7 +135,7 @@ fn a_zero_weight_member_is_ordered_last() {
     );
     let pool = chain.pool().expect("the chain has a pool");
 
-    let order = pool.order(&[0, 1], &["weighted", "fallback-only"]);
+    let order = pool.order(&[0, 1], &["weighted", "fallback-only"], None);
 
     assert_eq!(order[0], 0, "the weighted member is drawn first");
     assert_eq!(

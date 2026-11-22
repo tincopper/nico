@@ -148,6 +148,13 @@ pub(super) struct RawRoute {
     /// refused — a pool with no member is a route with no target, which the document already has its
     /// own error for.
     pub(super) providers: Option<Vec<RawPoolMember>>,
+    /// The upstream pool, when the route distributes across several upstreams.
+    ///
+    /// Mutually exclusive with `upstream`; absent means the single-target forms above. `Some([])` is
+    /// refused for the same reason a provider pool with no member is. Refused on a `provider` route:
+    /// a pool of upstreams is traffic-layer vocabulary, and a converting route's pools are
+    /// provider pools.
+    pub(super) upstreams: Option<Vec<RawUpstreamPoolMember>>,
     /// How the pool chooses a member for one attempt.
     ///
     /// Absent means [`PoolStrategy::WeightedRandom`](super::PoolStrategy::WeightedRandom). Refused on
@@ -204,6 +211,20 @@ pub(super) struct RawPoolMember {
     pub(super) name: String,
     /// Absent means `1`. `0` is legal and means "not a distribution candidate", which is why this
     /// range starts at zero where the traffic layer's member weights start at one.
+    pub(super) weight: Option<u16>,
+}
+
+/// One `routes[].upstreams[]` entry exactly as written.
+///
+/// A member names a declared upstream and its share of the traffic. It carries no endpoints or
+/// strategy of its own: those belong to the upstream entry, which is also what a route without a
+/// pool uses, so one fleet is described once.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawUpstreamPoolMember {
+    pub(super) upstream: String,
+    /// Absent means `1`. `0` is refused by validation — a traffic route has one attempt and no
+    /// fallback chain, so a member that can never be chosen would be a name without a behaviour.
     pub(super) weight: Option<u16>,
 }
 

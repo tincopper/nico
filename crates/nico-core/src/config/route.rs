@@ -60,12 +60,13 @@ pub enum RouteMode {
     Passthrough,
 }
 
-/// How a provider pool chooses the member one attempt is sent to.
+/// How a route pool chooses the member one attempt (or request) is sent to.
 ///
 /// The set is closed and deliberately separate from [`Strategy`](super::Strategy): the traffic layer
 /// chooses between addresses (a connection, an in-flight count, a caller's address), while a provider
-/// pool chooses between services. Only `round_robin` means the same thing on both sides, and a shared
-/// enum would carry two variants that are meaningless in one of the two domains.
+/// pool chooses between services. The strategies a pool of either kind may name are the ones that
+/// mean the same thing on both sides — a proportional draw, a document-order rotation, and a
+/// caller-address rendezvous — which is why there is one enum and not two.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PoolStrategy {
@@ -77,6 +78,13 @@ pub enum PoolStrategy {
     WeightedRandom,
     /// The members in document order, one attempt each.
     RoundRobin,
+    /// Rendezvous-hash the caller's full address onto a member, so the same caller keeps meeting the
+    /// same member across requests — the sticky form of a canary.
+    ///
+    /// A caller with no address (a session a test built, a Unix socket peer) is spread by rotation
+    /// instead: inventing a key would pile every such caller onto one member. The fallback is the
+    /// rule's own, not the pool's.
+    IpHash,
 }
 
 /// One member of a provider pool: a declared provider, and its share of the traffic.
@@ -140,6 +148,67 @@ impl Pool {
     }
 }
 
+/// One member of an upstream pool: a declared upstream, and its share of the traffic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpstreamPoolMember {
+    pub(super) upstream: String,
+    pub(super) weight: u16,
+}
+
+impl UpstreamPoolMember {
+    /// Builds a member from values the parser has already validated.
+    pub(super) fn new(upstream: String, weight: u16) -> Self {
+        Self { upstream, weight }
+    }
+
+    /// Returns the name of the [`Upstream`](super::Upstream) this member forwards to.
+    #[must_use]
+    pub fn upstream(&self) -> &str {
+        &self.upstream
+    }
+
+    /// Returns this member's share of the traffic, in `1..=1000`.
+    ///
+    /// Zero is refused by validation, and the reason is the domain: a provider pool has a fallback
+    /// chain a zero-weight member can still ride, while an upstream route has one attempt — a zero
+    /// here would be a member that can never serve, not a fallback.
+    #[must_use]
+    pub const fn weight(&self) -> u16 {
+        self.weight
+    }
+}
+
+/// The upstreams one traffic route may send a request to, and how it chooses among them.
+///
+/// A pool replaces the route's single `upstream` target. The members are declared upstreams, resolved
+/// while the document is validated, so "a member nobody declared" is a publication error rather than
+/// a request-time refusal. The route's target stays the pool's first member, so every rule that
+/// already reads a route's target keeps its meaning for a pooled route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpstreamPool {
+    pub(super) members: Vec<UpstreamPoolMember>,
+    pub(super) strategy: PoolStrategy,
+}
+
+impl UpstreamPool {
+    /// Builds a pool from values the parser has already validated.
+    pub(super) fn new(members: Vec<UpstreamPoolMember>, strategy: PoolStrategy) -> Self {
+        Self { members, strategy }
+    }
+
+    /// Returns the members, in document order.
+    #[must_use]
+    pub fn members(&self) -> &[UpstreamPoolMember] {
+        &self.members
+    }
+
+    /// Returns how the pool chooses the upstream one request is sent to.
+    #[must_use]
+    pub const fn strategy(&self) -> PoolStrategy {
+        self.strategy
+    }
+}
+
 /// The token budget one route's converting requests are bounded by, per authenticated identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TokenBudget {
@@ -196,6 +265,12 @@ pub struct Route {
     /// `None` for a single-provider route and for every upstream route; the two forms are mutually
     /// exclusive by construction, so a route never has both a `Provider` target and a pool.
     pub(super) pool: Option<Pool>,
+    /// The upstream pool, when the document named several upstreams instead of one.
+    ///
+    /// `None` for a single-upstream route and for every provider route; the forms are mutually
+    /// exclusive by construction. A pooled route's target is its pool's first member, so rules that
+    /// read a target keep their meaning.
+    pub(super) upstream_pool: Option<UpstreamPool>,
 }
 
 impl Route {
@@ -221,6 +296,15 @@ impl Route {
     #[must_use]
     pub const fn target(&self) -> &RouteTarget {
         &self.target
+    }
+
+    /// Returns the upstream pool, when the route distributes across several upstreams.
+    ///
+    /// `None` for a route that names one upstream, and for every provider route — a provider route's
+    /// pool is [`Route::pool`], and the two domains keep their own vocabulary.
+    #[must_use]
+    pub const fn upstream_pool(&self) -> Option<&UpstreamPool> {
+        self.upstream_pool.as_ref()
     }
 
     /// Returns the route-level timeout in milliseconds, when the document sets one.

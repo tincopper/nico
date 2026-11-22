@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use nico_core::Strategy;
+use nico_core::{PoolStrategy, Strategy};
 use nico_lb::{LeastConn, Picker, RoundRobin, SmoothWeighted};
 
 /// Builds the picker a document's strategy names.
@@ -21,6 +21,30 @@ pub(super) fn build(strategy: Strategy) -> Arc<dyn Picker> {
         Strategy::WeightedRoundRobin => Arc::new(SmoothWeighted::default()),
         Strategy::LeastConn => Arc::new(LeastConn::default()),
         Strategy::IpHash => Arc::new(nico_lb::IpHash::default()),
+    }
+}
+
+/// Builds the picker a route's upstream pool names.
+///
+/// The pool vocabulary is [`PoolStrategy`], shared with a provider route's pool; the same three
+/// strategies mean the same thing here — a weighted draw, a document-order rotation, and a
+/// caller-address rendezvous — which is why the match is a sibling of [`build`] rather than the
+/// same function.
+pub(super) fn build_route_pool_picker(strategy: PoolStrategy) -> Arc<dyn Picker> {
+    match strategy {
+        PoolStrategy::WeightedRandom => {
+            // Seeded from the process start, the way the provider pool's draw is: the draw only has
+            // to differ between requests, and a fixed seed would make every process start with the
+            // same sequence.
+            let seed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.subsec_nanos().into());
+            Arc::new(nico_lb::WeightedRandom::new(Arc::new(
+                nico_lb::Random::new(seed),
+            )))
+        }
+        PoolStrategy::RoundRobin => Arc::new(RoundRobin::default()),
+        PoolStrategy::IpHash => Arc::new(nico_lb::IpHash::default()),
     }
 }
 

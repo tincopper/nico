@@ -277,6 +277,7 @@ fn failed_target(ctx: &mut HttpContext, error: HttpError) -> Box<Error> {
 /// is exactly when the skips must still reach the log: the round that would have logged them on the
 /// way forward never runs.
 fn select_attempt(ctx: &mut HttpContext, now: TokioInstant) -> Result<(), HttpError> {
+    let client = ctx.client_ip();
     let Some(llm) = ctx.llm_mut() else {
         return Ok(());
     };
@@ -287,7 +288,7 @@ fn select_attempt(ctx: &mut HttpContext, now: TokioInstant) -> Result<(), HttpEr
     let Some(attempt) = llm.attempt_mut() else {
         return Ok(());
     };
-    let selection = fresh.then(|| attempt.select(now));
+    let selection = fresh.then(|| attempt.select(now, client));
     let skipped = attempt.take_skipped();
     let number = attempt.attempt_number();
     if let Some(Err(error)) = selection {

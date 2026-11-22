@@ -33,6 +33,8 @@ pub(crate) struct Route {
     pub(super) fallback: Option<Vec<String>>,
     /// The provider pool, when the route distributes instead of naming one target.
     pub(super) pool: Option<(Vec<(String, u16)>, &'static str)>,
+    /// The upstream pool, when the route distributes across upstreams instead of naming one.
+    pub(super) upstream_pool: Option<(Vec<(String, u16)>, &'static str)>,
     /// How long a streamed attempt may wait for its first byte.
     pub(super) ttft_timeout_ms: Option<u32>,
 }
@@ -54,6 +56,7 @@ impl Route {
             retry_budget: None,
             fallback: None,
             pool: None,
+            upstream_pool: None,
             ttft_timeout_ms: None,
         }
     }
@@ -74,6 +77,7 @@ impl Route {
             retry_budget: None,
             fallback: None,
             pool: None,
+            upstream_pool: None,
             ttft_timeout_ms: None,
         }
     }
@@ -135,6 +139,27 @@ impl Route {
     /// Declares the fallback chain: provider names tried in order after the route's target fails.
     pub(crate) fn fallback(mut self, names: &[&str]) -> Self {
         self.fallback = Some(names.iter().map(|name| (*name).to_owned()).collect());
+        self
+    }
+
+    /// Declares an upstream pool: members with their weights, and the distribution strategy.
+    ///
+    /// The route's [`Target`] becomes the pool's first member, the same rule a provider pool
+    /// follows; every single-target reader keeps its meaning.
+    pub(crate) fn upstream_pool(mut self, members: &[(&str, u16)], strategy: &'static str) -> Self {
+        self.target = Target::Upstream(
+            members
+                .first()
+                .map(|(name, _)| (*name).to_owned())
+                .unwrap_or_default(),
+        );
+        self.upstream_pool = Some((
+            members
+                .iter()
+                .map(|(name, weight)| ((*name).to_owned(), *weight))
+                .collect(),
+            strategy,
+        ));
         self
     }
 

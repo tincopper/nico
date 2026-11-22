@@ -168,6 +168,7 @@ fn build_pool_picker(strategy: PoolStrategy) -> Arc<dyn nico_llm::route::select:
             )))
         }
         PoolStrategy::RoundRobin => Arc::new(nico_llm::route::select::RoundRobin::default()),
+        PoolStrategy::IpHash => Arc::new(nico_llm::route::select::IpHash::default()),
     }
 }
 

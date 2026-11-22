@@ -397,6 +397,10 @@ request:
                     yaml.push_str(&format!("    host: {host}\n"));
                 }
                 match &route.target {
+                    // A pooled upstream route writes its pool below instead of the single target:
+                    // the document refuses both at once, so the two arms are exclusive by
+                    // construction — the same shape a provider pool renders.
+                    Target::Upstream(_) if route.upstream_pool.is_some() => {}
                     Target::Upstream(name) => yaml.push_str(&format!("    upstream: {name}\n")),
                     // The document model requires a client protocol on a provider route, and `mode`
                     // and `max_response_bytes` exist on a provider route alone. The builder keeps
@@ -420,6 +424,16 @@ request:
                     yaml.push_str("    providers:\n");
                     for (name, weight) in members {
                         yaml.push_str(&format!("      - name: {name}\n"));
+                        if *weight != 1 {
+                            yaml.push_str(&format!("        weight: {weight}\n"));
+                        }
+                    }
+                }
+                if let Some((members, strategy)) = &route.upstream_pool {
+                    yaml.push_str(&format!("    strategy: {strategy}\n"));
+                    yaml.push_str("    upstreams:\n");
+                    for (name, weight) in members {
+                        yaml.push_str(&format!("      - upstream: {name}\n"));
                         if *weight != 1 {
                             yaml.push_str(&format!("        weight: {weight}\n"));
                         }

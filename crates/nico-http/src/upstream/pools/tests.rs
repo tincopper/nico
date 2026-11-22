@@ -19,6 +19,7 @@ use nico_core::{Document, Scheme};
 
 mod expansion;
 mod health;
+mod route_pool;
 
 use super::*;
 use crate::{

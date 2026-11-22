@@ -64,7 +64,7 @@ fn ready(chain: Arc<AttemptChain>, budget: u8) -> AttemptSequence {
         .decode(&facts, &body("chat-small", "hello"))
         .expect("the fixture body decodes");
     sequence
-        .select_first(Instant::now())
+        .select_first(Instant::now(), None)
         .expect("the first member admits");
     sequence
         .encode_current()

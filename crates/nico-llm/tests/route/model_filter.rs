@@ -92,7 +92,7 @@ fn only_members_that_serve_the_model_are_offered() {
 
     let mut sequence = decoded(chain, "beta");
     sequence
-        .select_first(Instant::now())
+        .select_first(Instant::now(), None)
         .expect("a member serves");
 
     assert_eq!(
@@ -108,13 +108,13 @@ fn a_filtered_member_is_never_selected_on_a_later_round() {
     let mut sequence = decoded(chain, "beta");
 
     sequence
-        .select_first(Instant::now())
+        .select_first(Instant::now(), None)
         .expect("member 1 serves");
     assert_eq!(sequence.current(), 1);
     // The walk restarts after a failure; member 0 is still not a candidate, so no second member is
     // available and the sequence must refuse rather than send the request to a model it cannot serve.
     let refusal = sequence
-        .select_first(Instant::now())
+        .select_first(Instant::now(), None)
         .expect_err("no other member serves beta");
     assert_eq!(
         refusal.error().code(),
@@ -131,7 +131,7 @@ fn a_route_with_no_member_serving_the_model_refuses_with_model_not_allowed() {
     let mut sequence = decoded(chain, "gamma");
 
     let refusal = sequence
-        .select_first(Instant::now())
+        .select_first(Instant::now(), None)
         .expect_err("no member serves gamma");
 
     let error = refusal.error();
@@ -162,7 +162,7 @@ fn a_model_mismatch_does_not_reach_the_fallback_chain() {
     let mut sequence = decoded(chain, "gamma");
 
     let refusal = sequence
-        .select_first(Instant::now())
+        .select_first(Instant::now(), None)
         .expect_err("no member serves gamma");
 
     assert_eq!(refusal.error().code(), "model_not_allowed");
@@ -191,7 +191,7 @@ fn an_unrestricted_member_keeps_serving_every_model() {
     let mut sequence = decoded(chain, "any-model-name");
 
     sequence
-        .select_first(Instant::now())
+        .select_first(Instant::now(), None)
         .expect("the member serves");
     assert_eq!(sequence.current(), 0);
 }
@@ -228,7 +228,7 @@ fn a_member_with_its_own_model_map_is_filtered_by_the_physical_name() {
     let mut sequence = decoded(chain, MODEL);
 
     sequence
-        .select_first(Instant::now())
+        .select_first(Instant::now(), None)
         .expect("one member serves");
     assert_eq!(
         sequence.current(),

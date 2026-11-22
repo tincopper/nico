@@ -105,7 +105,7 @@ impl AttemptSequence {
                 .iter()
                 .map(|&index| self.pool_name(index))
                 .collect();
-            self.pool_order = Some(pool.order(&servable, &names));
+            self.pool_order = Some(pool.order(&servable, &names, self.client));
             self.pool_order_model = Some(filter_is_active);
         }
         if let Some(ordered) = self.pool_order.as_ref() {

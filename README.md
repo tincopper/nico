@@ -272,7 +272,8 @@ global_plugins: []   # 可选；在路由之前对每个请求运行
 
 ## 路由
 
-每条路由恰好指定一个目标：`upstream`（普通上游）或 `provider`（LLM）。
+每条路由命名一个目标：`upstream`（普通上游）或 `provider`（LLM）；需要灰度时，以池
+（`upstreams` / `providers`）在多个目标间按权重分发。
 
 ```yaml
 routes:
@@ -283,7 +284,24 @@ routes:
     timeout_ms: 30000        # 可选；只能收紧 request.timeout_ms
     max_body_bytes: 1048576  # 可选；不能超过 request.max_body_bytes，否则发布期拒绝
     plugins: [public-jwt, api-quota]
+
+  # 池形态（灰度/蓝绿）：一条路由按权重分发到多个 upstream，与单目标 `upstream` 互斥
+  - id: api-canary
+    path_prefix: /v2/
+    strategy: weighted_random   # weighted_random（默认，按权重抽样）| round_robin（文档顺序轮转）
+                                # | ip_hash（调用方地址会合哈希：同一调用方稳定落同一 upstream）
+    upstreams:
+      - upstream: api-stable    # 引用已声明的 upstream；同一池内不得重复
+        weight: 9               # 1..=1000；traffic 路由没有兜底链，0 会被拒绝
+      - upstream: api-canary
+        weight: 1
 ```
+
+**upstream 池（灰度）**：请求先由路由池选 upstream，再由该 upstream 自己的成员池选机器。路由池的
+候选只含**仍有可用成员**的 upstream——某个 upstream 全员被剔时，它的份额自动落到其余成员；全部
+不可用回答既有的 `502 upstream_unreachable`。池的轮转位置跨 reload 继承；`ip_hash` 的会合键是
+调用方完整地址，无地址的调用方按轮转铺开。请求记录与指标的标签不变：记录的仍是实际服务的
+upstream 与 endpoint。
 
 **匹配优先级**（从高到低）：
 
@@ -514,7 +532,7 @@ routes:
   - id: llm-chat-pool
     path_prefix: /v1/chat/
     protocol: openai.chat
-    strategy: weighted_random     # weighted_random（默认）| round_robin
+    strategy: weighted_random     # weighted_random（默认，按权重抽样）| round_robin | ip_hash（调用方粘性）
     providers:
       - name: openai-primary
         weight: 3                 # 可选，默认 1，0..=1000；0 = 不参与分发，只在兜底显式指名时使用

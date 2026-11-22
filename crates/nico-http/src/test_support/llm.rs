@@ -376,7 +376,11 @@ struct FakeAttempt {
 }
 
 impl LlmAttempt for FakeAttempt {
-    fn select(&mut self, _now: tokio::time::Instant) -> Result<AttemptTarget, HttpError> {
+    fn select(
+        &mut self,
+        _now: tokio::time::Instant,
+        _client: Option<std::net::IpAddr>,
+    ) -> Result<AttemptTarget, HttpError> {
         Ok(self.target.clone())
     }
 
