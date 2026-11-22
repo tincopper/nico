@@ -155,6 +155,11 @@ pub(super) struct RawRoute {
     /// a pool of upstreams is traffic-layer vocabulary, and a converting route's pools are
     /// provider pools.
     pub(super) upstreams: Option<Vec<RawUpstreamPoolMember>>,
+    /// The value that replaces the route's matched `path_prefix` when the request is forwarded.
+    ///
+    /// Absent means the path is forwarded as written. Empty means the prefix is stripped. Only an
+    /// upstream route may carry it — a converting route's path belongs to its adapter.
+    pub(super) rewrite_prefix: Option<String>,
     /// How the pool chooses a member for one attempt.
     ///
     /// Absent means [`PoolStrategy::WeightedRandom`](super::PoolStrategy::WeightedRandom). Refused on

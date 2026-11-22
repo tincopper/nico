@@ -35,6 +35,8 @@ pub(crate) struct Route {
     pub(super) pool: Option<(Vec<(String, u16)>, &'static str)>,
     /// The upstream pool, when the route distributes across upstreams instead of naming one.
     pub(super) upstream_pool: Option<(Vec<(String, u16)>, &'static str)>,
+    /// The value that replaces the route's matched path prefix at the forward.
+    pub(super) rewrite_prefix: Option<String>,
     /// How long a streamed attempt may wait for its first byte.
     pub(super) ttft_timeout_ms: Option<u32>,
 }
@@ -57,6 +59,7 @@ impl Route {
             fallback: None,
             pool: None,
             upstream_pool: None,
+            rewrite_prefix: None,
             ttft_timeout_ms: None,
         }
     }
@@ -78,6 +81,7 @@ impl Route {
             fallback: None,
             pool: None,
             upstream_pool: None,
+            rewrite_prefix: None,
             ttft_timeout_ms: None,
         }
     }
@@ -139,6 +143,12 @@ impl Route {
     /// Declares the fallback chain: provider names tried in order after the route's target fails.
     pub(crate) fn fallback(mut self, names: &[&str]) -> Self {
         self.fallback = Some(names.iter().map(|name| (*name).to_owned()).collect());
+        self
+    }
+
+    /// Sets the value that replaces the route's matched path prefix at the forward.
+    pub(crate) fn rewrite_prefix(mut self, replacement: &str) -> Self {
+        self.rewrite_prefix = Some(replacement.to_owned());
         self
     }
 

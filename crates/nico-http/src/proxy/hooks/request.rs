@@ -349,6 +349,27 @@ pub(super) async fn upstream_request_filter(
     // written to; `convert` also drops the caller's credential, since the provider's replaces it.
     llm::apply_upstream_request(request, ctx).map_err(|error| abort(ctx, error))?;
 
+    // The route's path rewrite, applied once per round from the client's original path — never from
+    // the header a previous round rewrote, which is what makes a failover's retry rounds idempotent.
+    // The query rides in the raw target unchanged, and the match guarantees the client path carries
+    // the route's prefix, so the remainder after it passes through byte for byte.
+    if let Some((prefix, replacement)) = ctx.rewrite() {
+        let original = ctx.path().unwrap_or_default();
+        let remainder = original.strip_prefix(prefix).unwrap_or(original);
+        let target = match request.uri.query() {
+            Some(query) => format!("{replacement}{remainder}?{query}"),
+            None => format!("{replacement}{remainder}"),
+        };
+        request.set_raw_path(target.as_bytes()).map_err(|error| {
+            abort(
+                ctx,
+                HttpError::Internal {
+                    source: Box::new(error),
+                },
+            )
+        })?;
+    }
+
     // `upstream_peer` recorded the destination it connected to, so this hook only reads it.
     let Some(destination) = ctx.destination() else {
         return Err(abort(

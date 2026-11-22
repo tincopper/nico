@@ -98,4 +98,7 @@ pub(crate) enum Reply {
     },
     /// Reads the request head, then holds the connection without answering.
     StallBeforeHead,
+    /// Answers `200` with the request target the origin received — the path and query exactly as
+    /// the gateway forwarded them, in original form.
+    Path,
 }

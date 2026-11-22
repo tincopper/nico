@@ -32,15 +32,6 @@ use super::{
     upstream::Upstream,
 };
 
-/// Inclusive upper bound for a route-level `timeout_ms`.
-const MAX_TIMEOUT_MS: u32 = 600_000;
-
-/// Inclusive upper bound for `routes[].ttft_timeout_ms`.
-///
-/// Half the whole-request ceiling on purpose: this budget bounds the wait *before* an answer starts,
-/// so a value approaching the request's own deadline would never fire — the request would time out
-/// first, and the field would look like configuration that does nothing.
-const MAX_TTFT_TIMEOUT_MS: u32 = 300_000;
 /// Inclusive upper bound for `routes[].retry_budget`.
 ///
 /// A retry re-encodes the canonical request, so the budget bounds the memory a route holds in flight
@@ -235,16 +226,13 @@ fn validate_routes(routes: &[Route], request: RequestBounds) -> Result<(), Docum
             validate_host("routes[].host", host)?;
         }
         validate_path_prefix(route.path_prefix())?;
+        validate_rewrite_prefix(route.rewrite_prefix())?;
 
         if let Some(timeout_ms) = route.timeout_ms() {
-            validate_timeout("routes[].timeout_ms", timeout_ms)?;
+            budget::validate_timeout("routes[].timeout_ms", timeout_ms)?;
         }
         if let Some(ttft_timeout_ms) = route.ttft_timeout_ms() {
-            validate_timeout_bound(
-                "routes[].ttft_timeout_ms",
-                ttft_timeout_ms,
-                MAX_TTFT_TIMEOUT_MS,
-            )?;
+            budget::validate_ttft_timeout("routes[].ttft_timeout_ms", ttft_timeout_ms)?;
         }
         budget::validate(route)?;
         if let Some(max_body_bytes) = route.max_body_bytes() {
@@ -334,34 +322,31 @@ fn validate_path_prefix(prefix: &str) -> Result<(), DocumentError> {
     Ok(())
 }
 
-/// Checks a route-level timeout.
-fn validate_timeout(field: &'static str, timeout_ms: u32) -> Result<(), DocumentError> {
-    validate_timeout_bound(field, timeout_ms, MAX_TIMEOUT_MS)
-}
-
-/// Checks a timeout stays inside its own ceiling.
+/// Checks the value that replaces a route's matched `path_prefix` at the forward.
 ///
-/// Split from [`validate_timeout`] because the two ceilings differ: a whole-request budget and a
-/// first-byte budget are not the same posture, and one constant for both would let a document state a
-/// first-byte wait longer than the request it belongs to.
-fn validate_timeout_bound(
-    field: &'static str,
-    timeout_ms: u32,
-    maximum: u32,
-) -> Result<(), DocumentError> {
-    if !(1..=maximum).contains(&timeout_ms) {
-        return Err(DocumentError::LimitOutOfRange {
-            field,
-            value: u64::from(timeout_ms),
-        });
+/// The forward reassembles the request target from this value and the client path's remainder, so
+/// anything that could make a request target unparseable — a query, a fragment, whitespace, a control
+/// byte — is refused here, where the field name is known, rather than at the forward.
+fn validate_rewrite_prefix(value: Option<&str>) -> Result<(), DocumentError> {
+    const FIELD: &str = "routes[].rewrite_prefix";
+    let Some(value) = value else {
+        return Ok(());
+    };
+    if !value.starts_with('/') {
+        return Err(invalid(
+            FIELD,
+            "must be a path starting with `/`; stripping the whole prefix is `/`",
+        ));
+    }
+    if value.contains(['?', '#']) || has_whitespace(value) {
+        return Err(invalid(
+            FIELD,
+            "must be a bare path: no query, fragment, whitespace or control characters",
+        ));
     }
     Ok(())
 }
 
-/// Checks a route body bound stays within the document bound.
-///
-/// A route may only tighten: `0` is legal (the route accepts no request body at all) and equals what
-/// the document bound means at `0`, but a route can never widen the document ceiling.
 fn validate_body_bound(request: RequestBounds, max_body_bytes: u32) -> Result<(), DocumentError> {
     if max_body_bytes > request.max_body_bytes() {
         return Err(DocumentError::LimitOutOfRange {

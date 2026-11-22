@@ -131,6 +131,16 @@ impl Wire {
     }
 }
 
+/// Parses the request target out of a head's request line.
+///
+/// The target is what the client asked for, in original form — scheme-less, query included — which
+/// is exactly what a path-rewrite scenario needs to compare against what the origin received.
+pub(super) fn request_target(head: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(head);
+    let line = text.split("\r\n").next()?;
+    line.split(' ').nth(1).map(str::to_owned)
+}
+
 /// Parses a request head into lowercase header pairs, skipping the request line.
 pub(super) fn parse_headers(head: &[u8]) -> Vec<(String, String)> {
     let text = String::from_utf8_lossy(head);

@@ -460,4 +460,5 @@ mod llm;
 mod plugins;
 
 mod providers;
+mod rewrite;
 mod route_pools;

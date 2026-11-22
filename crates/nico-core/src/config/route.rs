@@ -265,6 +265,12 @@ pub struct Route {
     /// `None` for a single-provider route and for every upstream route; the two forms are mutually
     /// exclusive by construction, so a route never has both a `Provider` target and a pool.
     pub(super) pool: Option<Pool>,
+    /// The value that replaces the route's matched `path_prefix` when the request is forwarded.
+    ///
+    /// `None` forwards the client's path as written. The match always reads the client's path; the
+    /// rewrite happens at the forward, and is recomputed from that path every attempt, so a retry
+    /// round cannot stack it.
+    pub(super) rewrite_prefix: Option<String>,
     /// The upstream pool, when the document named several upstreams instead of one.
     ///
     /// `None` for a single-upstream route and for every provider route; the forms are mutually
@@ -296,6 +302,13 @@ impl Route {
     #[must_use]
     pub const fn target(&self) -> &RouteTarget {
         &self.target
+    }
+
+    /// Returns the value that replaces this route's matched `path_prefix` at the forward, when the
+    /// document sets one.
+    #[must_use]
+    pub fn rewrite_prefix(&self) -> Option<&str> {
+        self.rewrite_prefix.as_deref()
     }
 
     /// Returns the upstream pool, when the route distributes across several upstreams.

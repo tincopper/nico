@@ -33,3 +33,49 @@ pub(super) fn validate(route: &Route) -> Result<(), DocumentError> {
     }
     Ok(())
 }
+
+/// Inclusive upper bound for a route-level `timeout_ms`.
+const MAX_TIMEOUT_MS: u32 = 600_000;
+
+/// Inclusive upper bound for `routes[].ttft_timeout_ms`.
+///
+/// Half the whole-request ceiling on purpose: this budget bounds the wait *before* an answer starts,
+/// so a value approaching the request's own deadline would never fire — the request would time out
+/// first, and the field would look like configuration that does nothing.
+const MAX_TTFT_TIMEOUT_MS: u32 = 300_000;
+
+/// Checks a route-level timeout.
+pub(crate) fn validate_timeout(field: &'static str, timeout_ms: u32) -> Result<(), DocumentError> {
+    validate_timeout_bound(field, timeout_ms, MAX_TIMEOUT_MS)
+}
+
+/// Checks a first-byte budget stays inside its own ceiling.
+///
+/// The first-byte ceiling is half the whole-request one on purpose: the wait *before* an answer
+/// starts cannot approach the request's own deadline without the request timing out first, which
+/// would make the field look like configuration that does nothing.
+pub(crate) fn validate_ttft_timeout(
+    field: &'static str,
+    timeout_ms: u32,
+) -> Result<(), DocumentError> {
+    validate_timeout_bound(field, timeout_ms, MAX_TTFT_TIMEOUT_MS)
+}
+
+/// Checks a timeout stays inside its own ceiling.
+///
+/// Split from [`validate_timeout`] because the two ceilings differ: a whole-request budget and a
+/// first-byte budget are not the same posture, and one constant for both would let a document state a
+/// first-byte wait longer than the request it belongs to.
+pub(crate) fn validate_timeout_bound(
+    field: &'static str,
+    timeout_ms: u32,
+    maximum: u32,
+) -> Result<(), DocumentError> {
+    if !(1..=maximum).contains(&timeout_ms) {
+        return Err(DocumentError::LimitOutOfRange {
+            field,
+            value: u64::from(timeout_ms),
+        });
+    }
+    Ok(())
+}

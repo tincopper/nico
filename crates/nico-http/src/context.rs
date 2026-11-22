@@ -97,6 +97,10 @@ pub struct HttpContext {
     /// How many members one request may walk, from the route's `retry_budget`; `1` until a route is
     /// bound, which is the shape every route had before failover existed.
     failover_budget: u8,
+    /// The route's path rewrite: the matched `path_prefix` and the value that replaces it at the
+    /// forward. The rewrite is recomputed from the client's original path every attempt, so the
+    /// pair is a fact of the route, not of a round.
+    rewrite: Option<(Arc<str>, Arc<str>)>,
     error: Option<HttpError>,
     global: Option<PluginChain>,
     route_chain: Option<PluginChain>,
@@ -161,6 +165,9 @@ impl HttpContext {
         // The failover budget is the same kind of route fact: the walk reads the context, not the
         // snapshot, so a reload mid-request cannot change what this request may walk.
         self.failover_budget = route.retry_budget().max(1);
+        self.rewrite = route
+            .rewrite_prefix()
+            .map(|value| (Arc::from(route.path_prefix()), Arc::from(value)));
         if let Some(started) = self.started {
             self.deadline = Some(started + budget::request_budget(route, request));
         }
@@ -218,6 +225,16 @@ impl HttpContext {
     #[must_use]
     pub fn target(&self) -> Option<&RouteTarget> {
         self.target.as_ref()
+    }
+
+    /// Returns the route's path rewrite: the matched prefix and the value that replaces it.
+    ///
+    /// The forward recomputes the new path from the client's original path every attempt, which is
+    /// what makes the rewrite idempotent across a failover's retry rounds.
+    pub(crate) fn rewrite(&self) -> Option<(&str, &str)> {
+        self.rewrite
+            .as_ref()
+            .map(|(prefix, replacement)| (prefix.as_ref(), replacement.as_ref()))
     }
 
     /// Returns the name the route targets: an upstream name or a provider name.

@@ -151,6 +151,7 @@ fn resolve(
         provider,
         providers: raw_pool,
         upstreams: raw_upstream_pool,
+        rewrite_prefix: raw_rewrite,
         strategy,
         timeout_ms,
         ttft_timeout_ms,
@@ -223,6 +224,7 @@ fn resolve(
     check_target_fields(
         &target,
         WrittenFields {
+            rewrite_prefix: raw_rewrite.is_some(),
             protocol: protocol.as_deref(),
             mode,
             max_response_bytes,
@@ -281,6 +283,7 @@ fn resolve(
             .map(|raw| TokenBudget::new(raw.limit_tokens, raw.window_seconds)),
         pool,
         upstream_pool,
+        rewrite_prefix: raw_rewrite,
     })
 }
 
@@ -373,6 +376,7 @@ fn resolve_pool(
 /// here at all.
 /// The convert-route fields a document may have written, gathered for the target check.
 struct WrittenFields<'a> {
+    rewrite_prefix: bool,
     protocol: Option<&'a str>,
     mode: Option<RouteMode>,
     max_response_bytes: Option<u32>,
@@ -411,6 +415,14 @@ fn check_target_fields(
             }
         }
         RouteTarget::Provider(_) => {
+            if written.rewrite_prefix {
+                return Err(DocumentError::InvalidField {
+                    field: "routes[].rewrite_prefix",
+                    reason: "is only valid on an upstream route: a converting route's path belongs
+                             to its adapter"
+                        .into(),
+                });
+            }
             if written.protocol.is_none() {
                 return Err(DocumentError::InvalidField {
                     field: "routes[].protocol",
