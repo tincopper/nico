@@ -675,3 +675,25 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 ### Status
 
 [OK] **Completed**
+
+
+## Session 19: 路由池成员数上界与 llm ip_hash 测试
+<!-- trellis-session: v=2 fp=3c6099e9d28f7cdb -->
+
+**Date**: 2026-11-22
+**Task**: 路由池成员数上界与 llm ip_hash 测试
+**Branch**: `main`
+
+### Summary
+
+小任务 11-22-pool-member-bound:核实发现 max_pool_members 本有强制(validate.rs::check_pool_counts),缺口只是上一个任务新增的 upstreams 池没被数进去;守卫扩展后两种池同受一界。补 llm 侧 ip_hash 粘性测试(client 穿线自此有测试钉住)。变异抽查(删守卫被咬)、全量门禁绿。config-nacos 按用户指示缓行。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e2cee6b` | fix(routes): bound the upstream pool's members like a provider pool's |
+
+### Status
+
+[OK] **Completed**
