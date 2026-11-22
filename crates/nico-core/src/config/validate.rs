@@ -185,14 +185,19 @@ fn check_endpoint_counts(upstreams: &[Upstream], limit: usize) -> Result<(), Doc
     Ok(())
 }
 
-/// Rejects a route whose provider pool exceeds the per-route bound.
+/// Rejects a route whose pool exceeds the per-route bound, whichever kind it pools.
 ///
 /// Per route, for the reason [`check_endpoint_counts`] is per upstream: the list is the candidate set
-/// one attempt's selection walks, and it is a factor of the route's attempt ceiling.
+/// one attempt's selection walks, and it is a factor of the route's attempt ceiling. Both pool kinds
+/// — a provider pool and an upstream pool — walk a candidate set one attempt wide, so both answer to
+/// the same bound.
 fn check_pool_counts(routes: &[Route], limit: usize) -> Result<(), DocumentError> {
     for route in routes {
         if let Some(pool) = route.pool() {
             check_count("routes[].providers", pool.members().len(), limit)?;
+        }
+        if let Some(pool) = route.upstream_pool() {
+            check_count("routes[].upstreams", pool.members().len(), limit)?;
         }
     }
     Ok(())

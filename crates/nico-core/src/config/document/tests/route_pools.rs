@@ -208,3 +208,37 @@ fn an_undeclared_pool_member_is_refused() {
 
     assert!(matches!(error, DocumentError::ReferenceUnknown { .. }));
 }
+
+#[test]
+fn a_pool_above_the_member_bound_is_refused() {
+    // The default `max_pool_members` is 8, so nine declared-and-referenced members exceed it before
+    // any document raises the bound. The members must reference declared upstreams: the reference
+    // rules run first, and an undeclared name would fail them instead of reaching this bound.
+    let upstreams: String = (0..9)
+        .map(|i| {
+            format!(
+                "  - name: api-{i}\n    scheme: http\n    host: 127.0.0.1\n    port: {}\n",
+                8080 + i
+            )
+        })
+        .collect();
+    let members: String = (0..9)
+        .map(|i| format!("      - upstream: api-{i}\n        weight: 1\n"))
+        .collect();
+    let route = format!("  - id: api-canary\n    path_prefix: /\n    upstreams:\n{members}");
+
+    let yaml = document(NO_ENTRIES, &upstreams, &route);
+    let error = Document::parse(yaml.as_bytes(), ParseLimits::new(16 * 1024))
+        .expect_err("nine members exceed the default bound of eight");
+
+    assert!(
+        matches!(
+            error,
+            DocumentError::TooMany {
+                kind: "routes[].upstreams",
+                ..
+            }
+        ),
+        "expected TooMany for the upstream pool, got {error:?}"
+    );
+}
