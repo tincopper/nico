@@ -741,3 +741,25 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 ### Status
 
 [OK] **Completed**
+
+
+## Session 22: 可信代理与真实客户端地址(G3 子项)
+<!-- trellis-session: v=2 fp=2e16260284964dcb -->
+
+**Date**: 2026-11-22
+**Task**: 可信代理与真实客户端地址(G3 子项)
+**Branch**: `main`
+
+### Summary
+
+新任务 11-22-trusted-proxies(nginx 审查 G3 最自足子项):网关在 LB 后时一切按调用方键控的事实(限流桶/ip_hash 池/日志)塌缩到代理地址。http.trusted_proxies(CIDR 列表,缺省空=现行为):对端受信则 XFF 右起跳过受信代理取第一个不受信地址,全链受信取最左;对端不受信则 XFF 整体忽略——信任边界属于连接拓扑,不属于头内容,伪造 XFF 不能移动限流桶或粘性池。推导结果写回既有 client_ip,三个消费者原样读取;XFF 追加值改为推导后的地址(链式部署下一跳的客户端是本网关的结论)。CIDR 手写解析无新依赖。测试:trusted 单测 9 + settings resolve 校验 11 处 + E2E http_realip 2 项(受信 XFF 粘性/不受信伪造 16 次不动),变异(删信任检查)被咬。调试中给 harness 留下永久改进:wait_until_accepting 超时随 panic 输出捕获的服务端日志。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4ca3e08` | feat(http): derive the real client address behind trusted proxies |
+
+### Status
+
+[OK] **Completed**
