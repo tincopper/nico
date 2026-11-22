@@ -75,7 +75,7 @@ nginx 的 `reload` 起新 worker、老 worker 继续服务到连接结束。nico
 | `location = /health` | 无 | 无 | 只有前缀匹配 |
 | `location ~ ^/v\d+/` | 无 | 无 | 只有前缀匹配 |
 | `proxy_pass http://upstream;` | `routes[].upstream: <name>` | 条件 | 路径与 query 原样转发，前缀不剥离 |
-| `proxy_pass http://upstream/internal/;` | 无 | 无 | 没有 URI 替换；见 §4 T3 |
+| `proxy_pass http://upstream/internal/;` | `routes[].rewrite_prefix: /internal/` | 条件 | 字面前缀交换(替换已匹配的 `path_prefix`);query/编码逐字节保留;匹配仍读客户端路径;剥离整个前缀写 `/`;见 §4 T3 |
 | `upstream backend { server 10.0.0.7; }` | `upstreams[].endpoints[]` | 条件 | `host` 是逻辑身份（`Host`/SNI），`address` 是连接目标 |
 | `server ... weight=3` | `endpoints[].weight: 3` | 条件 | 只有 `weighted_round_robin` 读它；`round_robin` 不读 |
 | 默认轮询（加权） | `strategy: weighted_round_robin` | 条件 | 要复现 nginx 默认，必须显式写这个值 |
@@ -83,9 +83,9 @@ nginx 的 `reload` 起新 worker、老 worker 继续服务到连接结束。nico
 | `ip_hash` | `strategy: ip_hash` | 条件 | 键不同：完整地址 + endpoint 名做会合哈希；nginx IPv4 取前三段 |
 | `max_fails=3 fail_timeout=30s` | `max_fails` / `fail_timeout_ms` | 条件 | nico 是连续失败 + 冷却，不是"窗口内累计"；默认 3 / 30000ms（nginx 默认 1 / 10s） |
 | `max_fails=0` | `max_fails: 0` | 等价 | 两者都表示永不剔除（nico 仍计数并记录） |
-| `proxy_next_upstream error timeout` | 无 | 无 | traffic 路由**一次请求只有一次尝试**；失败即 502 |
+| `proxy_next_upstream error timeout` | `routes[].retry_budget`(upstream 路由) | 条件 | 同请求 failover:连接失败/超时/头前断连改试下一成员(逐成员健康);5xx 透传不重试;响应已提交永不重试;默认 1 = 失败即答 |
 | `proxy_set_header Host $host` | 自动 | 无（字段） | `Host` = upstream 的 `host`（非默认端口才带端口），写死不可改 |
-| `proxy_set_header X-Forwarded-For` | 自动 | 无（字段） | 在已有值后**追加** peer 地址 |
+| `proxy_set_header X-Forwarded-For` | 自动 + `http.trusted_proxies` | 条件 | 追加的是推导后的客户端地址;对端属于受信 CIDR 时从 XFF 右起跳过受信代理取真实调用方,不受信对端的 XFF 整体忽略(伪造无效) |
 | `proxy_set_header` 其他头 | 无 | 无 | 没有任意请求头改写 |
 | `add_header` / `more_set_headers` | 无 | 无 | 错误响应的头是封闭集合；普通响应透传上游头（`content-length` 由网关重算） |
 | `return 403;` / `error_page` | 无 | 无 | 拒绝只由插件和错误映射产生 |
@@ -136,11 +136,12 @@ nginx 的 `reload` 起新 worker、老 worker 继续服务到连接结束。nico
 - `location /api/` + 带 URI 的 `proxy_pass` 对"恰好是 `/api`"的请求返回 301；nico 只会 404
   （不匹配）或原样转发（匹配）。
 
-### T3｜没有 URI 替换，前缀不会被剥离
+### T3｜URI 替换是字面前缀交换
 
-`proxy_pass http://backend/internal/;` 在 nginx 里把命中的 location 前缀换成 `/internal/`。nico 没有
-这个能力：`/api/x` 到上游还是 `/api/x`。需要改写时，要么让上游接受原路径，要么在前面放一层能做
-rewrite 的代理。不要试图用"写一条更长的 `path_prefix`"绕过去——匹配器不改写。
+`proxy_pass http://backend/internal/;` 在 nginx 里把命中的 location 前缀换成 `/internal/`。nico 用
+`routes[].rewrite_prefix: /internal/` 表达同一件事：转发的路径 = 替换值 + 客户端路径去掉
+`path_prefix` 的余下部分，query 与百分比编码逐字节保留。与 nginx 的差别：匹配永远读客户端原
+路径（改写不参与匹配）；替换是字面前缀交换，没有正则与捕获组；剥离整个前缀写 `/`。
 
 ### T4｜路由列表顺序不是覆盖手段
 
@@ -213,11 +214,13 @@ subject 分桶，否则回退到调用方地址哈希。
 应答由前端整体缓冲，受 `request.max_response_bytes` 约束——超长时声明的长度在写头之前就 502
 （`upstream_response_too_large`），未知长度的 chunked 应答在 body 阶段才被截断，此时状态行已经发出。
 
-### T13｜没有 realip：身份与限流读 socket peer
+### T13｜realip 用 `http.trusted_proxies` 表达
 
-nico 不做"信任上游代理声明的客户端地址"这件事：`ip_hash`、`identity: ip`、无身份时的限流回退都用
-socket peer 地址。`X-Forwarded-For` 只被**追加**，从不被读取为身份来源。迁移时如果依赖
-`set_real_ip_from`，前置代理后的限流粒度会整体变化。
+`set_real_ip_from` 的对应是 `http.trusted_proxies`（CIDR 列表，缺省空 = 不信任任何代理）：对端属于
+受信集合时，客户端地址从 `X-Forwarded-For` 右起跳过受信代理、取第一个不受信地址；对端不受信时
+XFF 整体忽略——伪造的头不能移动限流桶或 `ip_hash` 的落点。推导结果是唯一的地址事实，限流与
+`ip_hash` 原样读取。与 nginx 的差别：`real_ip_header` 只认 XFF（无 `X-Real-IP`）；递归是按受信
+集合跳过，不是 `real_ip_recursive on` 的逐层剥除。
 
 ### T14｜`enabled: false` 是全局生效
 

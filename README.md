@@ -857,7 +857,9 @@ scripts/gates/       git hook 背后的检查
   `config_source：etcd` 一节；仍**未**支持的是：平台证书库回退、逐端点的证书校验名、token/OIDC
   等用户名密码之外的鉴权、以及配置文件热加载。tonic/hyper 栈由 feature 门控：产品二进制（默认与
   `traffic` 角色）不链接，测试构建经 dev-dependencies 使用协议替身。
-- **路由匹配**：线性扫描，无编译索引；`path_prefix` 是字节前缀，不做路径归一化。
+- **路由匹配**：线性扫描，无编译索引；`path_prefix` 是字节前缀，不做路径归一化。upstream 路由可用
+  `rewrite_prefix`（字面前缀交换，query 逐字节保留）与 `retry_budget`（同请求 failover，逐成员健康，
+  5xx 透传不重试）；`http.trusted_proxies` 声明受信代理后，限流与 ip_hash 按推导的真实客户端地址键控。
 - **上游成员解析**：endpoint 的 `address` 写域名时，发布期解析一次并展开为逐地址成员（逐地址健康与
   故障转移）；解析结果不做 TTL 后台重解析，DNS 变更随下一次 reload 生效。LLM provider 的 `base_url`
   不展开——provider 目标仍是每请求首个解析地址。
