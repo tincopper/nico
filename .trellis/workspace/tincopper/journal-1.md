@@ -652,3 +652,26 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 ### Status
 
 [OK] **Completed**
+
+
+## Session 18: traffic 路由的 upstream 池(灰度分流)
+<!-- trellis-session: v=2 fp=204e8e12ed301724 -->
+
+**Date**: 2026-11-22
+**Task**: traffic 路由的 upstream 池(灰度分流)
+**Branch**: `main`
+
+### Summary
+
+新任务 11-21-route-upstream-pool:traffic 路由支持 upstreams 池(灰度/蓝绿)——llm 侧 provider 池自 model-lb 里程碑已有,traffic 侧此前只能指向单个 upstream。路由池按权重选 upstream(候选=仍有可用成员者,全灭走既有 502),upstream 成员池再选机器;PoolStrategy 增 ip_hash 粘性灰度,且 client 地址穿入 llm 池的 draw(nico_llm::route::select 本就是 nico-lb pickers 的再导出,两域共享同一选择契约);池轮转位置按 route id 跨 reload 继承。类型不与 llm Pool 共用(weight 语义相反:traffic 无 fallback 链,0 拒绝)。测试 20+ 新增(schema 10/池 5/E2E 1:真实 Pingora 双 origin 分流+剔除收敛),变异抽查(候选过滤/0 权重)被咬。README/nginx-migration/directory-structure 同步。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `81a2f33` | feat(routes): pool upstreams behind a traffic route for canary releases |
+| `21dcb77` | docs(spec): name the route pool in the pool-ownership table |
+
+### Status
+
+[OK] **Completed**
