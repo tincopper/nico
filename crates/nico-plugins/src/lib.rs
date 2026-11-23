@@ -45,6 +45,8 @@ mod jwt;
 mod rate_limit;
 mod rejection;
 mod spec;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 
 use std::{borrow::Cow, error::Error, sync::Arc};
 
@@ -77,6 +79,27 @@ pub fn builtin_registry() -> PluginRegistry {
         }
     }
     registry
+}
+
+/// The registry the process serves with: the built-in kinds, plus the WASM host when the build
+/// carries it.
+///
+/// A build without the `wasm` feature answers `kind: wasm` with the registry's unknown-kind
+/// refusal — the same answer a misspelt kind gets — which is the right shape for a deployment that
+/// never ships a WASM artifact: the document is refused, not silently skipped.
+#[must_use]
+pub fn full_registry() -> PluginRegistry {
+    #[cfg(not(feature = "wasm"))]
+    return builtin_registry();
+
+    #[cfg(feature = "wasm")]
+    {
+        let mut registry = builtin_registry();
+        if let Err(error) = registry.register(Arc::new(wasm::WasmFactory)) {
+            tracing::error!(%error, "the wasm plugin kind was registered twice");
+        }
+        registry
+    }
 }
 
 /// Converts one kind's publication failure into the loading seam's error.

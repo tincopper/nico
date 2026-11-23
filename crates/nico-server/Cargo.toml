@@ -32,6 +32,10 @@ llm = ["dep:nico-llm"]
 etcd = ["dep:nico-config-etcd"]
 # The traffic role: configuration, routing, plugins and the HTTP data plane, with no LLM crate at all.
 traffic = []
+# The WASM plugin host: `kind: wasm` is accepted and run in the wasmi sandbox only when this feature
+# is on. Off by default, because the interpreter is a dependency the built-in-only deployments never
+# need, and the gating is verified per release (`dependency_boundaries.rs`).
+wasm = ["nico-plugins/wasm"]
 
 [dependencies]
 async-trait.workspace = true
@@ -68,6 +72,8 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dev-dependencies]
+# The E2E wasm fixtures are `.wat` text compiled at test time; the CI toolchain stays a Rust one.
+wat.workspace = true
 # The plugin scenarios sign a real HS256 token over a real HMAC: a hand-rolled signer in the test
 # would be a second implementation of the format under test.
 base64.workspace = true

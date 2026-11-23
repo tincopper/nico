@@ -141,7 +141,7 @@ pub(crate) fn rate_limit(
 }
 
 /// Compiles one presentation: a document override layered over the kind's built-in defaults.
-fn compile(
+pub(crate) fn compile(
     plugin: &str,
     code: &'static str,
     message: &'static str,

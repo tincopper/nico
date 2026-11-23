@@ -26,7 +26,7 @@ use nico_core::SnapshotHandle;
 use nico_http::{
     HttpStateHandle, PluginRegistry, ensure_usable, server_conf, service as http_service,
 };
-use nico_plugins::{PluginRuntime, builtin_registry};
+use nico_plugins::{PluginRuntime, full_registry};
 use pingora::{
     server::{Server, ShutdownWatch},
     services::background::{BackgroundService, background_service},
@@ -44,14 +44,14 @@ mod shutdown;
 /// Runs the gateway until shutdown and returns the process exit code.
 ///
 /// This is [`serve_with`] with every kind this build implements, which is what a deployment wants:
-/// the built-in set is the whole of "a compiled-in policy is installed" (see [`builtin_registry`]).
-/// A test that needs a kind of its own calls `serve_with` instead.
+/// the built-in set plus the WASM host when the build carries it (see [`full_registry`]). A test
+/// that needs a kind of its own calls `serve_with` instead.
 pub fn serve(
     bootstrap: &BootstrapConfig,
     source: Arc<dyn ConfigSource>,
     shutdown: CancellationToken,
 ) -> ExitCode {
-    serve_with(bootstrap, source, shutdown, builtin_registry())
+    serve_with(bootstrap, source, shutdown, full_registry())
 }
 
 /// Runs the gateway with `plugins` as the complete set of document `kind`s it can load.
@@ -59,9 +59,9 @@ pub fn serve(
 /// The registry is a parameter for two reasons, and neither is a configuration knob:
 ///
 /// - **Which kinds exist is an assembly decision.** A built-in kind arrives through
-///   [`builtin_registry`] because it is compiled into this binary; a WASM host will arrive by adding
-///   one factory to the same registry. Neither changes the document model, the chains or the phases,
-///   so the process — not a library — is the right place to decide the set.
+///   `builtin_registry` because it is compiled into this binary; the WASM host arrives the same way
+///   when the build carries the `wasm` feature. Neither changes the document model, the chains or the
+///   phases, so the process — not a library — is the right place to decide the set.
 /// - **A test has to observe the stages.** A scenario that asserts "the global chain ran before
 ///   routing" needs a plugin that records what it was called with, and that plugin must never be
 ///   reachable from a deployment. Passing the registry in is what lets the integration tests drive

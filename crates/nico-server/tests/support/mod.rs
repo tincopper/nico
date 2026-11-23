@@ -32,6 +32,7 @@ pub(crate) mod http;
 pub(crate) mod inbound_tls;
 pub(crate) mod tls;
 pub(crate) mod token;
+pub(crate) mod wasm_fixtures;
 
 use std::{
     collections::VecDeque,

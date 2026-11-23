@@ -174,3 +174,25 @@ fn the_etcd_client_links_tls_and_never_the_platform_store() {
         "the etcd client must not read a platform trust store. Declared set: {deps:?}"
     );
 }
+
+#[test]
+fn the_wasm_host_enters_only_through_the_wasm_feature() {
+    // The interpreter is a dependency the built-in-only deployments never link: wasmi arrives only
+    // when the `wasm` feature is on, and it lives behind `nico-wasm` — never in `nico-core` or
+    // `nico-http`, which would make the sandbox a kernel concern.
+    let manifest = declarations(include_str!("../../nico-plugins/Cargo.toml"));
+    assert!(
+        manifest.contains("wasm = [\"dep:nico-wasm\"]"),
+        "the `wasm` feature must gate the optional `nico-wasm` dependency"
+    );
+    let core = declarations(NICO_CORE);
+    assert!(
+        !core.contains("wasmi") && !core.contains("nico-wasm"),
+        "nico-core must not know the WASM host exists"
+    );
+    let http = declarations(include_str!("../../nico-http/Cargo.toml"));
+    assert!(
+        !http.contains("wasmi") && !http.contains("nico-wasm"),
+        "nico-http must not know the WASM host exists"
+    );
+}

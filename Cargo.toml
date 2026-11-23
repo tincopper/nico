@@ -15,6 +15,9 @@ arc-swap = "=1.9.3"
 async-trait = "=0.1.92"
 # JWT segments are base64url without padding (RFC 7515), and the API-key filter decodes nothing else.
 base64 = "=0.22.1"
+wat = "1"
+wasmi = "0.51"
+nico-wasm = { path = "crates/nico-wasm" }
 bytes = "=1.12.1"
 # The `ServeHttp` contract Pingora's `HttpServer::new_app` accepts returns `http::Response<Vec<u8>>`,
 # and Pingora does not re-export the `http` crate. The metrics listener's adapter is the one place
