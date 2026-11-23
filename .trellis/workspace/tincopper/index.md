@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 22
-- **Last Active**: 2026-11-22
+- **Total Sessions**: 23
+- **Last Active**: 2026-11-23
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~765 | Active |
+| `journal-1.md` | ~787 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 23 | 2026-11-23 | WASM 插件里程碑(wasmi 沙箱 + kind: wasm) | `e1de456` | `main` |
 | 22 | 2026-11-22 | 可信代理与真实客户端地址(G3 子项) | `4ca3e08` | `main` |
 | 21 | 2026-11-22 | traffic upstream 路由的 URI 前缀改写(G1) | `627438c` | `main` |
 | 20 | 2026-11-22 | traffic 同请求 failover(G2) | `14ca708` | `main` |

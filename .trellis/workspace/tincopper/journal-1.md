@@ -763,3 +763,25 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 ### Status
 
 [OK] **Completed**
+
+
+## Session 23: WASM 插件里程碑(wasmi 沙箱 + kind: wasm)
+<!-- trellis-session: v=2 fp=92df13b95bb02b59 -->
+
+**Date**: 2026-11-23
+**Task**: WASM 插件里程碑(wasmi 沙箱 + kind: wasm)
+**Branch**: `main`
+
+### Summary
+
+新任务 11-23-wasm-plugins:第三方插件以 WASM artifact 交付,无需重编译/重启。选型 wasmi(纯解释/确定性/fuel 计量/双重审计)——否决 wasmtime(JIT 编译期进请求路径,aiway 的 wasmtime+池化+拉取式宿主函数实证了其为热路径吞吐付出的复杂度)与 Extism(外包 ABI)。实现:nico-wasm 新 crate(发布期编译+每调用独立 store+fuel 入账;ABI 推送式字节进出,零长度=隐式 Continue,refuse 动作携带文档编译的 Rejection——模块决定是否、文档决定形状;无 WASI/时钟/网络);nico-plugins WasmFactory+full_registry(不带 wasm feature 时 kind:wasm 得到与拼错 kind 相同的发布拒绝);server serve() 改用 full_registry,feature 默认关。fixture 手写 .wat(wat crate 测试期编译,CI 保持纯 Rust)。E2E 3 项(refuse→403 plugin_refused/continue→透传/fuel 耗尽→500 进程存活);dependency_boundaries 钉住 core/http 零认知。踩坑记录:wasmi Instance 绑 store(实例化必须每调用重建);输出坐标与输入缓冲区重叠会读回输入(ABI 文档化非重叠规则)。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e1de456` | feat(plugins): host WASM plugins in a wasmi sandbox behind kind: wasm |
+
+### Status
+
+[OK] **Completed**
