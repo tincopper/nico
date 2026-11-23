@@ -785,3 +785,25 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 ### Status
 
 [OK] **Completed**
+
+
+## Session 24: WASM 里程碑 AC4 补证:混合链 E2E
+<!-- trellis-session: v=2 fp=15f7aca2eb5d156f -->
+
+**Date**: 2026-11-23
+**Task**: WASM 里程碑 AC4 补证:混合链 E2E
+**Branch**: `main`
+
+### Summary
+
+补证 11-23-wasm-plugins 的 AC4(混合链):新增 E2E two_wasm_instances_and_a_builtin_run_one_chain_in_document_order——jwt(authenticate 相位)+ 两个 WASM 实例(first continue/second refuse)同链按文档序执行;断言无凭据 401+www-authenticate(WASM 未越过 authenticate 相位)、有效凭据后 403+plugin_refused(文档序保持,拒绝携带 wasm kind 编译的展示)。新增 fixture 构建器 Plugin::wasm。WASM 里程碑六项 AC 全部有证据闭环。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b4b0ea5` | chore: record journal |
+
+### Status
+
+[OK] **Completed**
