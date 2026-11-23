@@ -16,11 +16,12 @@ use support::{
         RunningServer,
         client::{Request, exchange},
         free_port,
+        resources::{Plugin, Resources, Route},
         source::TestSource,
         upstream::{MockUpstream, Reply},
         write_bootstrap,
     },
-    wasm_fixtures,
+    token, wasm_fixtures,
 };
 
 /// The `kind: wasm` plugin entry a scenario writes: the artifact path, the ordering class, and the
@@ -179,4 +180,89 @@ async fn a_module_that_overruns_its_fuel_fails_its_request_and_the_process_stays
     // The process survived: the next request gets the same bounded treatment, not a dead server.
     let response = exchange(server.address(), &Request::get("/api/items", "a.test")).await;
     assert_eq!(response.status(), 500, "the gateway is still serving");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn two_wasm_instances_and_a_builtin_run_one_chain_in_document_order() {
+    // AC4 of the WASM milestone: the built-in kinds and the WASM host are one plugin system. A
+    // route's chain carries a JWT authenticator (authenticate phase), a WASM module that continues
+    // (other phase, named first), and a second WASM module that refuses (other phase, named second):
+    // the document order decides between the two WASM entries, and the authenticator runs before
+    // both — a request without a credential must be refused by the JWT, proving the WASM entries
+    // never ran ahead of it.
+    let directory = tempfile::TempDir::new().expect("temporary directory");
+    let _bootstrap = write_bootstrap(directory.path(), free_port(), false, 1, 1000);
+    const JWT_SECRET: &str = "an-hs256-secret-used-by-the-wasm-scenario";
+    let secret = token::secret_file(directory.path(), "jwt.secret", JWT_SECRET);
+    let origin = MockUpstream::start(Reply::Body {
+        body: b"forwarded".to_vec(),
+        chunk: usize::MAX,
+    })
+    .await;
+
+    let pass_path = directory.path().join("pass.wasm");
+    std::fs::write(
+        &pass_path,
+        wasm_fixtures::compiled(wasm_fixtures::CONTINUE_WAT),
+    )
+    .expect("the fixture module writes");
+    let refuse_path = directory.path().join("refuse.wasm");
+    std::fs::write(
+        &refuse_path,
+        wasm_fixtures::compiled(wasm_fixtures::REFUSE_WAT),
+    )
+    .expect("the fixture module writes");
+
+    let document = Resources::new()
+        .upstream("origin", origin.address())
+        .plugin(Plugin::jwt("edge", &secret))
+        .plugin(Plugin::wasm(
+            "first",
+            &format!("\"{}\"", pass_path.display()),
+            "      refuse_status: 403\n      fuel: 1000000\n",
+        ))
+        .plugin(Plugin::wasm(
+            "second",
+            &format!("\"{}\"", refuse_path.display()),
+            "      refuse_status: 403\n",
+        ))
+        .route(Route::new("api", "/api/", "origin").plugins(&["edge", "first", "second"]))
+        .render();
+    let source = TestSource::with_document(&document);
+    let server =
+        RunningServer::start_with_registry(directory.path(), source, nico_plugins::full_registry())
+            .await;
+
+    // No credential: the JWT refuses first. If either WASM entry ran ahead, the answer would be the
+    // module's 403 (no `www-authenticate`) instead of the authenticator's 401 with its challenge.
+    let response = exchange(server.address(), &Request::get("/api/items", "a.test")).await;
+    assert_eq!(
+        response.status(),
+        401,
+        "the authenticate-phase plugin runs before the other-phase WASM entries: {}",
+        response.text()
+    );
+    assert!(
+        response.header("www-authenticate").is_some(),
+        "the refusal carries the authenticator's challenge, which a WASM refusal cannot produce"
+    );
+
+    // With a valid credential, the chain runs in document order: `first` continues, `second` refuses
+    // with its compiled rejection. The answer names the second instance's code, proving the two WASM
+    // entries both ran and the document order held between them.
+    let subject = token::token(JWT_SECRET, 300, "a.test");
+    let request =
+        Request::get("/api/items", "a.test").header("authorization", format!("Bearer {subject}"));
+    let response = exchange(server.address(), &request).await;
+    assert_eq!(
+        response.status(),
+        403,
+        "the second WASM entry refuses after the first continued: {}",
+        response.text()
+    );
+    assert_eq!(
+        response.json_code().as_deref(),
+        Some("plugin_refused"),
+        "the refusal is the wasm kind's compiled presentation"
+    );
 }

@@ -34,6 +34,11 @@ impl Plugin {
         ))
     }
 
+    /// A `wasm` entry: the artifact path the document names, plus the kind's config fields.
+    pub(crate) fn wasm(name: &str, module_ref: &str, config_fields: &str) -> Self {
+        Self::new(name, "wasm").fields(&format!("      module: {module_ref}\n{config_fields}"))
+    }
+
     /// An `api_key` entry that reads its key from `header` instead of `authorization`.
     pub(crate) fn api_key_in(name: &str, header: &str, secret_ref: &str) -> Self {
         Self::new(name, "api_key").fields(&format!(
