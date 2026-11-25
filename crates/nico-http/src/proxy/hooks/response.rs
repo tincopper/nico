@@ -67,6 +67,17 @@ pub(super) async fn upstream_response_filter(
     // is alive. A response that cannot carry a body is no exception: it is still an answer.
     record_member_answer(ctx, response.status.as_u16(), Instant::now());
 
+    // The origin's per-response buffering override: `X-Accel-Buffering: no` turns a buffering route
+    // into a passthrough for this one response. Captured here — the head is not downstream yet, and
+    // this is the only place that reads it — so the body filter below does not re-parse the head.
+    ctx.capture_accel_buffering(
+        response
+            .headers
+            .get("x-accel-buffering")
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.eq_ignore_ascii_case("no")),
+    );
+
     if ctx.llm().is_some() {
         let request = session.req_header();
         if let Err(error) = llm::install_transform(ctx, request, response) {

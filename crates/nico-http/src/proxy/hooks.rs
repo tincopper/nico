@@ -45,6 +45,7 @@
 mod body;
 pub(super) mod llm;
 mod request;
+mod request_headers;
 pub(super) mod response;
 
 use pingora::{

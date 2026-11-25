@@ -73,8 +73,16 @@ async fn bodies_over_the_route_bound_are_rejected_and_a_silent_upstream_times_ou
         .route(Route::new("capped", "/capped", "capped").max_body_bytes(ROUTE_LIMIT as u32))
         .route(Route::new("chunked", "/chunked", "chunked").max_body_bytes(ROUTE_LIMIT as u32))
         .route(Route::new("silent", "/silent", "silent").timeout_ms(200))
-        .route(Route::new("midstream", "/midstream", "midstream").timeout_ms(200))
-        .route(Route::new("stalled", "/stalled", "stalled").timeout_ms(200))
+        .route(
+            Route::new("midstream", "/midstream", "midstream")
+                .timeout_ms(200)
+                .proxy_buffering_off(),
+        )
+        .route(
+            Route::new("stalled", "/stalled", "stalled")
+                .timeout_ms(200)
+                .proxy_buffering_off(),
+        )
         .route(Route::new("slow-upload", "/slow-upload", "slow").timeout_ms(200))
         .render();
     let source = TestSource::with_document(&document);

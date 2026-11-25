@@ -314,6 +314,11 @@ impl Shared {
                     self.wait_for_close(&mut wire).await;
                 }
             }
+            Reply::EchoHeader { name } => {
+                read_request_body(&mut wire, &headers, &self).await;
+                let value = header_value(&headers, &name).unwrap_or_default();
+                let _written = write_response(&mut wire, value.as_bytes(), usize::MAX).await;
+            }
             Reply::Path => {
                 read_request_body(&mut wire, &headers, &self).await;
                 let target = wire::request_target(&head).unwrap_or_default();

@@ -61,7 +61,7 @@ async fn a_stream_in_flight_survives_the_configured_grace_period_and_then_stops(
 
     let document = Resources::new()
         .upstream("events", upstream.address())
-        .route(Route::new("events", "/events", "events"))
+        .route(Route::new("events", "/events", "events").proxy_buffering_off())
         .render();
     let source = TestSource::with_document(&document);
     let server = RunningServer::start(directory.path(), source).await;

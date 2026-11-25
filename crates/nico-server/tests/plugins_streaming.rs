@@ -54,7 +54,11 @@ async fn a_response_body_plugin_rewrites_each_chunk_of_a_stream() {
     let document = Resources::new()
         .upstream("events", upstream.address())
         .plugin(Plugin::mock_append_response("suffixer", "|x"))
-        .route(Route::new("events", "/events/", "events").plugins(&["suffixer"]))
+        .route(
+            Route::new("events", "/events/", "events")
+                .plugins(&["suffixer"])
+                .proxy_buffering_off(),
+        )
         .render();
 
     let recorder = MockRecorder::new();

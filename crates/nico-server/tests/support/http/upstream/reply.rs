@@ -101,4 +101,10 @@ pub(crate) enum Reply {
     /// Answers `200` with the request target the origin received — the path and query exactly as
     /// the gateway forwarded them, in original form.
     Path,
+    /// Answers `200` whose body is one selected request header's value — the header exactly as the
+    /// gateway forwarded it, so a rewrite scenario asserts on what crossed the wire.
+    EchoHeader {
+        /// The request header to echo.
+        name: String,
+    },
 }

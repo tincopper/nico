@@ -148,7 +148,7 @@ impl Destination {
 pub(crate) async fn peer(
     destination: &Destination,
     budget: Duration,
-    read_budget: Duration,
+    read_budget: Option<Duration>,
 ) -> Result<Box<HttpPeer>, HttpError> {
     let address = resolve(destination).await?;
     Ok(build(destination, address, budget, read_budget))
@@ -192,7 +192,7 @@ fn build(
     destination: &Destination,
     address: SocketAddr,
     budget: Duration,
-    read_budget: Duration,
+    read_budget: Option<Duration>,
 ) -> Box<HttpPeer> {
     let mut peer = HttpPeer::new(
         address,
@@ -206,7 +206,11 @@ fn build(
     // gap between two chunks. That is stated in the route's documentation rather than hidden: a
     // gateway that silently treated "first byte" and "any byte" as the same thing would be lying
     // about the field it accepted.
-    peer.options.read_timeout = Some(read_budget.min(budget));
+    // `None` is a deliberate value, not an omission: a request-buffering route must not run a
+    // read timeout while the gateway is still collecting the client's body — the upstream is
+    // waiting for us, and a slow upload would die as a 504 before its 408 could fire. The
+    // deadline check on every collected chunk is what ends such a request (`408`).
+    peer.options.read_timeout = read_budget.map(|read| read.min(budget));
     Box::new(peer)
 }
 

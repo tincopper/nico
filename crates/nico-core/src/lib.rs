@@ -24,9 +24,9 @@ pub use config::{
     DEFAULT_FAILURE_THRESHOLD, DEFAULT_MAX_FAILS, DEFAULT_MAX_RESPONSE_BYTES, Document,
     DocumentError, Ejection, Endpoint, ErrorBody, ErrorResponse, HostError, MAX_ATTEMPTS_PER_ROUTE,
     MAX_FALLBACK_MEMBERS, MAX_HOST_BYTES, ParseLimits, PluginSpec, Pool, PoolMember, PoolStrategy,
-    Provider, RequestBounds, Route, RouteMode, RouteTarget, SchemaBounds, Scheme, Strategy,
-    TokenBudget, Upstream, UpstreamPool, UpstreamPoolMember, attempt_ceiling, host_key,
-    hosts_match, is_json_content_type, is_secret_ref, validate_host,
+    Provider, ProxyHeaderValue, ProxySetHeader, RequestBounds, Route, RouteMode, RouteTarget,
+    SchemaBounds, Scheme, Strategy, TokenBudget, Upstream, UpstreamPool, UpstreamPoolMember,
+    attempt_ceiling, host_key, hosts_match, is_json_content_type, is_secret_ref, validate_host,
 };
 pub use error::ErrorCategory;
 pub use snapshot::{RuntimeSnapshot, SnapshotHandle};

@@ -18,9 +18,24 @@
 //! providers tried after it — because both decide how a *converted* exchange may fail, which an
 //! upstream route has no way to observe.
 
+mod budget;
+mod proxy;
+
 use serde::Deserialize;
 
-/// Where a matched route sends the request.
+pub use self::{
+    budget::TokenBudget,
+    proxy::{ProxyHeaderValue, ProxySetHeader},
+};
+
+pub(super) fn new_proxy_set_header(name: String, value: ProxyHeaderValue) -> ProxySetHeader {
+    ProxySetHeader::new(name, value)
+}
+
+pub(super) const fn new_token_budget(limit_tokens: u64, window_seconds: u32) -> TokenBudget {
+    TokenBudget::new(limit_tokens, window_seconds)
+}
+
 ///
 /// A data plane must handle the target kinds it knows plus a wildcard: the set is closed for this
 /// milestone but a new kind arrives with a new data plane, not with a change to an existing one.
@@ -209,35 +224,6 @@ impl UpstreamPool {
     }
 }
 
-/// The token budget one route's converting requests are bounded by, per authenticated identity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TokenBudget {
-    pub(super) limit_tokens: u64,
-    pub(super) window_seconds: u32,
-}
-
-impl TokenBudget {
-    /// Builds a budget from values the parser has already validated.
-    pub(super) const fn new(limit_tokens: u64, window_seconds: u32) -> Self {
-        Self {
-            limit_tokens,
-            window_seconds,
-        }
-    }
-
-    /// Returns the most tokens one identity may spend in one window.
-    #[must_use]
-    pub const fn limit_tokens(&self) -> u64 {
-        self.limit_tokens
-    }
-
-    /// Returns how long one budget window lasts, in seconds.
-    #[must_use]
-    pub const fn window_seconds(&self) -> u32 {
-        self.window_seconds
-    }
-}
-
 /// One routing rule.
 ///
 /// Fields are private and there is no public constructor: a `Route` only exists inside a
@@ -265,6 +251,14 @@ pub struct Route {
     /// `None` for a single-provider route and for every upstream route; the two forms are mutually
     /// exclusive by construction, so a route never has both a `Provider` target and a pool.
     pub(super) pool: Option<Pool>,
+    /// Whether the upstream response is buffered before it reaches the client.
+    pub(super) proxy_buffering: bool,
+    /// The memory ceiling of the response spool, in bytes.
+    pub(super) max_buffer_size: u32,
+    /// The request headers to set or replace, in document order.
+    pub(super) proxy_set_header: Vec<ProxySetHeader>,
+    /// The request headers to remove, in document order.
+    pub(super) proxy_del_header: Vec<String>,
     /// The value that replaces the route's matched `path_prefix` when the request is forwarded.
     ///
     /// `None` forwards the client's path as written. The match always reads the client's path; the
@@ -302,6 +296,30 @@ impl Route {
     #[must_use]
     pub const fn target(&self) -> &RouteTarget {
         &self.target
+    }
+
+    /// Returns whether the upstream response is buffered before it reaches the client.
+    #[must_use]
+    pub const fn proxy_buffering(&self) -> bool {
+        self.proxy_buffering
+    }
+
+    /// Returns the memory ceiling of the response spool, in bytes.
+    #[must_use]
+    pub const fn max_buffer_size(&self) -> u32 {
+        self.max_buffer_size
+    }
+
+    /// Returns the request headers to set or replace, in document order.
+    #[must_use]
+    pub fn proxy_set_header(&self) -> &[ProxySetHeader] {
+        &self.proxy_set_header
+    }
+
+    /// Returns the request headers to remove, in document order.
+    #[must_use]
+    pub fn proxy_del_header(&self) -> &[String] {
+        &self.proxy_del_header
     }
 
     /// Returns the value that replaces this route's matched `path_prefix` at the forward, when the

@@ -48,19 +48,21 @@ pub(super) async fn request_body_filter(
     // restarted at its boundary (`HttpContext::begin_attempt_body`). Counting every chunk here is
     // then what makes the total equal the bytes the client sent — once, whichever round delivered
     // them — and a replayed prefix is charged to the round that receives it.
+    if ctx.deadline_failure(Instant::now()).is_some() {
+        // The body is still arriving (or just ended with the connection), so the caller is the
+        // slow party and the peer is not at fault. `408` is the one status that says so: a `504`
+        // here would send an operator to inspect a healthy upstream. This hook owns that mapping;
+        // the context only says the clock ran out. It runs on every call — including the final
+        // `end_of_stream` one — because a buffering route holds chunks back, and a client that
+        // stalls or closes without finishing must still be answered here.
+        return Err(abort(ctx, HttpError::RequestTimeout));
+    }
     if let Some(chunk) = body.as_ref() {
         ctx.count_body(chunk.len());
         if let Some(limit) = ctx.exceeded_body_limit() {
             // A chunked upload over the bound is answered by `fail_to_proxy` before anything was
             // committed. The verdict and the limit it was measured against come from one query.
             return Err(abort(ctx, HttpError::BodyTooLarge { limit }));
-        }
-        if ctx.deadline_failure(Instant::now()).is_some() {
-            // The body is still arriving, so the caller is the slow party and the peer is not at
-            // fault. `408` is the one status that says so: a `504` here would send an operator to
-            // inspect a healthy upstream. This hook owns that mapping; the context only says the
-            // clock ran out.
-            return Err(abort(ctx, HttpError::RequestTimeout));
         }
     }
 
@@ -177,10 +179,62 @@ pub(super) fn upstream_response_body_filter(
             return Err(abort(ctx, error));
         }
     } else {
-        response_body_stages(session, body, end_of_stream, ctx)?;
+        // The route's response buffering: hold chunks in a spool until the stream ends, then write
+        // the whole thing at once. A spool past the route's ceiling degrades to passthrough — the
+        // same direction nginx's temp-file overflow takes, with no new error path.
+        if ctx.response_buffering_for_this() {
+            spool_response_body(session, body, end_of_stream, ctx)?;
+        } else {
+            response_body_stages(session, body, end_of_stream, ctx)?;
+        }
     }
     budget_guard(ctx)?;
     Ok(None)
+}
+
+/// Buffers the response body for a buffering route: chunks accumulate in the context's spool, and
+/// the whole spool is written once at stream end — after the response-body plugins see it whole,
+/// the same whole-stage semantics a buffered request body follows.
+///
+/// A spool past the route's ceiling degrades to passthrough: the spool's bytes are emitted into the
+/// stream now, and every later chunk passes through unchanged. That is the direction nginx's
+/// temp-file overflow takes — a memory bound, not a new error path — and the head is already
+/// downstream, so there is nothing to renegotiate.
+fn spool_response_body(
+    session: &mut Session,
+    body: &mut Option<Bytes>,
+    end_of_stream: bool,
+    ctx: &mut HttpContext,
+) -> pingora::Result<()> {
+    if let Some(chunk) = body.as_ref()
+        && ctx.spool_chunk(chunk)
+    {
+        // The current chunk crossed the ceiling and was not stored; emit it after the buffered prefix.
+        let spooled = ctx.take_spool();
+        let mut whole = spooled;
+        if let Some(chunk) = body.as_ref() {
+            whole.extend_from_slice(chunk);
+        }
+        let mut whole = Some(Bytes::from(whole));
+        response_body_stages(session, &mut whole, end_of_stream, ctx)?;
+        *body = whole;
+        return Ok(());
+    }
+    if end_of_stream {
+        let spooled = ctx.take_spool();
+        if !spooled.is_empty() {
+            let mut whole = Some(Bytes::from(spooled));
+            response_body_stages(session, &mut whole, true, ctx)?;
+            *body = whole;
+        }
+        // An empty spool at stream end: the response had no body. Leave `body` untouched so the
+        // framework writes its own terminator.
+    } else {
+        // Hold the chunk back. The framework skips an empty chunk instead of treating it as the
+        // terminating one.
+        *body = Some(Bytes::new());
+    }
+    Ok(())
 }
 
 /// Aborts the stream when the request has spent its whole budget.

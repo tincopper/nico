@@ -31,26 +31,23 @@
 //! a caller tell "the document points at nothing" from "the document is malformed", which is the
 //! same split the validation stages expose.
 
+mod pools;
+mod target;
+
 use std::collections::HashSet;
 
+use self::{
+    pools::{resolve_pool, resolve_upstream_pool},
+    target::{WrittenFields, check_target_fields},
+};
 use super::{
     error::DocumentError,
     plugin::PluginSpec,
     provider::Provider,
-    raw::{RawPoolMember, RawRoute, RawUpstreamPoolMember},
-    route::{
-        Pool, PoolMember, PoolStrategy, Route, RouteMode, RouteTarget, TokenBudget, UpstreamPool,
-        UpstreamPoolMember,
-    },
+    raw::RawRoute,
+    route::{ProxyHeaderValue, Route, RouteTarget, new_proxy_set_header, new_token_budget},
     upstream::Upstream,
 };
-
-/// Inclusive upper bound for `routes[].providers[].weight`.
-///
-/// The same ceiling the traffic layer's member weights use, for the same reason: a larger number is
-/// not a ratio an operator means, it is arithmetic they got wrong. Zero stays legal here, unlike
-/// there, because a provider pool can name a member explicitly as a fallback.
-const MAX_POOL_WEIGHT: u16 = 1000;
 
 /// Resolves every route target and plugin reference, rejecting dangling and duplicate references.
 ///
@@ -152,6 +149,10 @@ fn resolve(
         providers: raw_pool,
         upstreams: raw_upstream_pool,
         rewrite_prefix: raw_rewrite,
+        proxy_buffering,
+        max_buffer_size: raw_max_buffer,
+        proxy_set_header: raw_set_headers,
+        proxy_del_header: raw_del_headers,
         strategy,
         timeout_ms,
         ttft_timeout_ms,
@@ -221,9 +222,15 @@ fn resolve(
         (RouteTarget::Upstream(first), None, Some(upstream_pool))
     };
 
+    // The proxy-behavior fields are upstream-route vocabulary: a converting route's request and
+    // response belong to its adapter, and `check_target_fields` refuses all five on one.
     check_target_fields(
         &target,
         WrittenFields {
+            proxy_buffering: proxy_buffering.is_some(),
+            max_buffer_size: raw_max_buffer.is_some(),
+            proxy_set_header: raw_set_headers.is_some(),
+            proxy_del_header: raw_del_headers.is_some(),
             rewrite_prefix: raw_rewrite.is_some(),
             protocol: protocol.as_deref(),
             mode,
@@ -264,6 +271,22 @@ fn resolve(
         }
     }
 
+    // The proxy-behavior defaults are nginx's: both buffering switches on, a 1 MiB response spool.
+    // An upstream-only route has them; the target check above refused a provider route that wrote
+    // any of them, so a provider route takes the same defaults and the fields stay unused there.
+    const DEFAULT_MAX_BUFFER_SIZE: u32 = 1024 * 1024;
+    let set_headers = raw_set_headers
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| {
+            let value = match entry.value.as_str() {
+                "client_host" => ProxyHeaderValue::ClientHost,
+                "upstream_host" => ProxyHeaderValue::UpstreamHost,
+                literal => ProxyHeaderValue::Literal(literal.to_owned()),
+            };
+            new_proxy_set_header(entry.name, value)
+        })
+        .collect();
     Ok(Route {
         id,
         host,
@@ -280,162 +303,19 @@ fn resolve(
         retry_budget: retry_budget.unwrap_or(1),
         fallback,
         token_budget: raw_token_budget
-            .map(|raw| TokenBudget::new(raw.limit_tokens, raw.window_seconds)),
+            .map(|raw| new_token_budget(raw.limit_tokens, raw.window_seconds)),
         pool,
         upstream_pool,
         rewrite_prefix: raw_rewrite,
+        proxy_buffering: proxy_buffering.unwrap_or(true),
+        max_buffer_size: raw_max_buffer.unwrap_or(DEFAULT_MAX_BUFFER_SIZE),
+        proxy_set_header: set_headers,
+        proxy_del_header: raw_del_headers.unwrap_or_default(),
     })
 }
 
-/// Resolves one route's `upstreams` list into a pool.
-///
-/// Every member is a declared upstream, listed once, with a weight in `1..=1000` — zero is refused
-/// because a traffic route has one attempt and no fallback chain, so a member that can never be
-/// chosen would be a name without a behaviour. The strategy is the document's or the default; a
-/// `strategy` on a route without a pool is refused by the caller, because a value no code path reads
-/// is a typo rather than configuration.
-fn resolve_upstream_pool(
-    route: &str,
-    raw: Vec<RawUpstreamPoolMember>,
-    strategy: Option<PoolStrategy>,
-    upstreams: &HashSet<&str>,
-) -> Result<UpstreamPool, DocumentError> {
-    if raw.is_empty() {
-        return Err(DocumentError::PoolEmpty {
-            id: route.to_owned(),
-        });
-    }
-    let mut seen = HashSet::with_capacity(raw.len());
-    let mut members = Vec::with_capacity(raw.len());
-    for member in raw {
-        ensure_known(upstreams, "upstream", &member.upstream)?;
-        if !seen.insert(member.upstream.clone()) {
-            return Err(DocumentError::DuplicateId {
-                kind: "route-upstream-pool-member",
-                id: member.upstream,
-            });
-        }
-        let weight = member.weight.unwrap_or(1);
-        if !(1..=MAX_POOL_WEIGHT).contains(&weight) {
-            return Err(DocumentError::LimitOutOfRange {
-                field: "routes[].upstreams[].weight",
-                value: u64::from(weight),
-            });
-        }
-        members.push(UpstreamPoolMember::new(member.upstream, weight));
-    }
-    Ok(UpstreamPool::new(members, strategy.unwrap_or_default()))
-}
-
-/// Resolves one route's `providers` list into a pool.
-///
-/// Every member is a declared provider, listed once, and inside the configured member bound. The
-/// strategy is the document's or the default; a `strategy` on a route without a pool is refused,
-/// because a value no code path reads is a typo rather than configuration.
-fn resolve_pool(
-    route: &str,
-    raw: Vec<RawPoolMember>,
-    strategy: Option<PoolStrategy>,
-    providers: &HashSet<&str>,
-) -> Result<Pool, DocumentError> {
-    if raw.is_empty() {
-        return Err(DocumentError::PoolEmpty {
-            id: route.to_owned(),
-        });
-    }
-    let mut seen = HashSet::with_capacity(raw.len());
-    let mut members = Vec::with_capacity(raw.len());
-    for member in raw {
-        ensure_known(providers, "provider", &member.name)?;
-        if !seen.insert(member.name.clone()) {
-            return Err(DocumentError::DuplicateId {
-                kind: "route-pool-member",
-                id: member.name,
-            });
-        }
-        if member.weight.is_some_and(|weight| weight > MAX_POOL_WEIGHT) {
-            return Err(DocumentError::LimitOutOfRange {
-                field: "routes[].providers[].weight",
-                value: u64::from(member.weight.unwrap_or_default()),
-            });
-        }
-        members.push(PoolMember::new(member.name, member.weight.unwrap_or(1)));
-    }
-    Ok(Pool::new(members, strategy.unwrap_or_default()))
-}
-
-/// Rejects a field that the route's target kind does not own, and a provider route without a
-/// protocol.
-///
-/// The check is per kind rather than per field list so the error names the field the operator wrote:
-/// an upstream route has nothing to convert, so `protocol`, `mode` and `max_response_bytes` would
-/// otherwise be read as defaults and silently dropped, and a provider route has nothing to route on
-/// without the name of the client protocol. `fallback` belongs to the same converted exchange — it
-/// decides where a *classified* failure goes next — and an upstream route forwards bytes without ever
-/// classifying one; `retry_budget` is the one attempt field both kinds own, so it is not gathered
-/// here at all.
-/// The convert-route fields a document may have written, gathered for the target check.
-struct WrittenFields<'a> {
-    rewrite_prefix: bool,
-    protocol: Option<&'a str>,
-    mode: Option<RouteMode>,
-    max_response_bytes: Option<u32>,
-    fallback: bool,
-    ttft_timeout: bool,
-    token_budget: bool,
-}
-
-fn check_target_fields(
-    target: &RouteTarget,
-    written: WrittenFields<'_>,
-) -> Result<(), DocumentError> {
-    match target {
-        RouteTarget::Upstream(_) => {
-            // `retry_budget` is the one attempt field an upstream route owns: it bounds the members
-            // one request may walk when a member fails. Everything else describes a converted
-            // exchange, which an upstream route has no way to observe.
-            let declared = [
-                ("routes[].protocol", written.protocol.is_some()),
-                ("routes[].mode", written.mode.is_some()),
-                (
-                    "routes[].max_response_bytes",
-                    written.max_response_bytes.is_some(),
-                ),
-                ("routes[].fallback", written.fallback),
-                ("routes[].ttft_timeout_ms", written.ttft_timeout),
-                ("routes[].token_budget", written.token_budget),
-            ];
-            for (field, present) in declared {
-                if present {
-                    return Err(DocumentError::InvalidField {
-                        field,
-                        reason: "is only valid on a provider route".into(),
-                    });
-                }
-            }
-        }
-        RouteTarget::Provider(_) => {
-            if written.rewrite_prefix {
-                return Err(DocumentError::InvalidField {
-                    field: "routes[].rewrite_prefix",
-                    reason: "is only valid on an upstream route: a converting route's path belongs
-                             to its adapter"
-                        .into(),
-                });
-            }
-            if written.protocol.is_none() {
-                return Err(DocumentError::InvalidField {
-                    field: "routes[].protocol",
-                    reason: "is required on a provider route".into(),
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Rejects a target or plugin name that the collection does not define.
-fn ensure_known(
+pub(super) fn ensure_known(
     known: &HashSet<&str>,
     kind: &'static str,
     name: &str,

@@ -155,6 +155,16 @@ pub(super) struct RawRoute {
     /// a pool of upstreams is traffic-layer vocabulary, and a converting route's pools are
     /// provider pools.
     pub(super) upstreams: Option<Vec<RawUpstreamPoolMember>>,
+    /// Whether the upstream response is buffered before it is written to the client. Absent means
+    /// `true`, the shape nginx's `proxy_buffering` defaults to: the response is drained from the
+    /// upstream as fast as it arrives, decoupling a slow client from the origin.
+    pub(super) proxy_buffering: Option<bool>,
+    /// The memory ceiling of the response spool, in bytes. Absent means 1 MiB.
+    pub(super) max_buffer_size: Option<u32>,
+    /// The request headers to set or replace, in the order the document wrote them.
+    pub(super) proxy_set_header: Option<Vec<RawProxySetHeader>>,
+    /// The request headers to remove before the request is forwarded.
+    pub(super) proxy_del_header: Option<Vec<String>>,
     /// The value that replaces the route's matched `path_prefix` when the request is forwarded.
     ///
     /// Absent means the path is forwarded as written. Empty means the prefix is stripped. Only an
@@ -217,6 +227,18 @@ pub(super) struct RawPoolMember {
     /// Absent means `1`. `0` is legal and means "not a distribution candidate", which is why this
     /// range starts at zero where the traffic layer's member weights start at one.
     pub(super) weight: Option<u16>,
+}
+
+/// One `routes[].proxy_set_header[]` entry exactly as written.
+///
+/// `value` is a literal string, or the two built-in enumerations the contract names: `client_host`
+/// for the client's original `Host`, `upstream_host` for the gateway's default. A literal that is
+/// empty suppresses the header.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawProxySetHeader {
+    pub(super) name: String,
+    pub(super) value: String,
 }
 
 /// One `routes[].upstreams[]` entry exactly as written.

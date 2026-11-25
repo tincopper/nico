@@ -5,6 +5,8 @@
 //! provider route, and the plugins it runs. The rendering lives with the document, because a field is
 //! only valid next to the target that owns it.
 
+mod proxy;
+
 /// What a route forwards to: exactly one of the two, like the document itself.
 #[derive(Debug, Clone)]
 pub(super) enum Target {
@@ -12,7 +14,6 @@ pub(super) enum Target {
     Provider(String),
 }
 
-/// One `routes` entry of a fixture document.
 #[derive(Debug, Clone)]
 pub(crate) struct Route {
     pub(super) id: String,
@@ -22,27 +23,19 @@ pub(crate) struct Route {
     pub(super) timeout_ms: Option<u32>,
     pub(super) max_body_bytes: Option<u32>,
     pub(super) max_response_bytes: Option<u32>,
-    /// The client protocol a provider route serves; `None` for an upstream route.
     pub(super) protocol: Option<String>,
-    /// The provider-route mode; `None` leaves the document's `convert` default.
     pub(super) mode: Option<String>,
     pub(super) plugins: Vec<String>,
-    /// Attempts the route may absorb from one target; `None` leaves the document default of `1`.
     pub(super) retry_budget: Option<u8>,
-    /// The fallback chain; `None` leaves no chain. A scenario writes names the document declares.
     pub(super) fallback: Option<Vec<String>>,
-    /// The provider pool, when the route distributes instead of naming one target.
     pub(super) pool: Option<(Vec<(String, u16)>, &'static str)>,
-    /// The upstream pool, when the route distributes across upstreams instead of naming one.
     pub(super) upstream_pool: Option<(Vec<(String, u16)>, &'static str)>,
-    /// The value that replaces the route's matched path prefix at the forward.
     pub(super) rewrite_prefix: Option<String>,
-    /// How long a streamed attempt may wait for its first byte.
     pub(super) ttft_timeout_ms: Option<u32>,
+    pub(super) proxy_buffering: Option<bool>,
 }
 
 impl Route {
-    /// A route for every host that forwards `path_prefix` to an upstream.
     pub(crate) fn new(id: &str, path_prefix: &str, upstream: &str) -> Self {
         Self {
             id: id.to_owned(),
@@ -61,10 +54,10 @@ impl Route {
             upstream_pool: None,
             rewrite_prefix: None,
             ttft_timeout_ms: None,
+            proxy_buffering: None,
         }
     }
 
-    /// A route that forwards `path_prefix` to a provider, serving `openai.chat` by default.
     pub(crate) fn provider(id: &str, path_prefix: &str, provider: &str) -> Self {
         Self {
             id: id.to_owned(),
@@ -83,79 +76,65 @@ impl Route {
             upstream_pool: None,
             rewrite_prefix: None,
             ttft_timeout_ms: None,
+            proxy_buffering: None,
         }
     }
 
-    /// Restricts the route to one exact `Host`.
     pub(crate) fn host(mut self, host: &str) -> Self {
         self.host = Some(host.to_owned());
         self
     }
 
-    /// Adds the route-level timeout override, which may only tighten the document limit.
     pub(crate) fn timeout_ms(mut self, timeout_ms: u32) -> Self {
         self.timeout_ms = Some(timeout_ms);
         self
     }
 
-    /// Adds the route-level body bound, which may only tighten the document limit.
     pub(crate) fn max_body_bytes(mut self, max_body_bytes: u32) -> Self {
         self.max_body_bytes = Some(max_body_bytes);
         self
     }
 
-    /// Names the client protocol a provider route serves.
     pub(crate) fn protocol(mut self, protocol: &str) -> Self {
         self.protocol = Some(protocol.to_owned());
         self
     }
 
-    /// Sets the provider-route mode: `convert` or `passthrough`.
     pub(crate) fn mode(mut self, mode: &str) -> Self {
         self.mode = Some(mode.to_owned());
         self
     }
 
-    /// Adds the route-level response bound, which may only tighten the document limit.
     pub(crate) fn max_response_bytes(mut self, max_response_bytes: u32) -> Self {
         self.max_response_bytes = Some(max_response_bytes);
         self
     }
 
-    /// Names the plugins the route runs, in the order the document lists them.
     pub(crate) fn plugins(mut self, names: &[&str]) -> Self {
         self.plugins = names.iter().map(|name| (*name).to_owned()).collect();
         self
     }
 
-    /// Sets the route's retry budget: total attempts one target may absorb, including the first.
     pub(crate) fn retry_budget(mut self, retry_budget: u8) -> Self {
         self.retry_budget = Some(retry_budget);
         self
     }
 
-    /// Sets the first-byte budget a streamed attempt gets.
     pub(crate) fn ttft_timeout_ms(mut self, ttft_timeout_ms: u32) -> Self {
         self.ttft_timeout_ms = Some(ttft_timeout_ms);
         self
     }
 
-    /// Declares the fallback chain: provider names tried in order after the route's target fails.
     pub(crate) fn fallback(mut self, names: &[&str]) -> Self {
         self.fallback = Some(names.iter().map(|name| (*name).to_owned()).collect());
         self
     }
 
-    /// Sets the value that replaces the route's matched path prefix at the forward.
     pub(crate) fn rewrite_prefix(mut self, replacement: &str) -> Self {
         self.rewrite_prefix = Some(replacement.to_owned());
         self
     }
 
-    /// Declares an upstream pool: members with their weights, and the distribution strategy.
-    ///
-    /// The route's [`Target`] becomes the pool's first member, the same rule a provider pool
-    /// follows; every single-target reader keeps its meaning.
     pub(crate) fn upstream_pool(mut self, members: &[(&str, u16)], strategy: &'static str) -> Self {
         self.target = Target::Upstream(
             members
@@ -173,10 +152,6 @@ impl Route {
         self
     }
 
-    /// Declares a provider pool: members with their weights, and the distribution strategy.
-    ///
-    /// The route's [`Target`] becomes the pool's first member, which is what every single-target
-    /// reader expects of a pooled route; the pool itself is written beside it.
     pub(crate) fn pool(mut self, members: &[(&str, u16)], strategy: &'static str) -> Self {
         self.target = Target::Provider(
             members

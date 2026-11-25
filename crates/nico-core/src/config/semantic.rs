@@ -21,6 +21,7 @@ use std::{
     collections::{BTreeMap, HashSet},
 };
 
+use self::proxy::{validate_proxy_headers, validate_rewrite_prefix};
 use super::{
     error::DocumentError,
     host,
@@ -227,6 +228,7 @@ fn validate_routes(routes: &[Route], request: RequestBounds) -> Result<(), Docum
         }
         validate_path_prefix(route.path_prefix())?;
         validate_rewrite_prefix(route.rewrite_prefix())?;
+        validate_proxy_headers(route)?;
 
         if let Some(timeout_ms) = route.timeout_ms() {
             budget::validate_timeout("routes[].timeout_ms", timeout_ms)?;
@@ -317,31 +319,6 @@ fn validate_path_prefix(prefix: &str) -> Result<(), DocumentError> {
         return Err(invalid(
             FIELD,
             format!("must be at most {MAX_PATH_PREFIX_BYTES} bytes"),
-        ));
-    }
-    Ok(())
-}
-
-/// Checks the value that replaces a route's matched `path_prefix` at the forward.
-///
-/// The forward reassembles the request target from this value and the client path's remainder, so
-/// anything that could make a request target unparseable — a query, a fragment, whitespace, a control
-/// byte — is refused here, where the field name is known, rather than at the forward.
-fn validate_rewrite_prefix(value: Option<&str>) -> Result<(), DocumentError> {
-    const FIELD: &str = "routes[].rewrite_prefix";
-    let Some(value) = value else {
-        return Ok(());
-    };
-    if !value.starts_with('/') {
-        return Err(invalid(
-            FIELD,
-            "must be a path starting with `/`; stripping the whole prefix is `/`",
-        ));
-    }
-    if value.contains(['?', '#']) || has_whitespace(value) {
-        return Err(invalid(
-            FIELD,
-            "must be a bare path: no query, fragment, whitespace or control characters",
         ));
     }
     Ok(())
@@ -463,6 +440,7 @@ fn invalid(field: &'static str, reason: impl Into<Cow<'static, str>>) -> Documen
 
 mod budget;
 mod plugins;
+mod proxy;
 mod upstreams;
 
 #[cfg(test)]

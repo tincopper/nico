@@ -100,8 +100,8 @@ nginx 的 `reload` 起新 worker、老 worker 继续服务到连接结束。nico
 | 自定义 API key 校验 | `kind: api_key` | 条件 | 常量时间比较；默认读 `authorization` 并剥 `Bearer` |
 | `client_max_body_size 1m;` | `request.max_body_bytes` + `routes[].max_body_bytes` | 条件 | 语义不同：route 只能收紧，写大直接拒绝发布；`0` 表示"只收空体" |
 | `client_body_buffer_size` | 无 | 无 | 没有缓冲区大小旋钮 |
-| `proxy_request_buffering on` | `plugins[].buffers_body: true` | 条件 | 只在这条路由引用了该插件时；请求头仍然先发 |
-| `proxy_buffering on` | 无 | 无 | 普通响应逐 chunk 转发；只有 convert 非流式应答整体缓冲 |
+| `proxy_request_buffering on` | `plugins[].buffers_body: true` | 部分 | 只扣留 body chunk；upstream request head 仍先发，不能表达 nginx 的“收齐 body 才建/发请求” |
+| `proxy_buffering on` | `routes[].proxy_buffering: true` | 部分 | 响应 body 在有界内存中扣留到 end-of-stream 后整体交给下游；无临时文件，不保证上游连接与慢客户端解耦；超 `max_buffer_size` 后转为透传 |
 | `proxy_read_timeout 60s` | `request.timeout_ms` + route `timeout_ms` / `ttft_timeout_ms` | 条件 | nico 是"总预算 + 每次读上限"，不是"两次读之间"的独立计时 |
 | `proxy_connect_timeout` | 总预算内 | 无（字段） | 连接超时取本次请求的剩余预算 |
 | `resolver` / 动态 DNS | 发布期解析一次，展开为逐地址成员 | TTL 后台重解析、权重解析 | 逐地址健康与 failover；地址集合随 reload 更新，请求路径不做域名查询 |
@@ -247,7 +247,7 @@ nginx 里把某个 `if`/`location` 注释掉只影响那一处。nico 的插件�
 | 可信代理地址（realip） | 无 | 前置代理自己做访问控制 |
 | `auth_basic` / 外部子请求鉴权 | 无 | 换成 Bearer（`jwt` / `api_key`）；或前置代理完成认证后带身份头进入 |
 | CIDR allow/deny | 无 | 前置代理或防火墙 |
-| 通用请求/响应缓冲旋钮 | 部分 | 请求侧用 `buffers_body`；响应侧只有 convert 非流式 |
+| 通用请求/响应缓冲旋钮 | 部分 | 请求侧用 `buffers_body`(upstream head 仍先发)；响应侧用 `proxy_buffering` 有界内存扣留，不提供 nginx 临时文件与连接解耦 |
 | 任意请求/响应头改写 | 无 | 上游自己处理；或在 nico 之前/之后加一层 |
 | SNI 多证书 / mTLS / 证书热加载 | 无（单证书、启动期加载；数据面与 `metrics` 监听同一套规则） | 需要这些能力时前面放一层做 TLS 终止的代理；单纯给自报面加密写 `metrics.tls` 即可 |
 | 同一端口自动识别明文与 TLS | 无 | 拆成两个 listener |

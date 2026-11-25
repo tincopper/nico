@@ -41,8 +41,8 @@ pub use plugin::{
 pub use provider::{CircuitBreaker, DEFAULT_COOLDOWN_MS, DEFAULT_FAILURE_THRESHOLD, Provider};
 pub use request::{DEFAULT_MAX_RESPONSE_BYTES, RequestBounds};
 pub use route::{
-    Pool, PoolMember, PoolStrategy, Route, RouteMode, RouteTarget, TokenBudget, UpstreamPool,
-    UpstreamPoolMember,
+    Pool, PoolMember, PoolStrategy, ProxyHeaderValue, ProxySetHeader, Route, RouteMode,
+    RouteTarget, TokenBudget, UpstreamPool, UpstreamPoolMember,
 };
 pub use secret_ref::is_secret_ref;
 pub use semantic::{MAX_ATTEMPTS_PER_ROUTE, MAX_FALLBACK_MEMBERS, attempt_ceiling};

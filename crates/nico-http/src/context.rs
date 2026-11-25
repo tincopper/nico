@@ -36,6 +36,7 @@ mod identity;
 mod llm;
 mod member;
 mod plugins;
+mod proxy;
 mod walk;
 
 use std::{
@@ -50,7 +51,11 @@ use nico_core::{Generation, Route, RouteTarget, RuntimeSnapshot};
 use pingora::http::{Method, RequestHeader};
 
 pub(crate) use self::walk::TrafficWalk;
-use self::{buffer::BodyBuffer, llm::LlmExchange};
+use self::{
+    buffer::BodyBuffer,
+    llm::LlmExchange,
+    proxy::{ProxyHeaders, ResponseSpool},
+};
 use crate::{
     budget,
     error::HttpError,
@@ -97,10 +102,14 @@ pub struct HttpContext {
     /// How many members one request may walk, from the route's `retry_budget`; `1` until a route is
     /// bound, which is the shape every route had before failover existed.
     failover_budget: u8,
-    /// The route's path rewrite: the matched `path_prefix` and the value that replaces it at the
-    /// forward. The rewrite is recomputed from the client's original path every attempt, so the
-    /// pair is a fact of the route, not of a round.
+    /// Route request-header rewrites cached at bind time.
+    proxy_headers: ProxyHeaders,
+    /// Response buffering decision and spool state for this upstream exchange.
+    proxy: ResponseSpool,
+    /// The route's path rewrite: the matched prefix and its replacement.
     rewrite: Option<(Arc<str>, Arc<str>)>,
+    /// The client's original `Host`, captured before automatic upstream rewriting.
+    client_host: Option<Arc<str>>,
     error: Option<HttpError>,
     global: Option<PluginChain>,
     route_chain: Option<PluginChain>,
@@ -165,6 +174,9 @@ impl HttpContext {
         // The failover budget is the same kind of route fact: the walk reads the context, not the
         // snapshot, so a reload mid-request cannot change what this request may walk.
         self.failover_budget = route.retry_budget().max(1);
+        self.proxy_headers.bind(route);
+        self.proxy
+            .set_route(route.proxy_buffering(), route.max_buffer_size());
         self.rewrite = route
             .rewrite_prefix()
             .map(|value| (Arc::from(route.path_prefix()), Arc::from(value)));
@@ -219,6 +231,17 @@ impl HttpContext {
     #[must_use]
     pub(crate) fn route_id_handle(&self) -> Option<&Arc<str>> {
         self.route_id.as_ref()
+    }
+
+    pub(crate) fn capture_client_host(&mut self, host: &str) {
+        if self.client_host.is_none() {
+            self.client_host = Some(Arc::from(host));
+        }
+    }
+
+    /// Returns the client's original `Host`, when it sent one.
+    pub(crate) fn original_host(&self) -> Option<&str> {
+        self.client_host.as_deref()
     }
 
     /// Returns the route's target, which names either an upstream or a provider.

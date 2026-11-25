@@ -399,6 +399,9 @@ request:
                 if let Some(replacement) = &route.rewrite_prefix {
                     yaml.push_str(&format!("    rewrite_prefix: {replacement}\n"));
                 }
+                if let Some(proxy_buffering) = route.proxy_buffering {
+                    yaml.push_str(&format!("    proxy_buffering: {proxy_buffering}\n"));
+                }
                 match &route.target {
                     // A pooled upstream route writes its pool below instead of the single target:
                     // the document refuses both at once, so the two arms are exclusive by
