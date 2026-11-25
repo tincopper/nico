@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 24
-- **Last Active**: 2026-11-23
+- **Total Sessions**: 25
+- **Last Active**: 2026-11-25
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~809 | Active |
+| `journal-1.md` | ~831 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 25 | 2026-11-25 | 完成 G4 缓冲与 header 控制 | `6ac2537` | `feat/g4-buffering-headers` |
 | 24 | 2026-11-23 | WASM 里程碑 AC4 补证:混合链 E2E | `b4b0ea5` | `main` |
 | 23 | 2026-11-23 | WASM 插件里程碑(wasmi 沙箱 + kind: wasm) | `e1de456` | `main` |
 | 22 | 2026-11-22 | 可信代理与真实客户端地址(G3 子项) | `4ca3e08` | `main` |

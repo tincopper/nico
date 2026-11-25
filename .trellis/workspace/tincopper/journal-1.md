@@ -807,3 +807,25 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 ### Status
 
 [OK] **Completed**
+
+
+## Session 25: 完成 G4 缓冲与 header 控制
+<!-- trellis-session: v=2 fp=bf901d6f55f1877b -->
+
+**Date**: 2026-11-25
+**Task**: 完成 G4 缓冲与 header 控制
+**Branch**: `feat/g4-buffering-headers`
+
+### Summary
+
+完成 G4 有界响应内存缓冲、路由级 proxy_set_header/proxy_del_header、Pingora request buffering 差异文档化，以及超 500 行 Rust 模块拆分。全量 workspace tests、clippy、fmt、rustdoc、cargo deny、feature matrix 与 G4 定向测试均通过。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6ac2537` | feat(http): add bounded response buffering and route header controls |
+
+### Status
+
+[OK] **Completed**
