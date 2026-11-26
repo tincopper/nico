@@ -121,7 +121,7 @@ curl -sS http://127.0.0.1:8080/v1/chat/completions \
 | 文件 | 作用 | 是否可被远端改写 |
 |---|---|---|
 | `bootstrap.yaml` | 进程级：配置源、缓存、监听地址、drain 窗口、解析边界 | 否，仅本地 |
-| `resources.yaml` | 资源级：provider、upstream、route、plugin | 由配置源提供（当前仅本地文件） |
+| `resources.yaml` | 资源级：provider、upstream、route、plugin | 由配置源提供（`local` 文件或 `etcd`） |
 
 `bootstrap.yaml` 在任何配置源存在之前读取，因此它永远不被配置源服务 —— 远端控制面无法改写进程
 读配置的位置或缓存目录。

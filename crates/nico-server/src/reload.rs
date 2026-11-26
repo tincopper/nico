@@ -26,12 +26,13 @@
 //! - `pacing` — the pure parts of the loop: coalescing, deadlines, backoff.
 //! - `publish` — validation, compilation and the one publication step.
 //! - `startup` — the first publish, and the last-known-good cache fallback.
+//! - `settings` — the reloader's inputs: the publication readers and the run settings.
 //! - `error` — the pipeline's public failure vocabulary.
 //!
 //! This module keeps the reloader's state, the consuming loop and the retry loop: what survives one
 //! document is exactly what is declared here.
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 pub use error::ReloadError;
 #[cfg(not(feature = "llm"))]
@@ -49,97 +50,12 @@ mod error;
 mod llm;
 mod pacing;
 mod publish;
+mod settings;
 mod startup;
 
+pub use settings::{Publication, ReloadLimits, ReloadSettings};
+
 use self::pacing::{Wake, WatchStep, coalesce, earliest, next_item, sleep_until};
-
-/// The two readers one generation is published to.
-///
-/// They are handed over together because they are written together: `status` is the
-/// configuration-state fact source an operator and the readiness check read, `requests` is the one
-/// value the request path reads. A reloader given only one of them could publish a generation the
-/// other reader never sees, and for an authentication plugin that is a fail-open request path.
-pub struct Publication {
-    status: Arc<SnapshotHandle>,
-    requests: Arc<HttpStateHandle>,
-}
-
-impl Publication {
-    /// Creates the pair a reloader publishes into.
-    #[must_use]
-    pub const fn new(status: Arc<SnapshotHandle>, requests: Arc<HttpStateHandle>) -> Self {
-        Self { status, requests }
-    }
-}
-
-/// How long a burst of changes is coalesced, and how long a publish may be postponed in total.
-///
-/// `max_wait` should be at least `debounce`; when it is shorter, it wins, because the ceiling exists
-/// to stop starvation and the floor exists to avoid reload storms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReloadLimits {
-    debounce: Duration,
-    max_wait: Duration,
-}
-
-impl ReloadLimits {
-    /// Creates limits from a debounce window and a maximum wait.
-    #[must_use]
-    pub const fn new(debounce: Duration, max_wait: Duration) -> Self {
-        Self { debounce, max_wait }
-    }
-
-    /// Returns the quiet window a change must leave before it is published.
-    #[must_use]
-    pub const fn debounce(&self) -> Duration {
-        self.debounce
-    }
-
-    /// Returns the longest a publish may be postponed while changes keep arriving.
-    #[must_use]
-    pub const fn max_wait(&self) -> Duration {
-        self.max_wait
-    }
-}
-
-/// How one pipeline runs: what it may do with a document, and when it stops.
-///
-/// These are the values a process derives from its bootstrap configuration and a test states
-/// directly. They travel as one value because they are one decision — how a document is paced,
-/// bounded and persisted — and because a constructor per knob would let a caller pair a cache with the
-/// wrong trust policy without anything noticing.
-#[derive(Debug, Clone)]
-pub struct ReloadSettings {
-    cache: Option<CacheStore>,
-    limits: ReloadLimits,
-    parse_limits: ParseLimits,
-    allow_bootstrap_cache: bool,
-    shutdown: CancellationToken,
-}
-
-impl ReloadSettings {
-    /// Creates the settings one pipeline runs with.
-    ///
-    /// `cache` is written after every successful publish; it is only *read* when startup fails and
-    /// `allow_bootstrap_cache` is set, so passing a store never changes the running behaviour of a
-    /// healthy process by itself.
-    #[must_use]
-    pub const fn new(
-        cache: Option<CacheStore>,
-        limits: ReloadLimits,
-        parse_limits: ParseLimits,
-        allow_bootstrap_cache: bool,
-        shutdown: CancellationToken,
-    ) -> Self {
-        Self {
-            cache,
-            limits,
-            parse_limits,
-            allow_bootstrap_cache,
-            shutdown,
-        }
-    }
-}
 
 /// Loads, validates and publishes one configuration source until shutdown.
 ///
@@ -221,14 +137,16 @@ impl Reloader {
         Publication { status, requests }: Publication,
         runtime: Arc<PluginRuntime>,
         llm: Arc<dyn LlmCompiler>,
-        ReloadSettings {
+        settings: ReloadSettings,
+    ) -> Self {
+        let limits = settings.limits();
+        let ReloadSettings {
             cache,
-            limits,
             parse_limits,
             allow_bootstrap_cache,
             shutdown,
-        }: ReloadSettings,
-    ) -> Self {
+            ..
+        } = settings;
         Self {
             source,
             handle: status,
@@ -345,11 +263,11 @@ impl Reloader {
                         WatchStep::Candidate(version) => {
                             let now = Instant::now();
                             pending = Some(version);
-                            quiet_until = Some(now + self.limits.debounce);
+                            quiet_until = Some(now + self.limits.debounce());
                             // The ceiling counts from the *first* pending change, so it must
                             // survive the burst that keeps resetting the quiet window.
                             if max_wait_until.is_none() {
-                                max_wait_until = Some(now + self.limits.max_wait);
+                                max_wait_until = Some(now + self.limits.max_wait());
                             }
                         }
                         WatchStep::Resync => {
