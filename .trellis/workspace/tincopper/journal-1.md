@@ -851,3 +851,40 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 ### Status
 
 [OK] **Completed**
+
+
+## Session 27: 完成 reload.rs 拆分与 README 状态校正
+<!-- trellis-session: v=2 fp=ced953c8310c75e2 -->
+
+**Date**: 2026-11-26
+**Task**: 完成 reload.rs 拆分与 README 状态校正
+**Branch**: `feat/reload-split`
+
+### Summary
+
+完成 11-26-reload-split:把 Publication/ReloadLimits/ReloadSettings 三个 reloader 输入类型从 497 行的 reload.rs 移入新模块 reload/settings.rs,公开路径与行为不变,主文件回到 415 行;附带修正 README 中 resources.yaml 配置源的陈旧表述。任务已归档(分支 feat/reload-split 非 base,按惯例 --no-commit --skip-branch-validation)。
+
+### Main Changes
+
+- reload/settings.rs(111 行):三个类型带模块级文档;Publication/ReloadSettings 组装所需字段改 pub(super),crate 外不可见;ReloadSettings 新增 limits() 访问器,ReloadLimits 字段可见性未扩大
+- reload.rs 497→415 行:mod settings + pub use 保持 nico_server::reload 公开路径;with_llm 先取 limits() 再解构其余字段(修复 partial move);消费循环改用 debounce()/max_wait() 访问器;模块文档 # Modules 补 settings 条目
+- README.md:124 「当前仅本地文件」→「由配置源提供(local 文件或 etcd)」,消除与 etcd 章节的矛盾
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `fe9aea6` | refactor(server): split the reload settings into their own module |
+
+### Testing
+
+- [OK] cargo +nightly fmt --all -- --check、clippy --workspace --all-targets --all-features --locked -D warnings、cargo test --workspace --all-features --locked(PIPELINE_EXIT=0)、RUSTDOCFLAGS=-D warnings cargo doc、cargo deny check 全绿
+- [OK] feature 矩阵 5 项通过:no-default-features / traffic check / role_traffic 测试(3 passed) / llm / all-features;行预算检查无输出(reload.rs 415、settings.rs 111);pre-commit 钩子 172 单测全绿
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- push 待用户下令;下一任务候选:跨副本共享 token budget(先定原子 check/charge 与故障语义)、TLS 证书热加载或 config-nacos(按部署场景二选一)

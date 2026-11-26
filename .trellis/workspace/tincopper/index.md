@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 26
+- **Total Sessions**: 27
 - **Last Active**: 2026-11-26
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~853 | Active |
+| `journal-1.md` | ~890 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 27 | 2026-11-26 | 完成 reload.rs 拆分与 README 状态校正 | `fe9aea6` | `feat/reload-split` |
 | 26 | 2026-11-26 | 完成虚拟 key 与租户 token 预算 | `4ebb025` | `feat/virtual-key-tenant-quota` |
 | 25 | 2026-11-25 | 完成 G4 缓冲与 header 控制 | `6ac2537` | `feat/g4-buffering-headers` |
 | 24 | 2026-11-23 | WASM 里程碑 AC4 补证:混合链 E2E | `b4b0ea5` | `main` |
