@@ -829,3 +829,25 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 ### Status
 
 [OK] **Completed**
+
+
+## Session 26: 完成虚拟 key 与租户 token 预算
+<!-- trellis-session: v=2 fp=3ab81e8462af813b -->
+
+**Date**: 2026-11-26
+**Task**: 完成虚拟 key 与租户 token 预算
+**Branch**: `feat/virtual-key-tenant-quota`
+
+### Summary
+
+完成 API key tenant 映射、principal 与 tenant 分离的原子 identity、同 route tenant 共享 token budget、WASM 只读 tenant facts，以及双 virtual key 预算 E2E。全量 workspace tests、clippy、fmt、rustdoc、cargo deny、feature matrix 和 500 行预算检查均通过。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4ebb025` | feat(auth): share token budgets across tenant keys |
+
+### Status
+
+[OK] **Completed**
