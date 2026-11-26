@@ -105,6 +105,37 @@ mod key_sets {
     }
 }
 
+mod tenants {
+    use super::*;
+
+    #[test]
+    fn a_tenant_is_optional() {
+        let keys = "        - name: ci\n          secret_ref: env:KEY_ONE\n";
+        assert_eq!(config(&entry("", keys)).keys[0].tenant, None);
+    }
+
+    #[test]
+    fn a_valid_tenant_is_kept() {
+        let keys =
+            "        - name: ci\n          tenant: acme\n          secret_ref: env:KEY_ONE\n";
+        assert_eq!(
+            config(&entry("", keys)).keys[0].tenant.as_deref(),
+            Some("acme")
+        );
+    }
+
+    #[test]
+    fn invalid_tenants_are_refused() {
+        for tenant in ["", "a".repeat(64).as_str(), "has space", "bad\\nvalue"] {
+            let keys = format!(
+                "        - name: ci\n          tenant: \"{tenant}\"\n          secret_ref: env:KEY_ONE\n"
+            );
+            let error = refused(&entry("", &keys));
+            invalid_field(&error, "config.keys[].tenant");
+        }
+    }
+}
+
 mod headers {
     use super::*;
 

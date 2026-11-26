@@ -33,12 +33,15 @@ pub(crate) struct ApiKeyConfig {
     pub(crate) keys: Vec<ApiKeyEntryConfig>,
 }
 
-/// One accepted key: the name it authenticates as and the reference to its value.
+/// One accepted key: the name it authenticates as, optional tenant quota grouping, and reference to its value.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ApiKeyEntryConfig {
     /// The subject reported when this key is presented.
     pub(crate) name: String,
+    /// The tenant whose route-scoped token budget this key shares, when configured.
+    #[serde(default)]
+    pub(crate) tenant: Option<String>,
     /// The reference the key is read from, for example `env:PARTNER_KEY`.
     pub(crate) secret_ref: String,
 }
@@ -82,6 +85,9 @@ impl ApiKeyConfig {
         let mut names: Vec<&str> = Vec::with_capacity(self.keys.len());
         for key in &self.keys {
             validate_label(plugin, "config.keys[].name", &key.name)?;
+            if let Some(tenant) = key.tenant.as_deref() {
+                validate_label(plugin, "config.keys[].tenant", tenant)?;
+            }
             if names.contains(&key.name.as_str()) {
                 return Err(invalid_parameter(
                     plugin,

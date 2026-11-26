@@ -172,7 +172,12 @@ pub(crate) fn check_request(
     let Some(identity) = ctx.identity() else {
         return Ok(());
     };
-    let key = budget_key(ctx.route_id().unwrap_or_default(), identity.subject());
+    let quota_identity = identity.tenant().unwrap_or_else(|| identity.subject());
+    let key = budget_key(
+        ctx.route_id().unwrap_or_default(),
+        quota_identity,
+        identity.tenant().is_some(),
+    );
     store.check(&key, &policy, now).map_err(|exceeded| {
         crate::error::HttpError::TokenBudgetExceeded {
             limit: exceeded.limit,
@@ -200,17 +205,21 @@ pub(crate) fn charge_request(
     let Some(identity) = ctx.identity() else {
         return;
     };
-    let key = budget_key(ctx.route_id().unwrap_or_default(), identity.subject());
+    let quota_identity = identity.tenant().unwrap_or_else(|| identity.subject());
+    let key = budget_key(
+        ctx.route_id().unwrap_or_default(),
+        quota_identity,
+        identity.tenant().is_some(),
+    );
     store.charge(&key, input.saturating_add(output), &policy, now);
 }
 
-/// Hashes `(route, subject)` into the store's fixed-width key.
+/// Hashes `(route, kind, quota identity)` into the store's fixed-width key.
 ///
-/// A route's budget is per identity *on that route*: the same subject on two routes spends two
-/// budgets. The pair is hashed rather than stored so a lookup allocates nothing and no subject
-/// string is kept in plaintext. FNV-1a, hand-rolled for the same reason the selection crate's
-/// rendezvous score is: the mapping must not change when the toolchain does.
-pub(crate) fn budget_key(route_id: &str, subject: &str) -> [u8; 32] {
+/// The kind tag prevents a tenant label from colliding semantically with an untenantized subject
+/// carrying the same bytes. The route remains part of the key, so a tenant spends separate windows
+/// on separate routes.
+pub(crate) fn budget_key(route_id: &str, identity: &str, tenant: bool) -> [u8; 32] {
     let mix = |bytes: &[u8], seed: u64| -> u64 {
         let mut hash = seed;
         for &byte in bytes {
@@ -219,11 +228,12 @@ pub(crate) fn budget_key(route_id: &str, subject: &str) -> [u8; 32] {
         }
         hash
     };
+    let domain = if tenant { 0x54 } else { 0x53 };
     let first = mix(
-        subject.as_bytes(),
-        mix(route_id.as_bytes(), 0xcbf2_9ce4_8422_2325),
+        identity.as_bytes(),
+        mix(route_id.as_bytes(), 0xcbf2_9ce4_8422_2325 ^ domain),
     );
-    let second = mix(subject.as_bytes(), first ^ 0x9e37_79b9_7f4a_7c15);
+    let second = mix(identity.as_bytes(), first ^ 0x9e37_79b9_7f4a_7c15 ^ domain);
     let mut key = [0u8; 32];
     key[..8].copy_from_slice(&first.to_be_bytes());
     key[8..16].copy_from_slice(&second.to_be_bytes());

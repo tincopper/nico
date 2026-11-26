@@ -56,6 +56,7 @@ const NOT_ACCEPTED: &str = "the api key is not accepted";
 /// One accepted key: the name it authenticates as and its value.
 struct Entry {
     name: Arc<str>,
+    tenant: Option<Arc<str>>,
     secret: Arc<[u8]>,
 }
 
@@ -95,6 +96,7 @@ impl ApiKeyPlugin {
                 .zip(secrets)
                 .map(|(entry, secret)| Entry {
                     name: Arc::clone(&entry.name),
+                    tenant: entry.tenant.as_ref().map(Arc::clone),
                     secret,
                 })
                 .collect(),
@@ -165,9 +167,7 @@ impl Plugin for ApiKeyPlugin {
         let Some(entry) = self.find(presented.as_bytes()) else {
             return Err(self.refuse(NOT_ACCEPTED, self.rejections.invalid()));
         };
-        // The key's own name is the subject: it is what an operator configured and what a downstream
-        // can be told, while the key itself never leaves this comparison.
-        ctx.set_identity(&entry.name)?;
+        ctx.set_identity_with_tenant(&entry.name, entry.tenant.as_deref())?;
         Ok(Outcome::Continue)
     }
 }

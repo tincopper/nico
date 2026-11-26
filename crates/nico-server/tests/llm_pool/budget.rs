@@ -39,14 +39,43 @@ fn document(
         )
 }
 
+/// A converting route with two virtual keys sharing one tenant budget.
+fn tenant_document(
+    serving: &MockUpstream,
+    credential: &str,
+    first_ref: &str,
+    second_ref: &str,
+    limit: u64,
+    window: u32,
+) -> String {
+    Resources::new()
+        .provider("serving", &base_url(serving), credential)
+        .plugin(Plugin::api_key_tenant(
+            "partner-keys",
+            first_ref,
+            second_ref,
+            "tenant-acme",
+        ))
+        .route(
+            Route::provider("llm-chat", "/v1/chat/", "serving")
+                .plugins(&["partner-keys"])
+                .retry_budget(1),
+        )
+        .render()
+        .replace(
+            "  - id: llm-chat\n",
+            &format!(
+                "  - id: llm-chat\n    token_budget:\n      limit_tokens: {limit}\n      window_seconds: {window}\n"
+            ),
+        )
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn a_spent_budget_refuses_the_next_request_before_dispatch() {
     let directory = tempfile::TempDir::new().expect("temporary directory");
     let credential = support::token::secret_file(directory.path(), "openai.key", scenarios::KEY);
     let key_ref = support::token::secret_file(directory.path(), "partner.key", API_KEY);
 
-    // One provider answer costs 6 budget tokens (4 input + 2 output), so a 6-token budget admits the
-    // first request and spends itself on it.
     let serving = MockUpstream::start(Reply::Response {
         status: 200,
         headers: vec![("content-type".to_owned(), "application/json".to_owned())],
@@ -54,40 +83,62 @@ async fn a_spent_budget_refuses_the_next_request_before_dispatch() {
         chunk: usize::MAX,
     })
     .await;
-
     let source = TestSource::with_document(&document(&serving, &credential, &key_ref, 6, 3600));
     write_bootstrap(directory.path(), free_port(), false, 1, 1000);
-    let server = RunningServer::start(directory.path(), source.clone()).await;
+    let server = RunningServer::start(directory.path(), source).await;
     let address = server.address();
 
     let first = scenarios::ask(address, &chat_with_key("fast", API_KEY)).await;
-    assert_eq!(
-        first.status(),
-        200,
-        "the first request is inside the budget: {}",
-        first.text()
-    );
-
+    assert_eq!(first.status(), 200, "{}", first.text());
     let second = scenarios::ask(address, &chat_with_key("fast", API_KEY)).await;
+    assert_eq!(second.status(), 429, "{}", second.text());
+    assert!(second.text().contains("token_budget_exceeded"));
+    assert_eq!(serving.observation().requests.len(), 1);
     assert_eq!(
-        second.status(),
-        429,
-        "the spent window refuses the next request: {}",
-        second.text()
+        server.cancel_and_join().await,
+        std::process::ExitCode::SUCCESS
     );
-    assert!(
-        second.text().contains("token_budget_exceeded"),
-        "the code names the gateway's policy, not a provider failure: {}",
-        second.text()
-    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn distinct_virtual_keys_share_their_route_tenant_budget() {
+    let directory = tempfile::TempDir::new().expect("temporary directory");
+    let credential = support::token::secret_file(directory.path(), "openai.key", scenarios::KEY);
+    let first_key = support::token::secret_file(directory.path(), "first.key", "first-secret");
+    let second_key = support::token::secret_file(directory.path(), "second.key", "second-secret");
+    let serving = MockUpstream::start(Reply::Response {
+        status: 200,
+        headers: vec![("content-type".to_owned(), "application/json".to_owned())],
+        body: chat_response_with_usage("served", 4, 2),
+        chunk: usize::MAX,
+    })
+    .await;
+    let source = TestSource::with_document(&tenant_document(
+        &serving,
+        &credential,
+        &first_key,
+        &second_key,
+        6,
+        3600,
+    ));
+    write_bootstrap(directory.path(), free_port(), false, 1, 1000);
+    let server = RunningServer::start(directory.path(), source).await;
+    let address = server.address();
+
+    let first = scenarios::ask(address, &chat_with_key("fast", "first-secret")).await;
+    assert_eq!(first.status(), 200, "{}", first.text());
+    let second = scenarios::ask(address, &chat_with_key("fast", "second-secret")).await;
+    assert_eq!(second.status(), 429, "{}", second.text());
+    assert!(second.text().contains("token_budget_exceeded"));
     assert_eq!(
         serving.observation().requests.len(),
         1,
-        "the refused request never reached the provider"
+        "the second virtual key shares tenant usage and is refused before provider dispatch"
     );
-
-    let exit_code = server.cancel_and_join().await;
-    assert_eq!(exit_code, std::process::ExitCode::SUCCESS);
+    assert_eq!(
+        server.cancel_and_join().await,
+        std::process::ExitCode::SUCCESS
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

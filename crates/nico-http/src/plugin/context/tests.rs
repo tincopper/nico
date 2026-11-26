@@ -5,6 +5,8 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use super::Phase;
 
 mod headers;
+mod identity;
+
 use crate::{
     plugin::{LogLevel, PluginContext, PluginError},
     test_support::PluginFixture,

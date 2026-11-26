@@ -113,10 +113,17 @@ impl Plugin for WasmInstance {
             path: std::str::from_utf8(ctx.uri()).unwrap_or(""),
             headers: &headers,
             subject: ctx.identity(),
+            tenant: ctx.tenant(),
         };
         let action = self
             .module
-            .on_request(&facts, &serde_json::json!({ "subject": facts.subject }))
+            .on_request(
+                &facts,
+                &serde_json::json!({
+                    "subject": facts.subject,
+                    "tenant": facts.tenant,
+                }),
+            )
             .map_err(|error| self.execute_failed(error))?;
         self.map_action(action)
     }

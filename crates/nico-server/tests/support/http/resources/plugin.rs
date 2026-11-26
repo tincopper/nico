@@ -34,7 +34,18 @@ impl Plugin {
         ))
     }
 
-    /// A `wasm` entry: the artifact path the document names, plus the kind's config fields.
+    /// An `api_key` entry with two virtual keys sharing a tenant quota group.
+    pub(crate) fn api_key_tenant(
+        name: &str,
+        first_ref: &str,
+        second_ref: &str,
+        tenant: &str,
+    ) -> Self {
+        Self::new(name, "api_key").fields(&format!(
+            "      keys:\n        - name: first\n          tenant: {tenant}\n          secret_ref: {first_ref}\n        - name: second\n          tenant: {tenant}\n          secret_ref: {second_ref}\n"
+        ))
+    }
+
     pub(crate) fn wasm(name: &str, module_ref: &str, config_fields: &str) -> Self {
         Self::new(name, "wasm").fields(&format!("      module: {module_ref}\n{config_fields}"))
     }

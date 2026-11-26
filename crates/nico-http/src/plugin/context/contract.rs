@@ -206,21 +206,40 @@ impl PluginContext for ContextState<'_> {
     }
 
     fn set_identity(&mut self, subject: &str) -> Result<(), PluginError> {
-        if !self.phase.offers_identity() {
+        if !self.phase.offers_identity_write() {
             return Err(PluginError::PhaseViolation(
-                "identity is an admission fact; it cannot be set after the response is written",
+                "identity may only be established in on_request",
             ));
         }
-        // First identity wins, and a later write is ignored rather than refused: an authentication
-        // plugin that authenticated *after* another one cannot replace the subject a rate limit is
-        // already charged to.
         self.http
             .set_identity(Identity::new(subject, Arc::clone(&self.plugin)));
         Ok(())
     }
 
+    fn set_identity_with_tenant(
+        &mut self,
+        subject: &str,
+        tenant: Option<&str>,
+    ) -> Result<(), PluginError> {
+        if !self.phase.offers_identity_write() {
+            return Err(PluginError::PhaseViolation(
+                "identity may only be established in on_request",
+            ));
+        }
+        self.http.set_identity(Identity::with_tenant(
+            subject,
+            tenant.map(str::to_owned),
+            Arc::clone(&self.plugin),
+        ));
+        Ok(())
+    }
+
     fn identity(&self) -> Option<&str> {
         self.http.identity().map(Identity::subject)
+    }
+
+    fn tenant(&self) -> Option<&str> {
+        self.http.identity().and_then(Identity::tenant)
     }
 
     fn client_ip_hash(&self) -> Option<u64> {

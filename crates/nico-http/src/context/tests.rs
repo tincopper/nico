@@ -350,6 +350,21 @@ mod identity {
     }
 
     #[test]
+    fn an_identity_records_an_optional_tenant_without_replacing_the_subject() {
+        let (mut ctx, _now) = begin(ROUTE);
+
+        ctx.set_identity(Identity::with_tenant(
+            "key-a",
+            Some("tenant-acme".to_owned()),
+            "api-keys",
+        ));
+
+        let identity = ctx.identity().expect("the identity is recorded");
+        assert_eq!(identity.subject(), "key-a");
+        assert_eq!(identity.tenant(), Some("tenant-acme"));
+    }
+
+    #[test]
     fn an_identity_source_can_be_a_configured_plugin_name() {
         let (mut ctx, _now) = begin(ROUTE);
         // A plugin instance name comes from the document, so it is not a `'static` string: two

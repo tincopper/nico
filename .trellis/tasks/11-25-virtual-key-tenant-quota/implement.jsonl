@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Use the backend checklist and follow its linked directory, error, Pingora and quality guidance as needed."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Track identity and tenant facts across plugin context, HTTP quota, WASM serialization and tests."}
+{"file": ".trellis/tasks/archive/2026-11/11-15-token-budget/prd.md", "reason": "Authoritative existing token-budget scope, fixed-window/post-hoc accounting and exclusions."}
+{"file": ".trellis/tasks/archive/2026-11/11-15-token-budget/design.md", "reason": "Existing BudgetStore key and lifecycle seam to extend without changing accounting timing."}
+{"file": ".trellis/tasks/archive/2026-11/11-23-wasm-plugins/design.md", "reason": "WASM ABI boundary, plugin host contract and resource isolation constraints."}

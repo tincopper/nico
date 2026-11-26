@@ -21,6 +21,7 @@ pub(crate) struct TestContext {
     route: Option<String>,
     headers: Vec<(String, String)>,
     identity: Option<String>,
+    tenant: Option<String>,
     ip_hash: Option<u64>,
     log_lines: usize,
 }
@@ -34,6 +35,7 @@ impl TestContext {
             route: None,
             headers: Vec::new(),
             identity: None,
+            tenant: None,
             ip_hash: None,
             log_lines: 0,
         }
@@ -57,12 +59,11 @@ impl TestContext {
     /// Returns a copy already authenticated as `subject` by this plugin.
     pub(crate) fn with_identity(mut self, subject: &str) -> Self {
         self.identity = Some(subject.to_owned());
+        self.tenant = None;
         self
     }
 
     /// Returns a copy whose caller hashes to `hash`.
-    ///
-    /// A test never holds an address: the contract exposes only the hash, so the fixture supplies one
     /// and the cases that must differ differ by a value the test chose.
     pub(crate) fn with_client_ip_hash(mut self, hash: u64) -> Self {
         self.ip_hash = Some(hash);
@@ -208,8 +209,24 @@ impl PluginContext for TestContext {
         Ok(())
     }
 
+    fn set_identity_with_tenant(
+        &mut self,
+        subject: &str,
+        tenant: Option<&str>,
+    ) -> Result<(), PluginError> {
+        if self.identity.is_none() {
+            self.identity = Some(subject.to_owned());
+            self.tenant = tenant.map(str::to_owned);
+        }
+        Ok(())
+    }
+
     fn identity(&self) -> Option<&str> {
         self.identity.as_deref()
+    }
+
+    fn tenant(&self) -> Option<&str> {
+        self.tenant.as_deref()
     }
 
     fn client_ip_hash(&self) -> Option<u64> {

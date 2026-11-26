@@ -11,8 +11,10 @@ pub struct RequestFacts<'a> {
     pub path: &'a str,
     /// The request headers, in the order the client wrote them.
     pub headers: &'a [(String, String)],
-    /// The authenticated subject, when an authentication plugin established one.
+    /// The authenticated principal, when an authentication plugin established one.
     pub subject: Option<&'a str>,
+    /// The tenant quota group, when the authenticated principal belongs to one.
+    pub tenant: Option<&'a str>,
 }
 
 /// The facts the `on_response` stage carries: the upstream's response head.

@@ -144,6 +144,8 @@ pub(crate) struct ApiKeySpec {
 pub(crate) struct ApiKeyRef {
     /// The subject reported when this key is presented.
     pub(crate) name: Arc<str>,
+    /// The optional tenant this key's token usage is grouped under.
+    pub(crate) tenant: Option<Arc<str>>,
     /// The reference the key was read from, kept for error messages only.
     pub(crate) secret_ref: Arc<str>,
 }
@@ -168,6 +170,7 @@ impl ApiKeySpec {
                 .iter()
                 .map(|key| ApiKeyRef {
                     name: Arc::from(key.name.as_str()),
+                    tenant: key.tenant.as_deref().map(Arc::from),
                     secret_ref: Arc::from(key.secret_ref.as_str()),
                 })
                 .collect(),

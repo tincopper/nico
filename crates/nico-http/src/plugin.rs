@@ -431,10 +431,36 @@ pub trait PluginContext: Send {
     /// Currently never fails; the `Result` keeps the write uniform with the other mutators.
     fn set_identity(&mut self, subject: &str) -> Result<(), PluginError>;
 
+    /// Atomically records the principal and optional tenant quota dimension established by this plugin.
+    ///
+    /// The first identity tuple wins. The source is this plugin's instance name. The default keeps
+    /// alternate contexts source-compatible: a no-tenant write delegates to `set_identity`, while a
+    /// non-empty tenant fails explicitly rather than silently discarding quota grouping.
+    ///
+    /// # Errors
+    /// Returns [`PluginError::Execute`] when a context implementation does not support tenant identity.
+    fn set_identity_with_tenant(
+        &mut self,
+        subject: &str,
+        tenant: Option<&str>,
+    ) -> Result<(), PluginError> {
+        if tenant.is_some() {
+            return Err(PluginError::Execute(
+                "this plugin context does not support tenant identity",
+            ));
+        }
+        self.set_identity(subject)
+    }
+
     /// Returns the subject an earlier plugin authenticated, when one did.
     ///
     /// `None` means "not authenticated", which is different from "authenticated as nobody".
     fn identity(&self) -> Option<&str>;
+
+    /// Returns the tenant quota grouping identifier, when an authenticator established one.
+    fn tenant(&self) -> Option<&str> {
+        None
+    }
 
     /// Returns a stable hash of the caller's address, for bucketing only.
     ///

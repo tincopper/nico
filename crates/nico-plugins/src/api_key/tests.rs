@@ -59,6 +59,22 @@ fn entry(extra: &str) -> String {
     )
 }
 
+/// An API-key entry with a tenant grouping dimension.
+fn tenant_entry(tenant: &str) -> String {
+    format!(
+        concat!(
+            "  - name: partner\n",
+            "    kind: api_key\n",
+            "    config:\n",
+            "      keys:\n",
+            "        - name: acme\n",
+            "          tenant: {tenant}\n",
+            "          secret_ref: env:ACME_KEY\n",
+        ),
+        tenant = tenant,
+    )
+}
+
 /// Runs the request stage, mapping a refusal the way the data plane does.
 async fn call(plugin: &ApiKeyPlugin, ctx: &mut TestContext) -> Result<(), HttpError> {
     match plugin.on_request(ctx).await {
@@ -96,6 +112,20 @@ mod acceptance {
             "partner",
             "the instance is the source of the identity, so two key sets stay tellable apart"
         );
+    }
+
+    #[tokio::test]
+    async fn a_key_sets_the_configured_tenant_without_replacing_its_subject() {
+        let document = document(&tenant_entry("tenant-a"), &["partner"]);
+        let plugin = plugin(&document, "partner");
+        let config = ApiKeyConfig::from_spec(plugin).expect("tenant config compiles");
+        let spec = ApiKeySpec::compile(plugin, &config).expect("tenant spec compiles");
+        let filter = filter(&spec, &["s3cret"]);
+        let mut ctx = fresh().with_header(HEADER, "Bearer s3cret");
+
+        assert!(call(&filter, &mut ctx).await.is_ok());
+        assert_eq!(ctx.identity(), Some("acme"));
+        assert_eq!(ctx.tenant(), Some("tenant-a"));
     }
 
     #[tokio::test]

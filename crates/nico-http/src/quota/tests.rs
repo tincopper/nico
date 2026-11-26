@@ -123,8 +123,6 @@ fn identities_are_isolated() {
 
 #[test]
 fn the_table_is_bounded_by_max_keys() {
-    // The key space is the set of authenticated identities, and a client can present as many as it
-    // holds credentials for. The LRU bound is what keeps process memory a constant.
     let store = InProcessBudgetStore::new(2);
     let now = Instant::now();
     let policy = policy(1000, 60);
@@ -134,19 +132,46 @@ fn the_table_is_bounded_by_max_keys() {
     store.charge(&key(3), 1, &policy, now);
     store.charge(&key(4), 1, &policy, now);
 
-    // Keys 1 and 2 were evicted: their windows start over.
     assert!(store.check(&key(1), &policy, now).is_ok());
     assert!(store.check(&key(4), &policy, now).is_ok());
 }
 
 #[test]
-fn distinct_routes_charge_distinct_windows() {
-    // The key is (route, subject): the same subject on two routes spends two budgets.
+fn tenant_and_subject_quota_domains_are_distinct_and_route_scoped() {
+    assert_eq!(
+        budget_key("llm-chat", "tenant-a", true),
+        budget_key("llm-chat", "tenant-a", true)
+    );
+    assert_ne!(
+        budget_key("llm-chat", "tenant-a", true),
+        budget_key("llm-chat", "tenant-a", false)
+    );
+    assert_ne!(
+        budget_key("llm-chat", "tenant-a", true),
+        budget_key("llm-embed", "tenant-a", true)
+    );
+}
+
+#[test]
+fn tenant_keys_share_the_same_route_window_across_principals() {
     let store = InProcessBudgetStore::new(16);
     let now = Instant::now();
     let policy = policy(500, 60);
-    let route_a = budget_key("llm-chat", "user-1");
-    let route_b = budget_key("llm-embed", "user-1");
+    let first_key = budget_key("llm-chat", "tenant-acme", true);
+    let second_key = budget_key("llm-chat", "tenant-acme", true);
+
+    store.charge(&first_key, 500, &policy, now);
+
+    assert!(store.check(&second_key, &policy, now).is_err());
+}
+
+#[test]
+fn distinct_routes_charge_distinct_windows() {
+    let store = InProcessBudgetStore::new(16);
+    let now = Instant::now();
+    let policy = policy(500, 60);
+    let route_a = budget_key("llm-chat", "user-1", false);
+    let route_b = budget_key("llm-embed", "user-1", false);
 
     store.charge(&route_a, 500, &policy, now);
 

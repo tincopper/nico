@@ -31,14 +31,8 @@ impl Phase {
         matches!(self, Self::Request | Self::RequestBody)
     }
 
-    /// Returns whether this stage may establish facts the rest of the request reads.
-    ///
-    /// Identity is an admission fact: the rate limit keys on it and the request record attributes
-    /// authentication to the plugin that wrote it. A response or logging stage running after the head
-    /// was sent can only corrupt that attribution, so those stages are read-only for identity. The
-    /// phase owns the rule, not each context method.
-    pub(super) const fn offers_identity(self) -> bool {
-        self.offers_request()
+    pub(super) const fn offers_identity_write(self) -> bool {
+        matches!(self, Self::Request)
     }
 
     /// Returns whether response facts are available.

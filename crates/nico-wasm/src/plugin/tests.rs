@@ -77,7 +77,26 @@ fn facts<'a>() -> RequestFacts<'a> {
         path: "/api/items",
         headers: &[],
         subject: None,
+        tenant: None,
     }
+}
+
+#[test]
+fn request_facts_can_carry_a_tenant_without_changing_absence() {
+    let tenant_facts = RequestFacts {
+        method: "GET",
+        path: "/api/items",
+        headers: &[],
+        subject: Some("key-a"),
+        tenant: Some("tenant-a"),
+    };
+    let encoded = serde_json::to_value(&tenant_facts).expect("facts serialize");
+    assert_eq!(encoded["subject"], "key-a");
+    assert_eq!(encoded["tenant"], "tenant-a");
+    assert_eq!(
+        serde_json::to_value(facts()).expect("facts serialize")["tenant"],
+        serde_json::Value::Null
+    );
 }
 
 #[test]
