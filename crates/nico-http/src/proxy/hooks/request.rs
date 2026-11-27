@@ -130,10 +130,24 @@ pub(super) async fn upstream_peer(
     ctx: &mut HttpContext,
 ) -> pingora::Result<Box<HttpPeer>> {
     let now = Instant::now();
-    if let Some(store) = ctx.budget_store()
-        && let Err(error) = crate::quota::check_request(store, ctx, TokioInstant::now())
-    {
-        return Err(abort(ctx, error));
+    if let Some(store) = ctx.budget_store() {
+        match crate::quota::check_request(store, ctx, std::time::SystemTime::now()).await {
+            Ok(()) => {}
+            // The window is spent: the caller waits for the reset.
+            Err(Ok(error)) => return Err(abort(ctx, error)),
+            // The store could not confirm the admission. The standing answer is fail-closed —
+            // a budget that cannot be read is not a budget that allows — carried as its own
+            // 503, never as a 429. A deployment that prefers availability opts into fail-open
+            // through its store's configuration (phase 2's `on_unavailable`).
+            Err(Err(store_error)) => {
+                return Err(abort(
+                    ctx,
+                    HttpError::BudgetStoreUnavailable {
+                        source: Box::new(store_error),
+                    },
+                ));
+            }
+        }
     }
     let budget = ctx.remaining(now).unwrap_or_default();
     if budget.is_zero() {

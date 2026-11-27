@@ -60,6 +60,17 @@ pub enum HttpError {
         /// The window the limit applies to.
         window_seconds: u32,
     },
+    /// The shared store behind the token budgets could not confirm this request's admission.
+    ///
+    /// This is the fail-closed answer, and it is deliberately not a 429: the caller's window is
+    /// not the fact in question — the gateway cannot see it at all. `503` names the gateway's
+    /// dependency, and `Retry-After`-style retry is the caller's move.
+    #[error("the budget store could not confirm the request: {source}")]
+    BudgetStoreUnavailable {
+        /// The underlying cause, kept for logs and never rendered to the caller.
+        #[source]
+        source: Box<dyn Error + Send + Sync>,
+    },
     /// No runtime snapshot has been published, or the pipeline is not ready to serve.
     #[error("no runtime snapshot is available to serve")]
     NotReady,
@@ -237,6 +248,11 @@ impl HttpError {
                 "token_budget_exceeded",
                 "the identity has spent its token budget for this route's window",
             )),
+            Self::BudgetStoreUnavailable { .. } => Some(Respond::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "quota_store_unavailable",
+                "the gateway cannot confirm the token budget right now",
+            )),
             Self::BodyTooLarge { .. } => Some(Respond::new(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "body_too_large",
@@ -308,6 +324,9 @@ impl HttpError {
             | Self::UpstreamFailed { .. }
             | Self::ProviderNotConfigured { .. }
             | Self::AttemptRetry => ErrorCategory::Upstream,
+            // The budget store is a gateway dependency, not a caller fault and not a provider's:
+            // its outage is this side's failure to confirm admission.
+            Self::BudgetStoreUnavailable { .. } => ErrorCategory::Internal,
             Self::Rejected { rejection, .. } => rejection.category(),
             Self::LlmRejected { rejection } => rejection.category(),
             Self::Internal { .. } | Self::ResponseCommitted => ErrorCategory::Internal,

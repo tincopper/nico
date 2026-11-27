@@ -176,7 +176,11 @@ macro_rules! shape {
 /// The level is that action: a normal request is `debug!` (the spec forbids `info!` on the request
 /// path), a rejection the caller can fix is `warn!`, and a failure the operator must act on is
 /// `error!`. No body, credential or query string is logged.
-pub(super) fn emit(session: &Session, error: Option<&Error>, ctx: &HttpContext) {
+///
+/// The charge of a shared budget store is awaited here: the logging hook is async, so the
+/// request's own accounting completes before the record is emitted — and a charge that cannot be
+/// confirmed is logged as the failure it is, never silently dropped.
+pub(super) async fn emit(session: &Session, error: Option<&Error>, ctx: &HttpContext) {
     let written = session
         .response_written()
         .map(|response| response.status.as_u16());
@@ -290,7 +294,7 @@ pub(super) fn emit(session: &Session, error: Option<&Error>, ctx: &HttpContext) 
         elapsed_ms = elapsed_ms,
     );
 
-    record_tokens(ctx, status);
+    record_tokens(ctx, status).await;
 }
 
 /// Emits the token usage a successful converted exchange reported.
@@ -304,7 +308,7 @@ pub(super) fn emit(session: &Session, error: Option<&Error>, ctx: &HttpContext) 
 /// - **not 2xx**: a failure has no usage, and a 4xx never had one;
 /// - **no transform**: a passthrough route has no canonical value, so nothing to report;
 /// - **no selected target**: the request never reached a provider.
-fn record_tokens(ctx: &crate::HttpContext, status: u16) {
+async fn record_tokens(ctx: &crate::HttpContext, status: u16) {
     if !(200..300).contains(&status) {
         return;
     }
@@ -320,13 +324,34 @@ fn record_tokens(ctx: &crate::HttpContext, status: u16) {
         .map_or_else(String::new, |target| target.name().to_owned());
     let model = llm.physical_model().unwrap_or_default();
     // The budget is charged here, where the provider's own numbers are in hand: only the two
-    // full-price buckets count, and only on a request the provider actually served.
+    // full-price buckets count, and only on a request the provider actually served. The charge id
+    // is the exchange's own trace id — stable across the request's logging calls, so a retried
+    // write bills once. A charge the store cannot confirm is a fact the operator needs: it is
+    // logged at warn and never silently dropped, because usage that was served but not recorded
+    // makes the budget lie about what was spent.
     if let (Some(input), Some(output)) = (
         usage.get(crate::llm::TokenKind::Input),
         usage.get(crate::llm::TokenKind::Output),
     ) && let Some(store) = ctx.budget_store()
     {
-        crate::quota::charge_request(store, ctx, input, output, tokio::time::Instant::now());
+        let charge_id = crate::quota::ChargeId(ctx.trace_id().into());
+        if let Err(error) = crate::quota::charge_request(
+            store,
+            ctx,
+            charge_id,
+            input,
+            output,
+            std::time::SystemTime::now(),
+        )
+        .await
+        {
+            tracing::warn!(
+                target: "nico_http::tokens",
+                route_id = %route_id,
+                error = %error,
+                "the token charge could not be confirmed; the shared window may under-count"
+            );
+        }
     }
     for (kind, count) in usage.reported() {
         tracing::info!(

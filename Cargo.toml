@@ -96,6 +96,10 @@ nico-llm = { version = "0.0.0", path = "crates/nico-llm" }
 # exporter never enters the data plane's dependency tree.
 nico-metrics = { version = "0.0.0", path = "crates/nico-metrics" }
 nico-plugins = { version = "0.0.0", path = "crates/nico-plugins" }
+nico-quota-storage = { version = "0.0.0", path = "crates/nico-quota-storage" }
+# The etcd wire client: shared by the config source and the quota storage adapters. Optional
+# everywhere; the product binaries gate it behind their own features.
+etcd-client = { version = "0.14", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

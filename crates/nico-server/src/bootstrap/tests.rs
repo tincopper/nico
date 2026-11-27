@@ -381,5 +381,6 @@ mod etcd_source;
 
 mod config_source_section;
 mod http_tls;
+mod quota_store_section;
 mod runtime;
 mod tls;

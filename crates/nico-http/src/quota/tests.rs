@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use super::*;
+use super::{local::InProcessBudgetStore, *};
 
 /// A policy of `limit` tokens per `window` seconds.
 fn policy(limit: u64, window: u32) -> BudgetPolicy {
@@ -13,127 +13,226 @@ fn policy(limit: u64, window: u32) -> BudgetPolicy {
 }
 
 /// A 32-byte key standing in for one identity on one route.
-fn key(seed: u8) -> [u8; 32] {
+fn key(seed: u8) -> BudgetKey {
     let mut k = [0u8; 32];
     k[0] = seed;
     k
 }
 
-#[test]
-fn the_first_charge_opens_the_window() {
-    let store = InProcessBudgetStore::new(16);
-    let now = Instant::now();
+/// A charge of `tokens` at `offset` seconds after `now`, under one stable id.
+fn make_charge(now: SystemTime, id: &str, tokens: u64, offset: u64) -> Charge {
+    Charge {
+        id: ChargeId(id.into()),
+        input: tokens,
+        output: 0,
+        at: now + Duration::from_secs(offset),
+    }
+}
 
-    store.charge(&key(1), 100, &policy(1000, 60), now);
+async fn verdict(
+    store: &InProcessBudgetStore,
+    key: &BudgetKey,
+    policy: &BudgetPolicy,
+    now: SystemTime,
+) -> Result<CheckResult, BudgetStoreError> {
+    BudgetStore::check(store, key, policy, now).await
+}
+
+async fn record(
+    store: &InProcessBudgetStore,
+    key: &BudgetKey,
+    policy: &BudgetPolicy,
+    charge: &Charge,
+) -> Result<(), BudgetStoreError> {
+    BudgetStore::charge(store, key, policy, charge).await
+}
+
+#[tokio::test]
+async fn the_first_charge_opens_the_window() {
+    let store = InProcessBudgetStore::new(16);
+    let now = SystemTime::UNIX_EPOCH;
+
+    record(
+        &store,
+        &key(1),
+        &policy(1000, 60),
+        &make_charge(now, "c1", 100, 0),
+    )
+    .await
+    .expect("the first charge lands");
 
     assert!(
-        store.check(&key(1), &policy(1000, 60), now).is_ok(),
+        matches!(
+            verdict(&store, &key(1), &policy(1000, 60), now).await,
+            Ok(CheckResult::Allowed)
+        ),
         "100 of 1000 tokens spent leaves room"
     );
 }
 
-#[test]
-fn charges_accumulate_inside_the_window() {
+#[tokio::test]
+async fn charges_accumulate_inside_the_window() {
     let store = InProcessBudgetStore::new(16);
-    let now = Instant::now();
+    let now = SystemTime::UNIX_EPOCH;
     let policy = policy(1000, 60);
 
-    store.charge(&key(1), 600, &policy, now);
-    store.charge(&key(1), 399, &policy, now + Duration::from_secs(1));
+    record(&store, &key(1), &policy, &make_charge(now, "c1", 600, 0))
+        .await
+        .expect("the first charge lands");
+    record(&store, &key(1), &policy, &make_charge(now, "c2", 399, 1))
+        .await
+        .expect("the second charge lands");
 
     assert!(
-        store
-            .check(&key(1), &policy, now + Duration::from_secs(2))
-            .is_ok(),
+        matches!(
+            verdict(&store, &key(1), &policy, now + Duration::from_secs(2)).await,
+            Ok(CheckResult::Allowed)
+        ),
         "999 spent: one request's answer is still unknown, so the window has room"
     );
 
     // The charge that crosses the line flips the verdict for whatever comes next.
-    store.charge(&key(1), 1, &policy, now + Duration::from_secs(2));
+    record(&store, &key(1), &policy, &make_charge(now, "c3", 1, 2))
+        .await
+        .expect("the crossing charge lands");
     assert!(
-        store
-            .check(&key(1), &policy, now + Duration::from_secs(2))
-            .is_err(),
+        matches!(
+            verdict(&store, &key(1), &policy, now + Duration::from_secs(2)).await,
+            Ok(CheckResult::Exceeded(_))
+        ),
         "1000 spent: the window is spent"
     );
 }
 
-#[test]
-fn an_expired_window_resets_the_spend() {
+#[tokio::test]
+async fn an_expired_window_resets_the_spend() {
     let store = InProcessBudgetStore::new(16);
-    let now = Instant::now();
+    let now = SystemTime::UNIX_EPOCH;
     let policy = policy(1000, 60);
 
-    store.charge(&key(1), 1000, &policy, now);
-    assert!(store.check(&key(1), &policy, now).is_err());
+    record(&store, &key(1), &policy, &make_charge(now, "c1", 1000, 0))
+        .await
+        .expect("the charge lands");
+    assert!(matches!(
+        verdict(&store, &key(1), &policy, now).await,
+        Ok(CheckResult::Exceeded(_))
+    ));
 
     // One second past the window: the spend belongs to a closed window.
     assert!(
-        store
-            .check(&key(1), &policy, now + Duration::from_secs(61))
-            .is_ok(),
+        matches!(
+            verdict(&store, &key(1), &policy, now + Duration::from_secs(61)).await,
+            Ok(CheckResult::Allowed)
+        ),
         "a new window starts empty"
     );
 }
 
-#[test]
-fn the_window_resets_only_when_its_duration_has_passed() {
+#[tokio::test]
+async fn the_window_resets_only_when_its_duration_has_passed() {
     let store = InProcessBudgetStore::new(16);
-    let now = Instant::now();
+    let now = SystemTime::UNIX_EPOCH;
     let policy = policy(1000, 60);
 
-    store.charge(&key(1), 1000, &policy, now);
-    assert!(
-        store
-            .check(&key(1), &policy, now + Duration::from_secs(59))
-            .is_err(),
-        "one second before the reset the window is still spent"
-    );
+    record(&store, &key(1), &policy, &make_charge(now, "c1", 1000, 0))
+        .await
+        .expect("the charge lands");
+    assert!(matches!(
+        verdict(&store, &key(1), &policy, now + Duration::from_secs(59)).await,
+        Ok(CheckResult::Exceeded(_))
+    ));
 }
 
-#[test]
-fn a_charge_over_the_limit_is_recorded_and_refuses_the_next() {
+#[tokio::test]
+async fn a_charge_over_the_limit_is_recorded_and_refuses_the_next() {
     // The post-hoc semantics: one request may push past the limit, because its usage was unknown
     // until the provider answered. What is enforced is the *next* request.
     let store = InProcessBudgetStore::new(16);
-    let now = Instant::now();
+    let now = SystemTime::UNIX_EPOCH;
     let policy = policy(500, 60);
 
-    store.charge(&key(1), 800, &policy, now);
+    record(&store, &key(1), &policy, &make_charge(now, "c1", 800, 0))
+        .await
+        .expect("the over-limit charge is still recorded");
 
-    assert!(store.check(&key(1), &policy, now).is_err());
+    assert!(matches!(
+        verdict(&store, &key(1), &policy, now).await,
+        Ok(CheckResult::Exceeded(_))
+    ));
     assert!(
-        !store.check(&key(2), &policy, now).is_err(),
+        matches!(
+            verdict(&store, &key(2), &policy, now).await,
+            Ok(CheckResult::Allowed)
+        ),
         "another identity's window is its own"
     );
 }
 
-#[test]
-fn identities_are_isolated() {
+#[tokio::test]
+async fn a_retried_charge_with_the_same_id_bills_once() {
     let store = InProcessBudgetStore::new(16);
-    let now = Instant::now();
-    let policy = policy(500, 60);
-
-    store.charge(&key(1), 500, &policy, now);
-    store.charge(&key(2), 10, &policy, now);
-
-    assert!(store.check(&key(1), &policy, now).is_err());
-    assert!(store.check(&key(2), &policy, now).is_ok());
-}
-
-#[test]
-fn the_table_is_bounded_by_max_keys() {
-    let store = InProcessBudgetStore::new(2);
-    let now = Instant::now();
+    let now = SystemTime::UNIX_EPOCH;
     let policy = policy(1000, 60);
 
-    store.charge(&key(1), 1, &policy, now);
-    store.charge(&key(2), 1, &policy, now);
-    store.charge(&key(3), 1, &policy, now);
-    store.charge(&key(4), 1, &policy, now);
+    record(&store, &key(1), &policy, &make_charge(now, "same", 300, 0))
+        .await
+        .expect("the first write lands");
+    record(&store, &key(1), &policy, &make_charge(now, "same", 300, 0))
+        .await
+        .expect("the retried write is accepted");
 
-    assert!(store.check(&key(1), &policy, now).is_ok());
-    assert!(store.check(&key(4), &policy, now).is_ok());
+    assert!(
+        matches!(
+            verdict(&store, &key(1), &policy, now).await,
+            Ok(CheckResult::Allowed)
+        ),
+        "the retried id must not bill twice: 300 spent, not 600"
+    );
+}
+
+#[tokio::test]
+async fn identities_are_isolated() {
+    let store = InProcessBudgetStore::new(16);
+    let now = SystemTime::UNIX_EPOCH;
+    let policy = policy(500, 60);
+
+    record(&store, &key(1), &policy, &make_charge(now, "c1", 500, 0))
+        .await
+        .expect("the charge lands");
+    record(&store, &key(2), &policy, &make_charge(now, "c2", 10, 0))
+        .await
+        .expect("the charge lands");
+
+    assert!(matches!(
+        verdict(&store, &key(1), &policy, now).await,
+        Ok(CheckResult::Exceeded(_))
+    ));
+    assert!(matches!(
+        verdict(&store, &key(2), &policy, now).await,
+        Ok(CheckResult::Allowed)
+    ));
+}
+
+#[tokio::test]
+async fn the_table_is_bounded_by_max_keys() {
+    let store = InProcessBudgetStore::new(2);
+    let now = SystemTime::UNIX_EPOCH;
+    let policy = policy(1000, 60);
+
+    for seed in 1..=4 {
+        record(&store, &key(seed), &policy, &make_charge(now, "c", 1, 0))
+            .await
+            .expect("the charge lands");
+    }
+
+    assert!(matches!(
+        verdict(&store, &key(1), &policy, now).await,
+        Ok(CheckResult::Allowed)
+    ));
+    assert!(matches!(
+        verdict(&store, &key(4), &policy, now).await,
+        Ok(CheckResult::Allowed)
+    ));
 }
 
 #[test]
@@ -152,29 +251,42 @@ fn tenant_and_subject_quota_domains_are_distinct_and_route_scoped() {
     );
 }
 
-#[test]
-fn tenant_keys_share_the_same_route_window_across_principals() {
+#[tokio::test]
+async fn tenant_keys_share_the_same_route_window_across_principals() {
     let store = InProcessBudgetStore::new(16);
-    let now = Instant::now();
+    let now = SystemTime::UNIX_EPOCH;
     let policy = policy(500, 60);
     let first_key = budget_key("llm-chat", "tenant-acme", true);
     let second_key = budget_key("llm-chat", "tenant-acme", true);
 
-    store.charge(&first_key, 500, &policy, now);
+    record(&store, &first_key, &policy, &make_charge(now, "c1", 500, 0))
+        .await
+        .expect("the charge lands");
 
-    assert!(store.check(&second_key, &policy, now).is_err());
+    assert!(matches!(
+        verdict(&store, &second_key, &policy, now).await,
+        Ok(CheckResult::Exceeded(_))
+    ));
 }
 
-#[test]
-fn distinct_routes_charge_distinct_windows() {
+#[tokio::test]
+async fn distinct_routes_charge_distinct_windows() {
     let store = InProcessBudgetStore::new(16);
-    let now = Instant::now();
+    let now = SystemTime::UNIX_EPOCH;
     let policy = policy(500, 60);
     let route_a = budget_key("llm-chat", "user-1", false);
     let route_b = budget_key("llm-embed", "user-1", false);
 
-    store.charge(&route_a, 500, &policy, now);
+    record(&store, &route_a, &policy, &make_charge(now, "c1", 500, 0))
+        .await
+        .expect("the charge lands");
 
-    assert!(store.check(&route_a, &policy, now).is_err());
-    assert!(store.check(&route_b, &policy, now).is_ok());
+    assert!(matches!(
+        verdict(&store, &route_a, &policy, now).await,
+        Ok(CheckResult::Exceeded(_))
+    ));
+    assert!(matches!(
+        verdict(&store, &route_b, &policy, now).await,
+        Ok(CheckResult::Allowed)
+    ));
 }

@@ -46,6 +46,7 @@ pub mod bootstrap;
 #[cfg(feature = "llm")]
 pub mod llm;
 mod metrics;
+pub mod quota_build;
 pub mod reload;
 pub mod server;
 mod source_build;
@@ -55,6 +56,7 @@ pub use bootstrap::{BootstrapConfig, BootstrapError};
 pub use llm::{
     CredentialError, CredentialResolver, EnvFileCredentials, LlmBuildError, LlmPlan, LlmRuntime,
 };
+pub use quota_build::{QuotaStoreBuildError, build_quota_store};
 pub use reload::{LlmCompiler, Publication, ReloadError, ReloadLimits, ReloadSettings, Reloader};
 pub use source_build::{SourceBuildError, build_source};
 
