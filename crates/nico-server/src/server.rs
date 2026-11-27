@@ -108,7 +108,7 @@ pub fn serve_with(
     // the *synchronous* production assembly Pingora drives. One one-shot runtime here, before
     // Pingora's exists, is the same shape the config source's connect uses on its own thread: the
     // handshake is part of starting, not part of serving.
-    let (budget_store, _unavailable_policy) = match tokio::runtime::Builder::new_current_thread()
+    let (budget_store, unavailable_policy) = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
     {
@@ -128,7 +128,7 @@ pub fn serve_with(
             return ExitCode::from(FAILURE_EXIT_CODE);
         }
     };
-    let state = HttpStateHandle::with_budget_store(budget_store);
+    let state = HttpStateHandle::with_budget_store(budget_store, unavailable_policy);
     let snapshot = SnapshotHandle::new();
     // One plugin runtime for the process: the bucket tables inside it are runtime state, so a reload
     // that republishes the same quota must keep them rather than hand every caller a fresh one.

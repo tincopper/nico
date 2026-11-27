@@ -22,6 +22,7 @@ use crate::{
     context::{FailureStage, HttpContext},
     error::HttpError,
     plugin::ResponseData,
+    quota::UnavailablePolicy,
     route,
     state::{self, HttpState},
     upstream::pools::MemberFailure,
@@ -64,7 +65,7 @@ pub(super) async fn request_filter(
     };
     ctx.begin(state.snapshot(), session.req_header(), now);
     ctx.set_selection(state.selection());
-    ctx.set_budget_store(app.budget_store());
+    ctx.set_budget_store(app.budget_store(), app.budget_policy());
     if let Some(address) = client_ip {
         ctx.set_client_ip(address);
     }
@@ -135,17 +136,31 @@ pub(super) async fn upstream_peer(
             Ok(()) => {}
             // The window is spent: the caller waits for the reset.
             Err(Ok(error)) => return Err(abort(ctx, error)),
-            // The store could not confirm the admission. The standing answer is fail-closed —
-            // a budget that cannot be read is not a budget that allows — carried as its own
-            // 503, never as a 429. A deployment that prefers availability opts into fail-open
-            // through its store's configuration (phase 2's `on_unavailable`).
+            // The store could not confirm the admission. What happens now is the deployment's
+            // stated policy, not this hook's opinion: fail-closed answers a 503 — a budget that
+            // cannot be read is not a budget that allows; fail-open forwards, counting the
+            // request in a degraded metric so the outage is visible even though the caller
+            // cannot see it. Either way the store's failure is never rendered as a 429.
             Err(Err(store_error)) => {
-                return Err(abort(
-                    ctx,
-                    HttpError::BudgetStoreUnavailable {
-                        source: Box::new(store_error),
-                    },
-                ));
+                let policy = ctx.budget_policy();
+                metrics::counter!(
+                    "quota_store_degraded_total",
+                    "policy" => policy.name(),
+                )
+                .increment(1);
+                if policy == UnavailablePolicy::FailClosed {
+                    return Err(abort(
+                        ctx,
+                        HttpError::BudgetStoreUnavailable {
+                            source: Box::new(store_error),
+                        },
+                    ));
+                }
+                tracing::warn!(
+                    quota_store.policy = policy.name(),
+                    error = %store_error,
+                    "the budget store could not confirm the admission; forwarding under fail-open"
+                );
             }
         }
     }

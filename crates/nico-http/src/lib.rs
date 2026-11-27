@@ -130,7 +130,7 @@ pub use plugin::{
 pub use proxy::HttpApp;
 pub use quota::{
     BudgetKey, BudgetPolicy, BudgetStore, BudgetStoreError, Charge, ChargeId, CheckResult,
-    Exceeded, InProcessBudgetStore,
+    Exceeded, InProcessBudgetStore, UnavailablePolicy,
 };
 pub use route::match_route;
 pub use server_settings::{ServerSettings, ServerSettingsError};

@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "backend baseline gates and feature matrix for this wiring task"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "structured log and metric conventions; high-cardinality and credential redaction rules"}

@@ -60,7 +60,7 @@ use crate::{
     budget,
     error::HttpError,
     plugin::PluginChain,
-    quota::BudgetStore,
+    quota::{BudgetStore, UnavailablePolicy},
     upstream::{
         Destination,
         pools::{ConnectionGuard, SelectionTable},
@@ -80,6 +80,8 @@ pub struct HttpContext {
     token_budget: Option<nico_core::TokenBudget>,
     /// The process-level token-budget table, cloned from the state handle at `begin`.
     budgets: Option<Arc<dyn BudgetStore>>,
+    /// What this request is answered when that table's storage cannot confirm an admission.
+    budget_policy: UnavailablePolicy,
     target: Option<RouteTarget>,
     method: Option<Method>,
     path: Option<String>,
@@ -205,14 +207,25 @@ impl HttpContext {
         self.route_id.as_deref()
     }
 
-    /// Records the process-level token-budget table this request checks and charges against.
-    pub(crate) fn set_budget_store(&mut self, store: Arc<dyn BudgetStore>) {
+    /// Records the process-level token-budget facts this request checks and charges against:
+    /// the table and the failure policy the deployment stated for it.
+    pub(crate) fn set_budget_store(
+        &mut self,
+        store: Arc<dyn BudgetStore>,
+        policy: UnavailablePolicy,
+    ) {
         self.budgets = Some(store);
+        self.budget_policy = policy;
     }
 
     /// Returns the table this request charges, when the process has one.
     pub(crate) fn budget_store(&self) -> Option<&dyn BudgetStore> {
         self.budgets.as_deref()
+    }
+
+    /// Returns what this request is answered when the budget store cannot confirm an admission.
+    pub(crate) fn budget_policy(&self) -> UnavailablePolicy {
+        self.budget_policy
     }
 
     /// Returns the route's per-identity token budget, when it declares one.

@@ -103,6 +103,40 @@ impl Charge {
     }
 }
 
+/// What a request is answered when the store behind the budgets cannot confirm an admission.
+///
+/// A *deployment* choice, stated in the bootstrap's `quota_store` section — never the gateway's
+/// own default. The in-process store cannot fail, so the local default is fail-closed by
+/// construction: the branch is unreachable, and stating it names the standing behaviour rather
+/// than inventing a policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnavailablePolicy {
+    /// Refuse the request with `503 quota_store_unavailable`: a budget that cannot be read is
+    /// not a budget that allows.
+    FailClosed,
+    /// Forward the request: availability wins, and the deployment accepts the overspend a
+    /// store outage makes possible. Every such request is counted in a degraded metric.
+    FailOpen,
+}
+
+impl Default for UnavailablePolicy {
+    /// The in-process store cannot fail, so the standing default is fail-closed by construction.
+    fn default() -> Self {
+        Self::FailClosed
+    }
+}
+
+impl UnavailablePolicy {
+    /// The policy's name, as the bootstrap spells it: the value the metric label carries.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::FailClosed => "fail-closed",
+            Self::FailOpen => "fail-open",
+        }
+    }
+}
+
 /// The fixed-width identity of one budget window.
 ///
 /// The bytes are opaque to every store — local or shared — and encode

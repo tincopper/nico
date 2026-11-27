@@ -290,3 +290,78 @@ async fn distinct_routes_charge_distinct_windows() {
         Ok(CheckResult::Allowed)
     ));
 }
+
+/// A store whose every operation fails with the given error: the injected-outage subject the
+/// policy tests need.
+struct FailingStore;
+
+impl std::fmt::Debug for FailingStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FailingStore")
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait::async_trait]
+impl BudgetStore for FailingStore {
+    async fn check(
+        &self,
+        _key: &BudgetKey,
+        _policy: &BudgetPolicy,
+        _now: SystemTime,
+    ) -> Result<CheckResult, BudgetStoreError> {
+        Err(BudgetStoreError::Unavailable {
+            source: "the wire broke".into(),
+        })
+    }
+
+    async fn charge(
+        &self,
+        _key: &BudgetKey,
+        _policy: &BudgetPolicy,
+        _charge: &Charge,
+    ) -> Result<(), BudgetStoreError> {
+        Err(BudgetStoreError::Unavailable {
+            source: "the wire broke".into(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_failing_store_reports_unavailable_not_exceeded() {
+    let store = FailingStore;
+    let now = SystemTime::UNIX_EPOCH;
+
+    let error = BudgetStore::check(&store, &key(1), &policy(10, 60), now)
+        .await
+        .expect_err("the injected outage is returned");
+    assert!(
+        matches!(error, BudgetStoreError::Unavailable { .. }),
+        "the store's failure is its own fact, never a spent window"
+    );
+}
+
+#[test]
+fn the_policy_names_match_the_bootstrap_values() {
+    assert_eq!(UnavailablePolicy::FailClosed.name(), "fail-closed");
+    assert_eq!(UnavailablePolicy::FailOpen.name(), "fail-open");
+    assert_eq!(UnavailablePolicy::default(), UnavailablePolicy::FailClosed);
+}
+
+#[test]
+fn the_state_handle_carries_the_stated_policy() {
+    let store: std::sync::Arc<dyn BudgetStore> = std::sync::Arc::new(InProcessBudgetStore::new(8));
+    let handle = crate::state::HttpStateHandle::with_budget_store(
+        std::sync::Arc::clone(&store),
+        UnavailablePolicy::FailOpen,
+    );
+    assert_eq!(handle.budget_policy(), UnavailablePolicy::FailOpen);
+
+    let local = crate::state::HttpStateHandle::new();
+    assert_eq!(
+        local.budget_policy(),
+        UnavailablePolicy::FailClosed,
+        "the standing local table is fail-closed by construction"
+    );
+}
