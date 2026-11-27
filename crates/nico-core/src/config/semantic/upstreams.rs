@@ -23,7 +23,74 @@ pub(super) fn validate(upstream: &Upstream) -> Result<(), DocumentError> {
         return Err(invalid("upstreams[].port", "must be in 1..=65535"));
     }
     validate_ejection(upstream)?;
+    validate_health_check(upstream)?;
     validate_endpoints(upstream)
+}
+
+/// Checks one upstream's active health check, when the document enabled one.
+///
+/// Every field names its rule, the way the ejection budget does: the check is a deployment's
+/// declaration of how its members answer, and a value the scheduler could not honour (a period of
+/// zero, a threshold of zero, a path that is not a path) is refused here, at parse time.
+fn validate_health_check(upstream: &Upstream) -> Result<(), DocumentError> {
+    let Some(check) = upstream.health_check() else {
+        return Ok(());
+    };
+    if check.path().is_empty() || !check.path().starts_with('/') {
+        return Err(invalid(
+            "upstreams[].health_check.path",
+            "must begin with `/`",
+        ));
+    }
+    if check
+        .path()
+        .bytes()
+        .any(|byte| !(0x21..=0x7e).contains(&byte) || matches!(byte, b'?' | b'#'))
+    {
+        return Err(invalid(
+            "upstreams[].health_check.path",
+            "must be printable ASCII without `?`, `#`, whitespace or control characters",
+        ));
+    }
+    if check.path().len() > MAX_HEALTH_PATH_BYTES {
+        return Err(DocumentError::LimitOutOfRange {
+            field: "upstreams[].health_check.path",
+            value: check.path().len() as u64,
+        });
+    }
+    for (field, value) in [
+        ("upstreams[].health_check.interval_ms", check.interval_ms()),
+        (
+            "upstreams[].health_check.no_traffic_interval_ms",
+            check.no_traffic_interval_ms(),
+        ),
+        ("upstreams[].health_check.timeout_ms", check.timeout_ms()),
+    ] {
+        if !(1..=MAX_HEALTH_INTERVAL_MS).contains(&value) {
+            return Err(DocumentError::LimitOutOfRange {
+                field,
+                value: u64::from(value),
+            });
+        }
+    }
+    for (field, value) in [
+        (
+            "upstreams[].health_check.unhealthy_threshold",
+            check.unhealthy_threshold(),
+        ),
+        (
+            "upstreams[].health_check.healthy_threshold",
+            check.healthy_threshold(),
+        ),
+    ] {
+        if !(1..=MAX_HEALTH_THRESHOLD).contains(&value) {
+            return Err(DocumentError::LimitOutOfRange {
+                field,
+                value: u64::from(value),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Checks one upstream's ejection parameters.
@@ -110,3 +177,23 @@ const MAX_ENDPOINT_WEIGHT: u16 = 1000;
 /// `circuit_breaker.failure_threshold`; the ceiling is the same "this is not a number, it is a
 /// posture" bound a breaker threshold has.
 const MAX_MAX_FAILS: u32 = 1000;
+
+/// Inclusive upper bound for a health check's periods (`interval_ms`,
+/// `no_traffic_interval_ms`, `timeout_ms`) and the longest any probe may be scheduled with.
+///
+/// The same `1..=600_000` family the document's other timing budgets use: ten minutes is longer
+/// than any interval a health check would want to state, and the ceiling is what keeps a typo
+/// (`interval_s` written as `interval_ms`) from scheduling a probe that never fires.
+const MAX_HEALTH_INTERVAL_MS: u32 = 600_000;
+
+/// Inclusive upper bound for a health check's `unhealthy_threshold` and `healthy_threshold`.
+///
+/// A consecutive count past one hundred would make the checker a number nobody can reason about:
+/// a member's recovery would arrive long after the operator stopped watching for it.
+const MAX_HEALTH_THRESHOLD: u8 = 100;
+
+/// Inclusive upper bound for `upstreams[].health_check.path`, in bytes.
+///
+/// The same posture the request-side path bounds keep: a probe path is one fixed path, not a
+/// document of its own.
+const MAX_HEALTH_PATH_BYTES: usize = 1024;

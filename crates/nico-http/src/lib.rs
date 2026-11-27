@@ -128,6 +128,15 @@ pub use plugin::{
     PluginResult, RegistryError, ResponseData, ResponseError,
 };
 pub use proxy::HttpApp;
+/// Runs one active health-check pass over the members `table` publishes, at instant `now`.
+///
+/// The one call nico-server's upstream-health service makes: the data plane owns the state
+/// machines and the probe transport, the server owns the loop and the shutdown. A pass over a
+/// generation with no checks does nothing.
+pub async fn run_health_pass(table: &SelectionTable, now: std::time::Instant) {
+    upstream::pools::probe::run_once(table, now).await
+}
+
 pub use quota::{
     BudgetKey, BudgetPolicy, BudgetStore, BudgetStoreError, Charge, ChargeId, CheckResult,
     Exceeded, InProcessBudgetStore, UnavailablePolicy,
@@ -145,5 +154,6 @@ pub use upstream::{
         ExpandedMembers, MemberAnswer, MemberExpansionError, MemberResolver, expand_members_with,
         resolver,
     },
+    pools::SelectionTable,
     tls::{BundleError, TlsPolicy, TrustRootsError, ensure_usable, validate_bundle},
 };

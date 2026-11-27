@@ -410,6 +410,21 @@ upstreams:
       - name: b
         address: 10.0.0.8
         weight: 1
+
+  # 主动健康检查（可选；缺省关闭——不写 health_check 的 upstream 只从真实请求学习）
+  - name: checked-backend
+    scheme: http
+    host: 127.0.0.1
+    port: 8080
+    health_check:
+      path: /health              # 必填；`/` 开头，无 query/fragment/空白
+      method: GET                # 可选；GET（默认）或 HEAD
+      expect: non_5xx            # 可选；non_5xx（默认，4xx 也算存活）或 2xx
+      interval_ms: 5000          # 必填；1..=600000
+      timeout_ms: 1000           # 必填；1..=600000
+      no_traffic_interval_ms: 30000   # 可选；缺省 = interval_ms；上游无真实请求时的检查间隔
+      unhealthy_threshold: 2     # 可选；连续失败次数，默认 1，1..=100
+      healthy_threshold: 2       # 可选；连续成功次数，默认 1，1..=100
 ```
 
 | 事实 | 说明 |
@@ -418,6 +433,7 @@ upstreams:
 | 域名成员 | `address` 写域名时，**发布期解析一次**，每个解析地址都是独立成员（逐地址健康、least_conn 与 failover）；名字与权重被每个成员继承，流量份额 ∝ 地址数 × weight。解析失败、或展开结果与其它成员撞 `address:port`，都会拒绝发布（LKG 保持服务）。请求路径不做域名查询，DNS 变更随下一次 reload 生效 |
 | endpoint 不带 `scheme` | 一个 upstream 只有一种传输方式；混协议是两台不同的服务，写两条 upstream |
 | `weight: 0` 被拒绝 | 流量层没有“只兜底”的语义，0 权重等于永不选中但它看起来像个权重 |
+| 主动健康检查 | 写 `health_check` 即启用周期探测：每个成员按 `interval_ms` 探测（无真实流量时用 `no_traffic_interval_ms`），连续失败达到 `unhealthy_threshold` 将成员移出轮转，连续成功达到 `healthy_threshold` 恢复。成员初始为健康；探测用 upstream 的 `host` 作 `Host`/SNI，不带凭据、不经过插件链/限流/token budget、不进请求日志与请求指标。探测结果在 `gateway_upstream_probe_total{upstream, endpoint, result}`（result ∈ ok/connect/timeout/5xx/status_mismatch）中可见；状态变化有独立 warn/info 日志，与被动剔除的 `gateway_upstream_ejected_total` 互不混淆 |
 | 成员数上限 | `schema_bounds.max_endpoints`（默认 64），只约束单个 upstream |
 
 **策略**（`strategy`）：
@@ -834,6 +850,7 @@ last-known-good 启动时也是 `true`，拿它做探针会把一个正在服务
 | `gateway_upstream_ejected_total` | counter | `upstream`, `endpoint` |
 | `gateway_llm_tokens_total` | counter | `route_id`, `provider`, `model`, `kind` |
 | `quota_store_degraded_total` | counter | `policy` |
+| `gateway_upstream_probe_total` | counter | `upstream`, `endpoint`, `result` |
 
 两个 `gateway_upstream_*` 的标签取配置里的名字（upstream 名与 endpoint 名），所以基数随文档而定，
 不随请求增长。`gateway_upstream_ejected_total` 计的是**剔除事件**，不是状态：冷却后试探失败的成员

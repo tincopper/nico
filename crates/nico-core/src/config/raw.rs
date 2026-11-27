@@ -110,6 +110,38 @@ pub(super) struct RawUpstream {
     /// the built-in default; `0` is refused, because a cooldown of zero admits every request as a
     /// probe and therefore ejects nothing at all.
     pub(super) fail_timeout_ms: Option<u32>,
+    /// The upstream's active health check, exactly as written. Absent means the upstream is not
+    /// probed; its availability is learned from real requests alone.
+    pub(super) health_check: Option<RawHealthCheck>,
+}
+
+/// One `upstreams[].health_check` entry exactly as written.
+///
+/// The section is closed: a field written for a different checker (a match body, a per-endpoint
+/// override) is an unknown-field parse error rather than an ignored one, the same rule every
+/// other written section follows.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RawHealthCheck {
+    /// Absent means `GET`.
+    pub(super) method: Option<String>,
+    /// The path the probe requests. Required when the section is present.
+    pub(super) path: String,
+    /// Absent means `non_5xx`: any response status below 500 proves the member answers.
+    pub(super) expect: Option<String>,
+    /// How often the member is probed. Required: a check without a period is a check nobody can
+    /// schedule.
+    pub(super) interval_ms: u32,
+    /// How often the member is probed while no real request has reached its upstream. Absent means
+    /// `interval_ms`.
+    pub(super) no_traffic_interval_ms: Option<u32>,
+    /// How long one probe may take. Required: an unbounded probe would hold its member's slot.
+    pub(super) timeout_ms: u32,
+    /// Consecutive failed probes that mark the member unhealthy. Absent means 1: the first failed
+    /// check takes an unhealthy member out; a noisy member needs the deployment to raise this.
+    pub(super) unhealthy_threshold: Option<u8>,
+    /// Consecutive passed probes that return an unhealthy member to rotation. Absent means 1.
+    pub(super) healthy_threshold: Option<u8>,
 }
 
 /// One `upstreams[].endpoints[]` entry exactly as written.

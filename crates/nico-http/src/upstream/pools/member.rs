@@ -90,6 +90,9 @@ pub(crate) struct MemberState {
     id: MemberId,
     active_connections: AtomicU32,
     health: Health,
+    /// The active checker's judgment, when the document enables probes. `None` keeps the legacy
+    /// path: a member with no check is judged by requests alone.
+    active: Option<super::active::ActiveHealth>,
 }
 
 impl MemberState {
@@ -99,7 +102,21 @@ impl MemberState {
             id,
             active_connections: AtomicU32::new(0),
             health: Health::default(),
+            active: None,
         }
+    }
+
+    /// Builds the state of a member whose document enables active probes.
+    pub(super) fn new_probed(id: MemberId) -> Self {
+        Self {
+            active: Some(super::active::ActiveHealth::new()),
+            ..Self::new(id)
+        }
+    }
+
+    /// Returns the active checker's state, when this member is probed.
+    pub(crate) fn active_health(&self) -> Option<&super::active::ActiveHealth> {
+        self.active.as_ref()
     }
 
     /// Returns the identity this state belongs to.
@@ -118,7 +135,7 @@ impl MemberState {
     /// admitted ([`MemberState::admit`]), so passing a cooled-down member over does not spend the one
     /// probe its cooldown produced.
     pub(crate) fn available(&self, policy: Ejection, now: Instant) -> bool {
-        self.health.available(policy, now)
+        self.active_admits() && self.health.available(policy, now)
     }
 
     /// Admits the caller, claiming the single probe when the member is ejected and one is due.
@@ -128,7 +145,12 @@ impl MemberState {
     /// whose cooldown expired admits this caller as the one probe, and a second caller racing it is
     /// refused.
     pub(crate) fn admit(&self, policy: Ejection, now: Instant) -> bool {
-        self.health.admit(policy, now)
+        self.active_admits() && self.health.admit(policy, now)
+    }
+
+    /// The active checker's verdict, `true` when the member has no check or is Healthy.
+    fn active_admits(&self) -> bool {
+        self.active.as_ref().is_none_or(|active| active.admits())
     }
 
     /// Records what one attempt reported, returning the availability change it caused.

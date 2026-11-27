@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "backend baseline gates, feature matrix, dependency boundary checks"}
+{"file": ".trellis/spec/backend/pingora-guidelines.md", "reason": "verified Pingora 0.9.1 contracts: BackgroundService, peers, shutdown ownership"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "metric label cardinality rules and structured log conventions for probe metrics"}

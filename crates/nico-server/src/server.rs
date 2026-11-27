@@ -209,6 +209,13 @@ pub fn serve_with(
             shutdown: shutdown.clone(),
         },
     ));
+    // The active health-check loop, when any document enables one. The service reads each
+    // generation from the same handle the pipeline publishes, so a check follows its document
+    // atomically; a generation with no checks makes the loop an idle tick.
+    server.add_service(background_service(
+        "upstream-health",
+        crate::health_service::HealthService::new(Arc::clone(&state), shutdown.clone()),
+    ));
     let http_service = match http_service(&server.configuration, state, settings) {
         Ok(service) => service,
         Err(error) => {

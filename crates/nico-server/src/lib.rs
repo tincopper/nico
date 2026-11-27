@@ -39,6 +39,7 @@ use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
 pub mod bootstrap;
+mod health_service;
 /// The AI role's compilation surface: client codecs, provider adapters and credentials.
 ///
 /// Compiled only with the `llm` feature. The traffic role has no such module, and the pipeline

@@ -10,7 +10,7 @@ use std::{collections::HashMap, fmt, net::IpAddr, sync::Arc, time::Instant};
 use nico_core::{PoolStrategy, UpstreamPool};
 use nico_lb::{Members, Picker, View};
 
-use super::{UpstreamState, picker};
+use super::{picker, state::UpstreamState};
 
 /// One route's upstream pool, and the picker its strategy built.
 ///

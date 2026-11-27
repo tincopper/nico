@@ -24,14 +24,15 @@ use super::{
     error::DocumentError,
     plugin,
     provider::{CircuitBreaker, DEFAULT_COOLDOWN_MS, DEFAULT_FAILURE_THRESHOLD, Provider},
-    raw::{RawDocument, RawUpstream},
+    raw::{RawDocument, RawHealthCheck, RawUpstream},
     reference,
     request::{DEFAULT_MAX_RESPONSE_BYTES, RequestBounds},
     route::Route,
     semantic,
     upstream::{
-        DEFAULT_ENDPOINT_NAME, DEFAULT_ENDPOINT_WEIGHT, DEFAULT_FAIL_TIMEOUT_MS, DEFAULT_MAX_FAILS,
-        Ejection, Endpoint, Upstream,
+        DEFAULT_ENDPOINT_NAME, DEFAULT_ENDPOINT_WEIGHT, DEFAULT_FAIL_TIMEOUT_MS,
+        DEFAULT_HEALTH_THRESHOLD, DEFAULT_MAX_FAILS, Ejection, Endpoint, ExpectedStatus,
+        HealthCheck, ProbeMethod, Upstream,
     },
 };
 
@@ -121,59 +122,6 @@ pub(super) fn assemble(
     ))
 }
 
-/// Turns one written upstream into its logical identity plus its members.
-///
-/// The single-address form is expanded here, not read later: a document that writes no `endpoints`
-/// becomes exactly one member named [`DEFAULT_ENDPOINT_NAME`], with the upstream's host as its
-/// address. Every consumer consequently sees one shape, and "there was no member list" stops being a
-/// case the data plane could get wrong.
-fn materialize_upstream(raw: RawUpstream) -> Upstream {
-    let RawUpstream {
-        name,
-        scheme,
-        host,
-        port,
-        endpoints,
-        strategy,
-        max_fails,
-        fail_timeout_ms,
-    } = raw;
-    let endpoints: Arc<[Endpoint]> = match endpoints {
-        Some(members) => members
-            .into_iter()
-            .map(|member| {
-                Endpoint::new(
-                    member.name,
-                    member.address.unwrap_or_else(|| host.clone()),
-                    member.port.unwrap_or(port),
-                    member.weight.unwrap_or(DEFAULT_ENDPOINT_WEIGHT),
-                )
-            })
-            .collect(),
-        None => Arc::from([Endpoint::new(
-            DEFAULT_ENDPOINT_NAME,
-            host.clone(),
-            port,
-            DEFAULT_ENDPOINT_WEIGHT,
-        )]),
-    };
-    Upstream {
-        name: name.into(),
-        scheme,
-        host: host.into(),
-        port,
-        strategy: strategy.unwrap_or_default(),
-        endpoints,
-        // The ejection budget is materialized here rather than left to the data plane, so "what a
-        // document that wrote nothing gets" has exactly one definition — the same rule the
-        // provider breaker follows.
-        ejection: Ejection::new(
-            max_fails.unwrap_or(DEFAULT_MAX_FAILS),
-            fail_timeout_ms.unwrap_or(DEFAULT_FAIL_TIMEOUT_MS),
-        ),
-    }
-}
-
 /// Rejects an upstream whose member list exceeds the per-entry bound.
 ///
 /// The bound is per upstream, not collection-wide: it is a memory and blast-radius posture for one
@@ -209,20 +157,6 @@ fn check_count(kind: &'static str, count: usize, limit: usize) -> Result<(), Doc
         return Err(DocumentError::TooMany { kind, count, limit });
     }
     Ok(())
-}
-
-/// Turns the written `circuit_breaker` section into the parameters a provider carries, filling the
-/// fields the document left out from the built-in defaults.
-fn materialize_breaker(raw: Option<super::raw::RawCircuitBreaker>) -> CircuitBreaker {
-    match raw {
-        Some(section) => CircuitBreaker::new(
-            section
-                .failure_threshold
-                .unwrap_or(DEFAULT_FAILURE_THRESHOLD),
-            section.cooldown_ms.unwrap_or(DEFAULT_COOLDOWN_MS),
-        ),
-        None => CircuitBreaker::new(DEFAULT_FAILURE_THRESHOLD, DEFAULT_COOLDOWN_MS),
-    }
 }
 
 #[cfg(test)]

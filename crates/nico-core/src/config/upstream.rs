@@ -88,6 +88,184 @@ impl Default for Ejection {
     }
 }
 
+/// The HTTP method one active health check is sent with.
+///
+/// The set is closed: a probe that could carry a body (POST) would need a body policy this
+/// document does not express, and every other method changes nothing a GET or HEAD would not
+/// already say about whether the member answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum ProbeMethod {
+    /// The probe reads the member's answer; the body is never read beyond the head.
+    GET,
+    /// The same question without a body-bearing response; the head is all a checker reads.
+    HEAD,
+}
+
+impl ProbeMethod {
+    /// The method spelling an HTTP request line carries.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::GET => "GET",
+            Self::HEAD => "HEAD",
+        }
+    }
+}
+
+impl Default for ProbeMethod {
+    /// The default check is a GET: the least surprising question a member is expected to answer.
+    fn default() -> Self {
+        Self::GET
+    }
+}
+
+/// What a probe's response status must look like for the check to pass.
+///
+/// The set is closed on purpose: each variant is one sentence an operator can reason about, and
+/// a list of arbitrary status codes would turn the checker into a place where "the member is
+/// healthy" means something different in every deployment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpectedStatus {
+    /// Any status below 500 passes, a 4xx included: the passive check treats a 4xx the same way,
+    /// because it proves the link and the server are alive.
+    Non5xx,
+    /// Only a 2xx passes. Strictly what the operator asked for, chosen explicitly.
+    S2xx,
+}
+
+impl Default for ExpectedStatus {
+    /// The default is the passive check's own reading: a member that answers with anything but a
+    /// 5xx is up.
+    fn default() -> Self {
+        Self::Non5xx
+    }
+}
+
+/// The active health check one upstream's members are probed with.
+///
+/// The parameters belong to the **upstream**, exactly like [`Ejection`]: how a fleet is checked is
+/// a property of the fleet, not of one machine. A member is probed every `interval_ms` (or
+/// `no_traffic_interval_ms` while its upstream has seen no real traffic); `unhealthy_threshold`
+/// consecutive failed checks mark it unhealthy and take it out of rotation, `healthy_threshold`
+/// consecutive passed checks return it.
+///
+/// The check never carries a credential, a body or a caller's headers: it asks "does this machine
+/// answer", not "does this machine serve this caller".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HealthCheck {
+    method: ProbeMethod,
+    path: Arc<str>,
+    expect: ExpectedStatus,
+    interval_ms: u32,
+    no_traffic_interval_ms: u32,
+    timeout_ms: u32,
+    unhealthy_threshold: u8,
+    healthy_threshold: u8,
+}
+
+impl HealthCheck {
+    /// Builds a check from values the parser has already validated.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) const fn new(
+        method: ProbeMethod,
+        path: Arc<str>,
+        expect: ExpectedStatus,
+        interval_ms: u32,
+        no_traffic_interval_ms: u32,
+        timeout_ms: u32,
+        unhealthy_threshold: u8,
+        healthy_threshold: u8,
+    ) -> Self {
+        Self {
+            method,
+            path,
+            expect,
+            interval_ms,
+            no_traffic_interval_ms,
+            timeout_ms,
+            unhealthy_threshold,
+            healthy_threshold,
+        }
+    }
+
+    /// Builds a check for tests, from the fields a verdict reads.
+    #[cfg(test)]
+    pub fn for_test(
+        expect: ExpectedStatus,
+        interval_ms: u32,
+        unhealthy_threshold: u8,
+        healthy_threshold: u8,
+    ) -> Self {
+        Self::new(
+            ProbeMethod::GET,
+            "/health".into(),
+            expect,
+            interval_ms,
+            interval_ms,
+            1_000,
+            unhealthy_threshold,
+            healthy_threshold,
+        )
+    }
+
+    /// Returns the method every probe is sent with.
+    #[must_use]
+    pub const fn method(&self) -> ProbeMethod {
+        self.method
+    }
+
+    /// Returns the path every probe requests.
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Returns the status reading a probe's response is judged by.
+    #[must_use]
+    pub const fn expect(&self) -> ExpectedStatus {
+        self.expect
+    }
+
+    /// Returns how often a member with recent traffic is probed.
+    #[must_use]
+    pub const fn interval_ms(&self) -> u32 {
+        self.interval_ms
+    }
+
+    /// Returns how often a member whose upstream has seen no traffic is probed.
+    #[must_use]
+    pub const fn no_traffic_interval_ms(&self) -> u32 {
+        self.no_traffic_interval_ms
+    }
+
+    /// Returns how long one probe may take.
+    #[must_use]
+    pub const fn timeout_ms(&self) -> u32 {
+        self.timeout_ms
+    }
+
+    /// Returns the consecutive failed checks that mark a member unhealthy.
+    #[must_use]
+    pub const fn unhealthy_threshold(&self) -> u8 {
+        self.unhealthy_threshold
+    }
+
+    /// Returns the consecutive passed checks that return a member to rotation.
+    #[must_use]
+    pub const fn healthy_threshold(&self) -> u8 {
+        self.healthy_threshold
+    }
+}
+
+/// The threshold a health check that writes none gets, for both directions.
+///
+/// One is the smallest honest reading of "a check decided": the deployment that writes the section
+/// asked to be told what probes say. A noisy member is the deployment's call to tolerate — raising
+/// the threshold is how — rather than the parser's to assume.
+pub(crate) const DEFAULT_HEALTH_THRESHOLD: u8 = 1;
+
 /// The transport scheme used to reach an [`Upstream`].
 ///
 /// The set is closed for this milestone but may grow, so matches from other crates must be
@@ -209,6 +387,7 @@ pub struct Upstream {
     pub(super) strategy: Strategy,
     pub(super) endpoints: Arc<[Endpoint]>,
     pub(super) ejection: Ejection,
+    pub(super) health_check: Option<HealthCheck>,
 }
 
 impl Upstream {
@@ -258,6 +437,16 @@ impl Upstream {
     #[must_use]
     pub const fn ejection(&self) -> Ejection {
         self.ejection
+    }
+
+    /// Returns the active health check this upstream's members are probed with, when the
+    /// document enabled one.
+    ///
+    /// `None` is the standing answer: the document wrote no `health_check`, so the members'
+    /// availability is learned from real requests alone and nothing is probed on a timer.
+    #[must_use]
+    pub const fn health_check(&self) -> Option<&HealthCheck> {
+        self.health_check.as_ref()
     }
 }
 

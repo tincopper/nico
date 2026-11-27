@@ -124,7 +124,7 @@ impl HttpState {
     /// The counters inside it are process-level and outlive the generation — only the list of members
     /// is this document's.
     #[must_use]
-    pub(crate) fn selection(&self) -> Arc<SelectionTable> {
+    pub fn selection(&self) -> Arc<SelectionTable> {
         Arc::clone(&self.selection)
     }
 }

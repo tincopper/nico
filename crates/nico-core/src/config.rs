@@ -48,5 +48,5 @@ pub use secret_ref::is_secret_ref;
 pub use semantic::{MAX_ATTEMPTS_PER_ROUTE, MAX_FALLBACK_MEMBERS, attempt_ceiling};
 pub use upstream::{
     DEFAULT_ENDPOINT_NAME, DEFAULT_ENDPOINT_WEIGHT, DEFAULT_FAIL_TIMEOUT_MS, DEFAULT_MAX_FAILS,
-    Ejection, Endpoint, Scheme, Strategy, Upstream,
+    Ejection, Endpoint, ExpectedStatus, HealthCheck, ProbeMethod, Scheme, Strategy, Upstream,
 };
