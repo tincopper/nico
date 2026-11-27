@@ -946,3 +946,41 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 ### Next Steps
 
 - push 待用户下令;README 完整 quota_store 配置示例可作后续文档任务;候选队列:TLS 证书热加载/config-nacos(按部署场景二选一)、上游主动健康检查、WASM artifact 签名
+
+
+## Session 30: 完成上游主动健康检查
+<!-- trellis-session: v=2 fp=3f9930e531a3a9e8 -->
+
+**Date**: 2026-11-27
+**Task**: 完成上游主动健康检查
+**Branch**: `feat/active-health-check`
+
+### Summary
+
+完成 11-27-active-health-check:upstreams[].health_check 可选块(method/path/expect non_5xx|2xx/interval/timeout/no_traffic_interval/fall-rise 阈值,缺省关闭);主动状态机独立于被动 ejection(fall/rise 计数、单探测槽、CheckFingerprint 配置变更重置),成员可选性取交集;探测执行器复用 Pingora Connector/HttpPeer(同 TLS 信任根与 SNI),不带凭据/绕过插件/quota/请求日志;upstream-health BackgroundService 1s tick 遍历当前代;跨 500 行文件按边界拆分(validate/materialize、pools/state)。主动探测方案经 NGINX Plus/Envoy 官方语义对照修订(全成员周期探测而非只探测 ejected、独立 fall/rise),Pingora outbound client 能力验证通过后实施。
+
+### Main Changes
+
+- nico-core:HealthCheck/ProbeMethod/ExpectedStatus 模型与 RawHealthCheck schema,semantic 校验(interval/timeout 1..=600000、阈值 1..=100、path 字符集、deny_unknown_fields);validate.rs 518 行拆为 validate/main.rs 409 + materialize.rs 128
+- nico-http:ActiveHealth 独立状态机(fall/rise/单槽/ResetFingerprint)、MemberState.available/admit 取 active/passive 交集、probe 执行器(judge 分类/Host 端口省略/due 槽位)、gateway_upstream_probe_total 指标与 fell/rose 日志;pools.rs 502 行拆为 pools.rs 239 + state/mod.rs 289
+- nico-server:upstream-health BackgroundService(与 config-reload 同构,1s tick + per-member interval 遍历当前代,shutdown 取消);nico_http::run_health_pass 公开入口
+- README:health_check 配置示例与主动检查事实行,指标表补 gateway_upstream_probe_total
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f651f12` | feat(upstream): add optional active health checks |
+
+### Testing
+
+- [OK] fmt/clippy -D warnings、全量 workspace tests 90 suites 全 ok、rustdoc -D warnings、cargo deny、feature 矩阵(no-default/traffic/role_traffic 3 passed)、行预算无越界
+- [OK] 新增:8 条 schema 测试、10 条 active 状态机测试、26 条 probe 执行器测试;nico-core 261/nico-http 452/nico-server 188
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- push 待用户下令;E2E(mock upstream 零流量剔除/恢复全链路)为后续补强;候选队列:WASM artifact 签名、TLS 证书热加载/config-nacos(按部署场景)
