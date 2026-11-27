@@ -888,3 +888,38 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 ### Next Steps
 
 - push 待用户下令;fail-open 路径的 degraded 指标与 hook 策略接线(装配已返回 policy)可作后续小任务;README/docs 补 quota_store 配置文档
+
+
+## Session 29: 完成 quota fail-open 策略接线与 degraded 指标
+<!-- trellis-session: v=2 fp=ebdd48584b2f10b1 -->
+
+**Date**: 2026-11-27
+**Task**: 完成 quota fail-open 策略接线与 degraded 指标
+**Branch**: `feat/quota-failopen-wiring`
+
+### Summary
+
+完成 11-27-quota-failopen-wiring:UnavailablePolicy 统一定义在 nico-http::quota(bootstrap re-export 同一 enum,消除双枚举漂移),HttpStateHandle 携带 policy 并与 store 同源传入 HttpContext,upstream_peer 按策略分支——fail-closed 保持 503 quota_store_unavailable,fail-open 放行并计数 quota_store_degraded_total{policy} 加 warn 日志;任何策略都不把存储故障渲染成 429。任务已归档。
+
+### Main Changes
+
+- nico-http:UnavailablePolicy{name(),Default=FailClosed}、HttpStateHandle.budget_policy、with_budget_store(store,policy)、HttpContext 传递、hook 分支+指标+warn 日志
+- nico-server:quota_store.rs re-export domain enum(解析函数 pub(super));serve_with 消费 policy;README token budget 一节补 quota_store/on_unavailable 两值说明
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `431e81f` | feat(quota): wire the stated on_unavailable policy into the request path |
+
+### Testing
+
+- [OK] fmt/clippy -D warnings(修 1 处 unreachable_pub)、全量 workspace tests 89 suites 全 ok、rustdoc -D warnings、cargo deny、行预算全绿;新增 3 条单测(failing store 折叠、policy 命名、handle 携带策略);http_canary 一次 E2E 抖动单独重跑与全量重跑均通过,非回归
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- push 待用户下令;README 完整 quota_store 配置示例可作后续文档任务;候选队列:TLS 证书热加载/config-nacos(按部署场景二选一)、上游主动健康检查、WASM artifact 签名
