@@ -22,36 +22,32 @@
 
 use std::{borrow::Cow, path::PathBuf};
 
+/// The failure policy a shared quota store is configured with.
+///
+/// The domain type, re-exported: the bootstrap parses the written value into the same enum the
+/// request hook reads, so the two ends of the process can never disagree on what the deployment
+/// stated.
+pub use nico_http::UnavailablePolicy;
 use serde::Deserialize;
 use serde_norway::Value;
 
 use super::BootstrapError;
 
-/// The failure policy a shared quota store is configured with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnavailablePolicy {
-    /// Refuse the request with `503 quota_store_unavailable`: a budget that cannot be read is
-    /// not a budget that allows.
-    FailClosed,
-    /// Forward the request: availability wins, and the deployment accepts the overspend a
-    /// store outage makes possible. Every such request is counted in a degraded metric.
-    FailOpen,
-}
-
-impl UnavailablePolicy {
-    /// Parses the written policy value.
-    ///
-    /// # Errors
-    /// Returns [`BootstrapError::InvalidField`] for anything but the two documented values.
-    pub fn parse(field: &str, value: &str) -> Result<Self, BootstrapError> {
-        match value {
-            "fail-closed" => Ok(Self::FailClosed),
-            "fail-open" => Ok(Self::FailOpen),
-            other => Err(BootstrapError::InvalidField {
-                field: Cow::Owned(field.to_owned()),
-                reason: format!("must be `fail-closed` or `fail-open` (found `{other}`)").into(),
-            }),
-        }
+/// Parses the written policy value into the domain's enum.
+///
+/// # Errors
+/// Returns [`BootstrapError::InvalidField`] for anything but the two documented values.
+pub(super) fn parse_unavailable_policy(
+    field: &str,
+    value: &str,
+) -> Result<UnavailablePolicy, BootstrapError> {
+    match value {
+        "fail-closed" => Ok(UnavailablePolicy::FailClosed),
+        "fail-open" => Ok(UnavailablePolicy::FailOpen),
+        other => Err(BootstrapError::InvalidField {
+            field: Cow::Owned(field.to_owned()),
+            reason: format!("must be `fail-closed` or `fail-open` (found `{other}`)").into(),
+        }),
     }
 }
 
@@ -213,7 +209,7 @@ fn take_shared(body: &mut Value) -> Result<SharedFields, BootstrapError> {
     )?;
     Ok(SharedFields {
         key_prefix: raw.key_prefix,
-        on_unavailable: UnavailablePolicy::parse(
+        on_unavailable: parse_unavailable_policy(
             "quota_store.on_unavailable",
             &raw.on_unavailable,
         )?,

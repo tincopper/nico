@@ -616,7 +616,11 @@ routes:
 - **事后记账**：用量在响应后才知，一次请求可以越过预算（它的费用已实际发生），拒绝的是
   下一个请求。所有 LLM 网关都这么做，精确预判需要 tokenizer。
 - 窗口是固定窗口：首次记账开窗，`window_seconds` 后重置。
-- 预算表是**进程内**的：多副本部署需要共享存储，接口（`BudgetStore`）已为此预留。
+- **预算表默认是进程内的**：多副本部署在 bootstrap 写 `quota_store` 段选择共享存储（`etcd` /
+  `redis`），每次检查与记账都是后端原子事务；`on_unavailable` 是必填策略——`fail-closed` 在
+  存储故障时返回 `503 quota_store_unavailable`（预算不可确认即不放行），`fail-open` 保持请求
+  可用但接受故障期间的超额；两种策略的放行/拒绝都在 `quota_store_degraded_total{policy}`
+  指标中可见。
 
 ### provider 池
 

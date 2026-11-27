@@ -85,6 +85,11 @@ impl HttpApp {
         self.state.budgets()
     }
 
+    /// Returns the failure policy the deployment stated for the budget store.
+    pub(crate) fn budget_policy(&self) -> crate::quota::UnavailablePolicy {
+        self.state.budget_policy()
+    }
+
     /// Renders `error` and tells Pingora the response is already written.
     ///
     /// A failed write means the client is gone; the request's log line already carries the outcome,

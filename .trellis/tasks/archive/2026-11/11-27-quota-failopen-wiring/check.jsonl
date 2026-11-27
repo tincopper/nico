@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "required validation commands and gates"}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "verify the degraded metric and warn log follow the logging spec"}

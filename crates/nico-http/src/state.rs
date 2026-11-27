@@ -44,7 +44,7 @@ use crate::{
     error::HttpError,
     llm::{LlmRoute, LlmRoutes},
     plugin::PluginChain,
-    quota::{BudgetStore, InProcessBudgetStore},
+    quota::{BudgetStore, InProcessBudgetStore, UnavailablePolicy},
     upstream::{
         dns::ExpandedMembers,
         pools::{SelectionTable, UpstreamPools},
@@ -164,6 +164,11 @@ pub struct HttpStateHandle {
     /// published when it was spent, so a reload retunes the budget's numbers without resetting the
     /// count. The trait is the seam a multi-replica deployment replaces with shared storage.
     budgets: Arc<dyn BudgetStore>,
+    /// What a request is answered when `budgets` cannot confirm an admission.
+    ///
+    /// The deployment's stated choice travels beside the store: the hook reads both from the same
+    /// handle, so the policy can never describe a store other than the one serving the window.
+    budget_policy: UnavailablePolicy,
 }
 
 impl Default for HttpStateHandle {
@@ -172,6 +177,7 @@ impl Default for HttpStateHandle {
             current: ArcSwapOption::empty(),
             pools: UpstreamPools::default(),
             budgets: Arc::new(InProcessBudgetStore::new(DEFAULT_BUDGET_KEYS)),
+            budget_policy: UnavailablePolicy::FailClosed,
         }
     }
 }
@@ -189,21 +195,31 @@ impl HttpStateHandle {
     /// Creates an empty handle whose token budgets live in `budgets`.
     ///
     /// The one seam a multi-replica deployment needs: the assembly builds the shared store the
-    /// bootstrap selected and hands it here, once, at process construction. Every reload that
-    /// follows publishes into the same handle, so the windows survive configuration changes.
-    /// Without this constructor the standing in-process table is used.
+    /// bootstrap selected and hands it here, once, at process construction, together with the
+    /// failure policy the section stated. Every reload that follows publishes into the same
+    /// handle, so the windows survive configuration changes. Without this constructor the
+    /// standing in-process table is used, fail-closed by construction.
     #[must_use]
-    pub fn with_budget_store(budgets: Arc<dyn BudgetStore>) -> Arc<Self> {
+    pub fn with_budget_store(
+        budgets: Arc<dyn BudgetStore>,
+        budget_policy: UnavailablePolicy,
+    ) -> Arc<Self> {
         Arc::new(Self {
             current: ArcSwapOption::empty(),
             pools: UpstreamPools::default(),
             budgets,
+            budget_policy,
         })
     }
 
     /// Returns the token-budget table every request and every reload share.
     pub(crate) fn budgets(&self) -> Arc<dyn BudgetStore> {
         Arc::clone(&self.budgets)
+    }
+
+    /// Returns the failure policy the deployment stated for `budgets`.
+    pub(crate) fn budget_policy(&self) -> UnavailablePolicy {
+        self.budget_policy
     }
 
     /// Returns the published state, or `None` before the first successful publication.
