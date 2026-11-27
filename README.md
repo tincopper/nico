@@ -174,6 +174,17 @@ metrics:                 # 可选；省略整段 = 不监听、不装 recorder
   # tls:
   #   cert_file: /etc/nico/tls/fullchain.pem
   #   key_file: /etc/nico/tls/key.pem
+
+quota_store:             # 可选；省略整段 = token 预算表留在进程内（单副本默认）
+  type: redis            # etcd | redis（需编译对应 feature）
+  key_prefix: nico/quota # 1..=256 字节，printable ASCII
+  on_unavailable: fail-closed   # 必填；fail-closed | fail-open
+  # redis:
+  #   endpoints: ["rediss://quota.internal:6379"]
+  # 或（type: etcd 时）：
+  #   endpoints: ["https://etcd-0.internal:2379"]
+  #   tls: { ca_file: /etc/nico/etcd-ca.pem }
+  #   auth: { user: nico, password_ref: env:ETCD_PASSWORD }
 ```
 
 要点：
@@ -204,6 +215,10 @@ metrics:                 # 可选；省略整段 = 不监听、不装 recorder
 - 信任根在**构建 service 时定型**：改 CA 需要重启，reload 只换文档快照。启动时会先读一次这个来源
   （平台库或 `ca_file`），读不到、为空、或不是证书集合都会让进程拒绝启动，而不是带着空信任集服务。
 - 证书校验与主机名校验始终开启，文档无法关掉。
+- `quota_store` 整段省略即进程内预算表（默认，单副本行为不变）。写出来则选择共享后端并把
+  `on_unavailable` 当必填项：缺策略即启动错误，网关不替部署方决定可用性与预算绕过的取舍。
+  选定的后端无法构建（feature 未编译、凭据读不到、连接不上）同样是启动拒绝——用错的存储服务
+  预算比不启动更糟。详见 [token 限额](#token-限额) 一节。
 
 ### config_source：etcd
 
@@ -241,6 +256,46 @@ config_source:
 - `domain_name` 对该 client 的全部端点生效（一个 client 只校验一个名字）；逐端点的证书名本版不支持。
 - 口令错误或端点拒绝凭据是 `EtcdError::Auth`，端点不可达或 TLS 握手失败是 `EtcdError::Connect`；
   两者都没有降级成明文或匿名访问的形态，进程直接拒绝启动。
+
+### quota_store：跨副本共享 token 预算
+
+省略整段时，token 预算表留在进程内——单副本行为，也是此前每个部署的行为。多副本部署写这个段，
+让同一 `(route, tenant)` 或 `(route, subject)` 的窗口由所有副本共享：
+
+```yaml
+quota_store:
+  type: etcd                 # etcd | redis（分别需要 `etcd` / `redis` feature）
+  key_prefix: nico/quota     # 1..=256 字节 printable ASCII，所有预算 key 的公共前缀
+  on_unavailable: fail-closed # 必填：fail-closed | fail-open
+
+  endpoints:                 # etcd 与 redis 都以 endpoints 列表给定地址
+    - https://etcd-0.internal:2379
+
+  tls:                       # 仅 etcd；形状与 config_source.tls 相同
+    ca_file: /etc/nico/etcd-ca.pem
+  auth:                      # 仅 etcd；password_ref 只接受 env: / file: 引用
+    user: nico
+    password_ref: env:ETCD_PASSWORD
+```
+
+- **每次检查与记账都是后端原子操作**：etcd 用一次 compare-and-put 事务，Redis 用一次 Lua 脚本；
+  读-改-写永远在存储内完成，两个副本不会各写半个窗口。并发记账不丢增量。
+- **记账幂等**：每次成功转换的请求携带稳定 charge id，后端按 `(namespace, key, charge id)` 去重
+  ——网络超时后的重试只计一次账。历史保留最近 64 条 charge id。
+- **`on_unavailable` 是部署方的取舍**，两个值都不是网关的默认：
+  - `fail-closed`：预算不可确认即拒绝，返回 `503 quota_store_unavailable`——`429` 只表达
+    「窗口确实花完了」，存储故障是另一回事；
+  - `fail-open`：保持请求可用，接受存储故障期间的超额；放行会计入
+    `quota_store_degraded_total{policy}` 指标并输出 `warn` 日志。
+  - 两种策略的放行/拒绝都计入该指标，存储健康状况在指标里可见。
+- **事后记账语义不变**：用量在 provider 返回后才知，一次请求可以越过预算，拒绝的是下一个
+  请求；本节不引入预留，也不承诺零超额硬上限。
+- **窗口过期用记录内的时间戳**（etcd）或 TTL（Redis，仅作清理）；跨副本时间统一为 wall-clock，
+  进程内单调时钟不出网。
+- **存储无法构建即启动拒绝**：feature 未编译、凭据读不到、端点连不上，进程都不启动——
+  用错的存储服务预算比不启动更糟。运行期故障按 `on_unavailable` 处理，不打断服务。
+- `quota_store_degraded_total{policy}` 计的是**存储故障时被策略处置的请求**，不是故障事件数；
+  一个持续宕机的存储会让这个数字随流量增长，这正是「还在降级运行」的信号。
 
 ### resources.yaml
 
@@ -763,7 +818,7 @@ last-known-good 启动时也是 `true`，拿它做探针会把一个正在服务
 
 ### 指标
 
-`/metrics` 输出十个指标族：
+`/metrics` 输出以下指标族：
 
 | 指标 | 类型 | 标签 |
 |---|---|---|
@@ -777,6 +832,8 @@ last-known-good 启动时也是 `true`，拿它做探针会把一个正在服务
 | `gateway_http_request_seconds` | histogram | `route_id` |
 | `gateway_upstream_selected_total` | counter | `upstream`, `endpoint` |
 | `gateway_upstream_ejected_total` | counter | `upstream`, `endpoint` |
+| `gateway_llm_tokens_total` | counter | `route_id`, `provider`, `model`, `kind` |
+| `quota_store_degraded_total` | counter | `policy` |
 
 两个 `gateway_upstream_*` 的标签取配置里的名字（upstream 名与 endpoint 名），所以基数随文档而定，
 不随请求增长。`gateway_upstream_ejected_total` 计的是**剔除事件**，不是状态：冷却后试探失败的成员
