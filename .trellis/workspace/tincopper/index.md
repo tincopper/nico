@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 30
+- **Total Sessions**: 31
 - **Last Active**: 2026-11-27
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~986 | Active |
+| `journal-1.md` | ~1021 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 31 | 2026-11-27 | 完成主动健康检查 E2E 补强 | `e93ebdf` | `feat/health-check-e2e` |
 | 30 | 2026-11-27 | 完成上游主动健康检查 | `f651f12` | `feat/active-health-check` |
 | 29 | 2026-11-27 | 完成 quota fail-open 策略接线与 degraded 指标 | `431e81f` | `feat/quota-failopen-wiring` |
 | 28 | 2026-11-27 | 完成跨副本共享 token budget（etcd/Redis adapter） | `413d8da` | `feat/shared-token-budget` |

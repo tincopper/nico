@@ -984,3 +984,38 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 ### Next Steps
 
 - push 待用户下令;E2E(mock upstream 零流量剔除/恢复全链路)为后续补强;候选队列:WASM artifact 签名、TLS 证书热加载/config-nacos(按部署场景)
+
+
+## Session 31: 完成主动健康检查 E2E 补强
+<!-- trellis-session: v=2 fp=c11580a6271a4509 -->
+
+**Date**: 2026-11-27
+**Task**: 完成主动健康检查 E2E 补强
+**Branch**: `feat/health-check-e2e`
+
+### Summary
+
+完成 11-27-health-check-e2e:两个集成场景用生产装配对真实 mock origin 运行,零客户端请求即证明主动健康检查全链路——场景 1 驱动故障成员走完 fall 阈值(probe 计数上升、被动 ejection 计数保持零)、同地址复活后 rise 返回轮转(客户端流量再次到达两成员);场景 2 跨 reload 翻转 expect 读数(同一 404 在 2xx 下是 mismatch、在 non_5xx 下是 ok)。Resources builder 增 health_check 步骤,跨限文件按边界拆出 upstream_builders.rs。任务已归档。
+
+### Main Changes
+
+- upstream_health.rs 两场景:零流量剔除/恢复(probe_total result 标签断言 + MockUpstop/stop/start_at 同地址复活 + observation 验证 GET /health 与逻辑 Host)、expect 读数 reload 前后翻转
+- harness:UpstreamEntry::with_health_check + Resources::health_check builder 步骤;resources.rs 520 行越界拆出 upstream_builders.rs(112 行)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e93ebdf` | test(upstream): prove active health checks end to end without client traffic |
+
+### Testing
+
+- [OK] 全量 workspace tests 91 suites 全 ok(新增 1 suite/2 E2E)、E2E 定向 2 passed 5.56s、fmt/clippy -D warnings(修 4 处)、行预算无越界
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- push 待用户下令;候选队列:WASM artifact 签名、TLS 证书热加载/config-nacos(按部署场景二选一)
