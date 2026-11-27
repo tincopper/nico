@@ -869,6 +869,22 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 - reload/settings.rs(111 行):三个类型带模块级文档;Publication/ReloadSettings 组装所需字段改 pub(super),crate 外不可见;ReloadSettings 新增 limits() 访问器,ReloadLimits 字段可见性未扩大
 - reload.rs 497→415 行:mod settings + pub use 保持 nico_server::reload 公开路径;with_llm 先取 limits() 再解构其余字段(修复 partial move);消费循环改用 debounce()/max_wait() 访问器;模块文档 # Modules 补 settings 条目
 - README.md:124 「当前仅本地文件」→「由配置源提供(local 文件或 etcd)」,消除与 etcd 章节的矛盾
+## Session 28: 完成跨副本共享 token budget（etcd/Redis adapter）
+<!-- trellis-session: v=2 fp=6e0210c9df7839fa -->
+
+**Date**: 2026-11-27
+**Task**: 完成跨副本共享 token budget（etcd/Redis adapter）
+**Branch**: `feat/shared-token-budget`
+
+### Summary
+
+完成 11-26-shared-token-budget:BudgetStore 升级为公开 async domain contract(typed store error、幂等 charge id、wall-clock 窗口),本地 LRU 为默认;新 crate nico-quota-storage 承载后端 seam(原子 check/charge 语义、确定性 fake)与 etcd/Redis 两个 adapter——每次 admission/charge 都是服务端事务或脚本,绝不做客户端读改写;bootstrap 新增可选 quota_store section,共享后端必须声明 on_unavailable 策略;serve_with 构建失败即启动拒绝。多副本契约测试钉死承诺:两个独立 client 共享同一 tenant/subject 窗口,并发 charge 不丢增量,重试 charge 只计一次。任务已归档。
+
+### Main Changes
+
+- nico-http quota.rs:pub trait BudgetStore(async check/charge、SystemTime、CheckResult 与 BudgetStoreError 分离、Charge{id,input,output,at});HttpStateHandle::with_budget_store 注入入口;HttpError::BudgetStoreUnavailable→503 quota_store_unavailable(Internal,与 429 分离);InProcessBudgetStore 迁移新契约默认不变
+- nico-quota-storage:seam 纯函数(apply_check/apply_charge、WindowRecord、64 条 charge id 有界历史、BackendError→into_domain)、fake 确定性后端(故障注入)、etcd compare-and-put Txn(8 次重试、JSON DTO、记录内 expiry)、redis Lua 脚本(CORRUPT 回复、TTL 刷新、ConnectionManager)、replica 多副本契约测试
+- bootstrap quota_store section(省略=Local、etcd/redis 必带 on_unavailable fail-closed|fail-open、key_prefix/endpoints/TLS/auth 校验、feature 未编译拒绝);quota_build async 装配(一次性 runtime 握手,失败启动拒绝);password 引用 env:/file: 不 trim 不进日志
 
 ### Git Commits
 
@@ -880,6 +896,12 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 
 - [OK] cargo +nightly fmt --all -- --check、clippy --workspace --all-targets --all-features --locked -D warnings、cargo test --workspace --all-features --locked(PIPELINE_EXIT=0)、RUSTDOCFLAGS=-D warnings cargo doc、cargo deny check 全绿
 - [OK] feature 矩阵 5 项通过:no-default-features / traffic check / role_traffic 测试(3 passed) / llm / all-features;行预算检查无输出(reload.rs 415、settings.rs 111);pre-commit 钩子 172 单测全绿
+| `413d8da` | feat(quota): share token budgets across replicas through etcd or redis |
+
+### Testing
+
+- [OK] 全量 workspace tests --all-features(89 suites 全 ok)、fmt/clippy -D warnings/rustdoc -D warnings/cargo deny 四项全绿
+- [OK] feature 矩阵 no-default/traffic/role_traffic(3 passed)/llm/all-features 全过;行预算无越界;nico-http 431、nico-server 151、quota-storage 20;依赖边界 nico-http 树无 etcd/redis
 
 ### Status
 
@@ -888,3 +910,4 @@ Rebuilt the plugin system around one Plugin interface with five stages and two l
 ### Next Steps
 
 - push 待用户下令;下一任务候选:跨副本共享 token budget(先定原子 check/charge 与故障语义)、TLS 证书热加载或 config-nacos(按部署场景二选一)
+- push 待用户下令;fail-open 路径的 degraded 指标与 hook 策略接线(装配已返回 policy)可作后续小任务;README/docs 补 quota_store 配置文档

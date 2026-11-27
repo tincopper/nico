@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 27
-- **Last Active**: 2026-11-26
+- **Total Sessions**: 28
+- **Last Active**: 2026-11-27
 <!-- @@@/auto:current-status -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 28 | 2026-11-27 | 完成跨副本共享 token budget（etcd/Redis adapter） | `413d8da` | `feat/shared-token-budget` |
 | 27 | 2026-11-26 | 完成 reload.rs 拆分与 README 状态校正 | `fe9aea6` | `feat/reload-split` |
 | 26 | 2026-11-26 | 完成虚拟 key 与租户 token 预算 | `4ebb025` | `feat/virtual-key-tenant-quota` |
 | 25 | 2026-11-25 | 完成 G4 缓冲与 header 控制 | `6ac2537` | `feat/g4-buffering-headers` |

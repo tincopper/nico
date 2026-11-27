@@ -102,7 +102,7 @@ pub mod inbound;
 pub mod llm;
 pub mod plugin;
 pub mod proxy;
-pub(crate) mod quota;
+pub mod quota;
 pub mod route;
 pub mod server_settings;
 pub mod service;
@@ -128,6 +128,10 @@ pub use plugin::{
     PluginResult, RegistryError, ResponseData, ResponseError,
 };
 pub use proxy::HttpApp;
+pub use quota::{
+    BudgetKey, BudgetPolicy, BudgetStore, BudgetStoreError, Charge, ChargeId, CheckResult,
+    Exceeded, InProcessBudgetStore,
+};
 pub use route::match_route;
 pub use server_settings::{ServerSettings, ServerSettingsError};
 pub use service::{ListenerAlpn, ServiceBuildError, listener_tls, server_conf, service};

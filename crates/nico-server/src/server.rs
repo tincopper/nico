@@ -100,8 +100,35 @@ pub fn serve_with(
     // The request path reads `state` and nothing else: the pipeline publishes a snapshot and the plan
     // compiled from it there, together. `SnapshotHandle` stays the configuration-state fact source,
     // and the self-reporting surface reads the same handle, so it cannot observe a state the
-    // pipeline has not published.
-    let state = HttpStateHandle::new();
+    // pipeline has not published. The budget store the bootstrap selected is built here, before
+    // anything serves: a backend this build cannot serve, or a credential it cannot read, is a
+    // startup refusal rather than a first-request failure.
+    //
+    // The quota store's backend connect is async (a gRPC handshake for etcd), but `serve_with` is
+    // the *synchronous* production assembly Pingora drives. One one-shot runtime here, before
+    // Pingora's exists, is the same shape the config source's connect uses on its own thread: the
+    // handshake is part of starting, not part of serving.
+    let (budget_store, _unavailable_policy) = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => match runtime.block_on(crate::quota_build::build_quota_store(bootstrap)) {
+            Ok(built) => built,
+            Err(error) => {
+                tracing::error!(
+                    error = %error,
+                    "the quota store this bootstrap selects could not be built; refusing \
+                     to start instead of serving budgets from the wrong place"
+                );
+                return ExitCode::from(FAILURE_EXIT_CODE);
+            }
+        },
+        Err(error) => {
+            tracing::error!(error = %error, "the quota store runtime could not start");
+            return ExitCode::from(FAILURE_EXIT_CODE);
+        }
+    };
+    let state = HttpStateHandle::with_budget_store(budget_store);
     let snapshot = SnapshotHandle::new();
     // One plugin runtime for the process: the bucket tables inside it are runtime state, so a reload
     // that republishes the same quota must keep them rather than hand every caller a fresh one.

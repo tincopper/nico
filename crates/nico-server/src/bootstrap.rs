@@ -42,11 +42,14 @@ mod http;
 mod inbound_tls;
 mod metrics;
 mod proxy;
+mod quota_store;
 mod runtime;
 mod source;
 mod tls;
 
 pub use metrics::MetricsSettings;
+use quota_store::parse_quota_store;
+pub use quota_store::{QuotaEtcdAuth, QuotaEtcdTls, QuotaStoreSelection, UnavailablePolicy};
 #[cfg(feature = "etcd")]
 pub(crate) use source::MAX_TLS_MATERIAL_BYTES;
 pub use source::SourceSelection;
@@ -59,7 +62,7 @@ pub use source::{EtcdAuth, EtcdTls};
 /// Fields are private and there is no public constructor besides [`BootstrapConfig::load`], because
 /// an unvalidated bootstrap would let a deployment select a source type this build cannot serve, or
 /// bind a listener whose certificate was never read.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BootstrapConfig {
     source: SourceSelection,
     source_max_bytes: usize,
@@ -68,6 +71,7 @@ pub struct BootstrapConfig {
     cache_dir: PathBuf,
     allow_bootstrap_cache: bool,
     schema_bounds: SchemaBounds,
+    quota_store: QuotaStoreSelection,
     runtime: ServerSettings,
     http: HttpSettings,
     metrics: Option<MetricsSettings>,
@@ -160,6 +164,30 @@ impl BootstrapConfig {
         self.metrics.as_ref()
     }
 
+    /// Returns where the token budgets live.
+    ///
+    /// An omitted `quota_store` section is [`QuotaStoreSelection::Local`], the standing
+    /// in-process table; a written one names the shared backend and the failure policy a
+    /// multi-replica deployment has chosen.
+    #[must_use]
+    pub const fn quota_store(&self) -> &QuotaStoreSelection {
+        &self.quota_store
+    }
+
+    /// Returns the failure policy the selected store is served with.
+    ///
+    /// Local has no backend to be unavailable, so its policy is fail-closed by construction —
+    /// and unreachable, because the in-process store cannot fail. A shared backend's policy is
+    /// the one the section required.
+    #[must_use]
+    pub const fn quota_policy(&self) -> UnavailablePolicy {
+        match &self.quota_store {
+            QuotaStoreSelection::Local => UnavailablePolicy::FailClosed,
+            QuotaStoreSelection::Etcd { on_unavailable, .. } => *on_unavailable,
+            QuotaStoreSelection::Redis { on_unavailable, .. } => *on_unavailable,
+        }
+    }
+
     /// Builds the parse limits the pipeline applies to every document.
     ///
     /// The byte bound is `config_source.max_bytes`; the shape bounds are the
@@ -248,6 +276,9 @@ struct RawBootstrap {
     #[serde(default, deserialize_with = "proxy::section")]
     proxy: Option<proxy::RawProxy>,
     metrics: Option<metrics::RawMetrics>,
+    // Optional: omitted means the standing in-process budget table. A written section is parsed
+    // in two steps like `config_source`, so it is kept as a raw value here.
+    quota_store: Option<Value>,
 }
 
 impl RawBootstrap {
@@ -280,6 +311,13 @@ impl RawBootstrap {
             None => None,
         };
 
+        // The quota store is parsed like `config_source`: per-type, closed, and never guessed.
+        // Omitted is the in-process table, so the default deployment parses nothing here.
+        let quota_store = match &self.quota_store {
+            Some(value) => parse_quota_store(value.clone())?,
+            None => QuotaStoreSelection::Local,
+        };
+
         Ok(BootstrapConfig {
             source: source.selection,
             source_max_bytes: source.max_bytes,
@@ -288,6 +326,7 @@ impl RawBootstrap {
             cache_dir: source.cache_dir,
             allow_bootstrap_cache: source.allow_bootstrap_cache,
             schema_bounds: source.schema_bounds,
+            quota_store,
             runtime,
             http,
             metrics,

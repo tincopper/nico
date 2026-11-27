@@ -186,6 +186,21 @@ impl HttpStateHandle {
         Arc::new(Self::default())
     }
 
+    /// Creates an empty handle whose token budgets live in `budgets`.
+    ///
+    /// The one seam a multi-replica deployment needs: the assembly builds the shared store the
+    /// bootstrap selected and hands it here, once, at process construction. Every reload that
+    /// follows publishes into the same handle, so the windows survive configuration changes.
+    /// Without this constructor the standing in-process table is used.
+    #[must_use]
+    pub fn with_budget_store(budgets: Arc<dyn BudgetStore>) -> Arc<Self> {
+        Arc::new(Self {
+            current: ArcSwapOption::empty(),
+            pools: UpstreamPools::default(),
+            budgets,
+        })
+    }
+
     /// Returns the token-budget table every request and every reload share.
     pub(crate) fn budgets(&self) -> Arc<dyn BudgetStore> {
         Arc::clone(&self.budgets)

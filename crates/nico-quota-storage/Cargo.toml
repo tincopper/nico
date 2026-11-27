@@ -1,0 +1,41 @@
+[package]
+name = "nico-quota-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "shared budget-store adapters: the backend seam, the deterministic fake, and the etcd/redis implementations"
+
+[features]
+# The deterministic fake: every backend adapter's contract suite drives it, and a deployment's
+# test build can substitute it. Default on, like the config-etcd mock, so `cargo test` needs no
+# flags; the product binary never links it.
+fake = []
+# The etcd adapter: it links the same tonic/gRPC stack the config source does, so it is gated and
+# the product binary decides whether it ships.
+etcd = ["dep:etcd-client", "dep:tonic"]
+# The Redis adapter: its client is the third network stack, so it is gated the same way.
+redis = ["dep:redis"]
+
+[dependencies]
+async-trait.workspace = true
+nico-http.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+tracing.workspace = true
+
+# The etcd wire client, shared with the config source: naming the same crate adds no second stack.
+etcd-client = { version = "0.14", default-features = false, optional = true }
+tonic = { version = "0.12", default-features = false, optional = true, features = ["codegen", "transport", "prost", "tls"] }
+# The Redis client. `default-features = false` keeps tokio-comp + tls-rustls only; connection
+# pooling comes through the client's own manager.
+redis = { version = "0.27", default-features = false, optional = true, features = ["tokio-comp", "tls-rustls", "tokio-rustls-comp", "script", "connection-manager"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
+
+[lints]
+workspace = true

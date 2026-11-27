@@ -29,13 +29,16 @@ llm = ["dep:nico-llm"]
 # The etcd configuration source: `config_source.type: etcd` is accepted and wired at startup only
 # when this feature is on. Off by default, because the client is the tonic/gRPC stack the roadmap
 # flagged beside pingora's, and the product binary does not link it.
-etcd = ["dep:nico-config-etcd"]
+etcd = ["dep:nico-config-etcd", "dep:nico-quota-storage", "nico-quota-storage/etcd", "dep:etcd-client"]
 # The traffic role: configuration, routing, plugins and the HTTP data plane, with no LLM crate at all.
 traffic = []
 # The WASM plugin host: `kind: wasm` is accepted and run in the wasmi sandbox only when this feature
 # is on. Off by default, because the interpreter is a dependency the built-in-only deployments never
 # need, and the gating is verified per release (`dependency_boundaries.rs`).
 wasm = ["nico-plugins/wasm"]
+# The Redis quota backend: its client is the third network stack, so it ships only when a
+# deployment asks for it. The bootstrap refuses `quota_store.type: redis` in a build without it.
+redis = ["dep:nico-quota-storage", "nico-quota-storage/redis"]
 
 [dependencies]
 async-trait.workspace = true
@@ -60,6 +63,8 @@ metrics.workspace = true
 # The binary is the one crate that assembles concrete implementations, and the plugin compiler is one
 # of them: it is constructed here once per process and handed to the reload pipeline.
 nico-plugins.workspace = true
+nico-quota-storage = { workspace = true, optional = true }
+etcd-client = { workspace = true, optional = true }
 # The binary is the one crate that assembles concrete implementations, so it names Pingora's server
 # directly. The `proxy` feature is already on through `nico-http`, which owns that integration.
 pingora.workspace = true

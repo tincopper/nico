@@ -343,5 +343,5 @@ pub(super) async fn logging(
         };
         chain.run_logging(ctx, head).await;
     }
-    record::emit(session, error, ctx);
+    record::emit(session, error, ctx).await;
 }
