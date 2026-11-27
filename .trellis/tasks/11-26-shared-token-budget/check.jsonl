@@ -1,3 +1,0 @@
-{"file": ".trellis/spec/backend/index.md", "reason": "required validation commands and feature/dependency gates"}
-{"file": ".trellis/spec/backend/directory-structure.md", "reason": "one-boundary-per-module, dependency direction and 500-line budget"}
-{"file": ".trellis/spec/backend/error-handling.md", "reason": "typed error categories and single response mapping contract"}
